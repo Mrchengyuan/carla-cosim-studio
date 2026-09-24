@@ -3,7 +3,7 @@
 stop_carla_server() {   # $1 = stock | mod | all
   case "$1" in
     stock|all) tmux kill-session -t carla_server 2>/dev/null
-               pkill -TERM -f "CARLA_0.9.16/CarlaUE4/Binaries/Linux/CarlaUE4-Linux-Shipping" ;;&
+               pkill -TERM -f "CarlaUE4/Binaries/Linux/CarlaUE4-Linux-Shipping" ;;&
     mod|all)   tmux kill-session -t carla_mod 2>/dev/null
                pkill -TERM -f "Binaries/Linux/UE4Editor .*CarlaUE4.uproject" ;;
   esac

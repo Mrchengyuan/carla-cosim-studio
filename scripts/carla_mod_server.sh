@@ -1,10 +1,15 @@
 #!/bin/bash
-# Modified CARLA (editor build, game mode) with rendering, off-screen.
+# Modified CARLA (editor build, game mode) on $CARLA_MOD_PORT.
+#   carla_mod_server.sh              off-screen rendering
+#   carla_mod_server.sh --norender   no rendering at all (API tests only)
 # Mesh distance fields are disabled: in uncooked editor mode UE4 builds them
 # on the fly and the renderer can read a half-built one and crash.
-export UE4_ROOT=~/UnrealEngine_4.26
-cd ~/carla_carsim/carla_src/Unreal/CarlaUE4
-"$UE4_ROOT/Engine/Binaries/Linux/UE4Editor" "$PWD/CarlaUE4.uproject" -game -RenderOffScreen -nosound \
-  -carla-rpc-port=3000 -carla-streaming-port=0 -unattended -nosplash \
+source "$(dirname "$0")/env.sh"
+EDITOR="$UE4_ROOT/Engine/Binaries/Linux/UE4Editor"
+[ -x "$EDITOR" ] || { echo "找不到 $EDITOR，请设置 UE4_ROOT"; exit 1; }
+cd "$CARLA_SRC/Unreal/CarlaUE4"
+if [ "$1" = "--norender" ]; then RENDER="-nullrhi"; else RENDER="-RenderOffScreen"; fi
+exec "$EDITOR" "$PWD/CarlaUE4.uproject" -game $RENDER -nosound \
+  -carla-rpc-port=$CARLA_MOD_PORT -carla-streaming-port=0 -unattended -nosplash \
   -ini:Engine:[/Script/Engine.RendererSettings]:r.GenerateMeshDistanceFields=False \
   -ini:Engine:[/Script/Engine.RendererSettings]:r.DistanceFieldAO=False

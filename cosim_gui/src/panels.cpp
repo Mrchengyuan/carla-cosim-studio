@@ -491,6 +491,17 @@ void App::DrawPanelDrive() {
       if (ImGui::Checkbox("##ign", &ign)) dr["tm_ignore_lights"] = ign;
     }
   }
+  if (cosim && cur == "pid") {
+    // SimplePathFollower reads a lateral path error and the speed from the
+    // CarSim exports; name them here (must be in the export list).
+    json& pid = cfg_["run"]["pid"];
+    ui::Row("横向误差变量", "CarSim 导出的横向路径误差变量名，必须在“CarSim 动力学”页的导出变量列表里", fs * 10);
+    EditString(pid, "lateral_error");
+    ui::Row("车速变量", "CarSim 导出的车速变量名（km/h），一般是 Vx", fs * 10);
+    EditString(pid, "speed");
+    ui::Row("目标车速 km/h", nullptr, fs * 8);
+    EditDouble(pid, "target_speed", 5, "%.0f", 0, 300);
+  }
   if (cosim && cur != "demo" && cur != "pid") {
     float b = dr.value("brake_scale", 1.0f);
     ui::Row("制动输入比例", "0..1 的制动指令乘以这个系数再送给 CarSim（例如 CarSim 用制动压力 MPa 时设为 10）", fs * 8);

@@ -6,6 +6,16 @@ CarSim 负责车辆动力学，CARLA 负责场景、渲染和传感器。每一�
 
 ![运行中](docs/images/running.jpg)
 
+## 📖 使用文档
+
+| 文档 | 内容 |
+|---|---|
+| **[Ubuntu 使用指南](docs/Ubuntu使用指南.md)** | 从零安装、原版 / 改版 CARLA、Python 环境、编译界面、桌面一键启动、命令行、测试、常见问题 |
+| **[Windows 使用指南](docs/Windows使用指南.md)** | 从零安装、CARLA、Python、界面、一键启动、**接入 CarSim**、改版 CARLA、常见问题 |
+| **[界面操作手册](docs/界面操作手册.md)** | 每个页面、每个按钮的说明，数据采集输出格式，常用操作流程 |
+| [CarSim 导出变量清单](carsim_carla_bridge/docs/CarSim导出变量清单.md) | CarSim 里要导出哪些变量、单位、坐标约定 |
+| [Windows 编译指南](carsim_carla_bridge/docs/Windows编译指南.md) | 在 Windows 上编译改版 CARLA |
+
 ## 功能
 
 | 模块 | 能做什么 |
@@ -47,7 +57,7 @@ CarSim 负责车辆动力学，CARLA 负责场景、渲染和传感器。每一�
 | `cosim_gui/` | 图形界面源码，依赖（ImGui、ImPlot、GLFW、json、Font Awesome）已放在 `third_party/`，编译不需要联网 |
 | `carsim_carla_bridge/` | Python 后端、CarSim 桥接、驾驶模式、数据采集、测试和文档 |
 | `carla_patches/` | CARLA 0.9.16 补丁：外部动力学接口；以及 Linux 编译用的 libpng 地址修复 |
-| `scripts/` | 编译 UE4 / CARLA、启动服务器、Ubuntu 桌面一键启动脚本 |
+| `scripts/` | Ubuntu：`build_ue4.sh`、`build_carla.sh`、`carla_server.sh`、`carla_mod_server.sh`、`start_studio.sh`、`stop_carla.sh`、`install_desktop_icons.sh`；`scripts/windows/`：`start_studio.bat`、`stop_carla.bat`、`install_shortcuts.bat`、`env.bat` |
 | `docs/` | 截图 |
 
 ## 快速开始
@@ -78,7 +88,7 @@ cd cosim_gui && cmake -S . -B build -DCMAKE_BUILD_TYPE=Release && cmake --build 
 ./build/carla_cosim_studio
 ```
 
-### 4. 使用
+### 4. 使用（详细步骤见上面的使用指南）
 1. 启动 CARLA，打开界面，在 **连接** 页设置 Python 解释器、`carsim_carla_bridge` 目录，点 **连接 CARLA**。
 2. **车辆与视角**：选车型和出生点（出生点也是 CarSim 坐标原点）。
 3. **CarSim 动力学**：填 `.sim` 文件和导出变量（见 [导出变量清单](carsim_carla_bridge/docs/CarSim导出变量清单.md)）；没有 CarSim 许可证可勾选 **模拟 CarSim** 先跑通链路。

@@ -31,6 +31,7 @@ def find_pythonapi_dir():
     candidates = [os.environ.get("CARLA_PYTHONAPI", ""),
                   os.path.join(os.environ.get("CARLA_ROOT", ""), "PythonAPI", "carla"),
                   os.path.join(here, "..", "CARLA_0.9.16", "PythonAPI", "carla"),
+                  os.path.join(here, "..", "CARLA_0.9.16", "WindowsNoEditor", "PythonAPI", "carla"),
                   os.path.join(here, "..", "carla_src", "PythonAPI", "carla")]
     for c in candidates:
         if c and os.path.isdir(os.path.join(c, "agents", "navigation")):

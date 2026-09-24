@@ -1,0 +1,74 @@
+# CARLA CoSim Studio（图形界面）
+
+把 CARLA 做成像 CarSim 那样**全部通过界面操作**的平台。原来需要写 Python 脚本完成的操作，现在都是界面上的按钮。
+
+```
+┌─ CARLA CoSim Studio (C++ / Dear ImGui) ─┐   本机 TCP     ┌─ backend_server.py (Python) ─┐        ┌─ CARLA 服务器 ─┐
+│ 连接 · 世界/天气 · 车辆 · 交通 · 传感器 │ ── JSON 命令 ─▶│ carla 客户端 + CarSim 桥接   │ ─RPC─▶ │ 原版或改版     │
+│ CarSim 联合仿真 · 录制回放 · 场景对象   │ ◀─ 实时数据 ── │ (session.py / bridge.py)     │        │ 0.9.16         │
+│ 实时画面 · 运行控制 · 曲线 · 日志       │   画面帧        └──────────────────────────────┘        └────────────────┘
+└─────────────────────────────────────────┘
+```
+
+- **界面**：C++17 + Dear ImGui + GLFW + OpenGL3，编译成一个独立程序。
+- **后端**：`carsim_carla_bridge/backend_server.py`，界面启动时自动拉起。所有 CARLA 和 CarSim 操作都在后端完成，用的是已经测试过的 Python 桥接代码。
+- **配置**：联合仿真配置是一个 JSON 文件，界面、命令行（`run_cosim.py --config`）和强化学习训练共用同一份。
+
+## 功能
+
+| 页面 | 能做什么 |
+|---|---|
+| 连接 | 启动/停止后端，连接 CARLA，显示服务器版本，以及是否支持改版外部动力学接口 |
+| 世界 / 天气 | 切换和重载地图；天气预设和 9 个参数滑条；同步模式、固定步长、关闭渲染 |
+| 车辆 | 车型表，可一键测量每款车的轮胎半径、轴距、轮距、质量；选择出生点（也是 CarSim 原点）；生成、更换、删除主车；CARLA 自动驾驶；观察视角（自由、跟车、俯视、侧面） |
+| 交通 | 按数量和随机种子生成、清除背景车辆和行人，由交通管理器控制 |
+| 传感器 | 给主车挂 RGB、深度、语义、激光雷达、毫米波雷达、IMU、GNSS、碰撞、压线传感器；可设置位置、姿态、分辨率等，数据可保存到磁盘，实时显示帧数和最新读数 |
+| CarSim 联合仿真 | 载入、保存配置；选择 .sim 和 python_carsim_env 路径；导出变量列表编辑（调整顺序、增删、从 CarSim 粘贴、自动检查必需变量、补全推荐变量）；单位；帧周期、时长、高度模式、参考点、接口模式；驾驶方式（演示或 PID）；录像和日志 |
+| 录制 / 回放 | CARLA 录制器的开始和停止；回放（起始时间、时长、跟随对象）；查看录制文件信息 |
+| 场景对象 | 列出和过滤所有对象，一键删除 |
+| 实时画面 | 主车相机画面直接显示在界面里，有跟车、车头、前轮特写、俯视四种视角。前轮特写可以直接看到转向、车轮转动和悬架跳动 |
+| 右侧栏 | 开始、暂停、继续、单步、停止；进度条；画面缩略图；车速、油门、制动、方向盘；四轮转向角、转角、悬架表；车速、转角、悬架和实时倍率曲线 |
+
+## 编译
+
+依赖库（Dear ImGui 1.91.8、GLFW 3.4、nlohmann/json 3.11.3）已经放在 `third_party/` 里，**编译不需要联网**。
+
+### Windows（VS 2022）
+```bat
+cd cosim_gui
+cmake -S . -B build -G "Visual Studio 17 2022" -A x64
+cmake --build build --config Release
+build\Release\carla_cosim_studio.exe
+```
+中文字体会自动使用系统自带的微软雅黑。
+
+### Ubuntu 22.04
+```bash
+sudo apt install build-essential cmake libx11-dev libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev libgl1-mesa-dev fonts-noto-cjk
+cd cosim_gui
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+cmake --build build -j
+./build/carla_cosim_studio
+```
+
+## 首次使用
+
+1. 先启动 CARLA 服务器（原版或改版都可以）。
+2. 打开 `carla_cosim_studio`，在"连接"页确认：
+   - **Python 解释器**：已安装 `carla` 包的那个 Python，例如虚拟环境里的 `python.exe`。
+   - **桥接目录**：`carsim_carla_bridge`。程序会在自身所在目录附近自动查找。
+   - 点"保存设置"，下次启动时会自动加载。
+3. 点"连接 CARLA"，然后依次到各页面操作。
+4. 联合仿真：在"车辆"页选车型和出生点，再到"CarSim 联合仿真"页填写 .sim 路径和导出变量，最后点右侧的"开始"。
+
+命令行参数：
+- `--python <路径>`：指定 Python 解释器。
+- `--backend-dir <目录>`：指定桥接目录。
+- `--config <json>`：启动时载入配置。
+- `--font <ttf>`：指定中文字体。
+- `--tour <目录>`：自动演示并截图，用于测试。
+
+## 测试情况（Ubuntu 22.04，CARLA 0.9.16 原版服务器）
+
+- 后端：`tests/test_backend.py` 共 30 项全部通过，覆盖连接、天气、车型尺寸、出生点、主车、交通、传感器（含数据保存）、录制器、联合仿真（含暂停、单步、继续、完成）、场景对象、在有交通时连续切换地图。
+- 界面：`--tour` 自动演示了全部 20 个步骤，每个页面都截了图检查。

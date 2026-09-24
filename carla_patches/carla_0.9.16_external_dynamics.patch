@@ -1,0 +1,845 @@
+diff --git a/LibCarla/source/carla/client/Vehicle.cpp b/LibCarla/source/carla/client/Vehicle.cpp
+index 792c34a..e8ba740 100644
+--- a/LibCarla/source/carla/client/Vehicle.cpp
++++ b/LibCarla/source/carla/client/Vehicle.cpp
+@@ -164,6 +164,14 @@ namespace client {
+     GetEpisode().Lock()->RestorePhysXPhysics(*this);
+   }
+ 
++  void Vehicle::EnableExternalDynamics() {
++    GetEpisode().Lock()->EnableExternalDynamics(*this);
++  }
++
++  void Vehicle::ApplyExternalState(const rpc::VehicleExternalState &state) {
++    GetEpisode().Lock()->ApplyVehicleExternalState(*this, state);
++  }
++
+   rpc::VehicleFailureState Vehicle::GetFailureState() const {
+     return GetEpisode().Lock()->GetActorSnapshot(*this).state.vehicle_data.failure_state;
+   }
+diff --git a/LibCarla/source/carla/client/Vehicle.h b/LibCarla/source/carla/client/Vehicle.h
+index 06c1288..df0c674 100644
+--- a/LibCarla/source/carla/client/Vehicle.h
++++ b/LibCarla/source/carla/client/Vehicle.h
+@@ -12,6 +12,7 @@
+ #include "carla/rpc/VehicleAckermannControl.h"
+ #include "carla/rpc/VehicleControl.h"
+ #include "carla/rpc/VehicleDoor.h"
++#include "carla/rpc/VehicleExternalState.h"
+ #include "carla/rpc/VehicleLightState.h"
+ #include "carla/rpc/VehiclePhysicsControl.h"
+ #include "carla/rpc/VehicleTelemetryData.h"
+@@ -156,6 +157,15 @@ namespace client {
+ 
+     void RestorePhysXPhysics();
+ 
++    /// Hand the vehicle dynamics over to an external solver (e.g. CarSim).
++    /// PhysX is disabled for this vehicle; drive it with ApplyExternalState()
++    /// every frame. Call RestorePhysXPhysics() to give control back to UE.
++    void EnableExternalDynamics();
++
++    /// Apply pose, velocities and per-wheel steer/spin computed by the
++    /// external solver. Requires EnableExternalDynamics() first.
++    void ApplyExternalState(const rpc::VehicleExternalState &state);
++
+     /// Returns the failure state of the vehicle
+     rpc::VehicleFailureState GetFailureState() const;
+ 
+diff --git a/LibCarla/source/carla/client/detail/Client.cpp b/LibCarla/source/carla/client/detail/Client.cpp
+index 52a949d..8c83dd0 100644
+--- a/LibCarla/source/carla/client/detail/Client.cpp
++++ b/LibCarla/source/carla/client/detail/Client.cpp
+@@ -559,6 +559,20 @@ namespace detail {
+     _pimpl->AsyncCall("restore_physx_physics", vehicle);
+   }
+ 
++  void Client::EnableExternalDynamics(rpc::ActorId vehicle) {
++    // Blocking: the caller must be able to push states right after this.
++    _pimpl->CallAndWait<void>("enable_external_dynamics", vehicle);
++  }
++
++  void Client::ApplyVehicleExternalState(
++      rpc::ActorId vehicle,
++      const rpc::VehicleExternalState &state) {
++    // Blocking on purpose: the server handles RPCs on several threads, so a
++    // fire-and-forget call can land after the following tick() and show up
++    // one frame late. Co-simulation needs the state in exactly this frame.
++    _pimpl->CallAndWait<void>("apply_vehicle_external_state", vehicle, state);
++  }
++
+   void Client::ApplyControlToWalker(rpc::ActorId walker, const rpc::WalkerControl &control) {
+     _pimpl->AsyncCall("apply_control_to_walker", walker, control);
+   }
+diff --git a/LibCarla/source/carla/client/detail/Client.h b/LibCarla/source/carla/client/detail/Client.h
+index 8c23edd..277bf26 100644
+--- a/LibCarla/source/carla/client/detail/Client.h
++++ b/LibCarla/source/carla/client/detail/Client.h
+@@ -26,6 +26,7 @@
+ #include "carla/rpc/OpendriveGenerationParameters.h"
+ #include "carla/rpc/TrafficLightState.h"
+ #include "carla/rpc/VehicleDoor.h"
++#include "carla/rpc/VehicleExternalState.h"
+ #include "carla/rpc/VehicleLightStateList.h"
+ #include "carla/rpc/VehicleLightState.h"
+ #include "carla/rpc/VehiclePhysicsControl.h"
+@@ -353,6 +354,12 @@ namespace detail {
+ 
+     void RestorePhysXPhysics(rpc::ActorId vehicle);
+ 
++    void EnableExternalDynamics(rpc::ActorId vehicle);
++
++    void ApplyVehicleExternalState(
++        rpc::ActorId vehicle,
++        const rpc::VehicleExternalState &state);
++
+     void ApplyControlToWalker(
+         rpc::ActorId walker,
+         const rpc::WalkerControl &control);
+diff --git a/LibCarla/source/carla/client/detail/Simulator.h b/LibCarla/source/carla/client/detail/Simulator.h
+index c9c66af..3c362f6 100644
+--- a/LibCarla/source/carla/client/detail/Simulator.h
++++ b/LibCarla/source/carla/client/detail/Simulator.h
+@@ -646,6 +646,14 @@ namespace detail {
+       _client.RestorePhysXPhysics(vehicle.GetId());
+     }
+ 
++    void EnableExternalDynamics(Vehicle &vehicle) {
++      _client.EnableExternalDynamics(vehicle.GetId());
++    }
++
++    void ApplyVehicleExternalState(Vehicle &vehicle, const rpc::VehicleExternalState &state) {
++      _client.ApplyVehicleExternalState(vehicle.GetId(), state);
++    }
++
+     /// @}
+     // =========================================================================
+     /// @name Operations with the recorder
+diff --git a/PythonAPI/carla/source/carla/libcarla.pyi b/PythonAPI/carla/source/carla/libcarla.pyi
+index 8d2cc01..e7408e0 100644
+--- a/PythonAPI/carla/source/carla/libcarla.pyi
++++ b/PythonAPI/carla/source/carla/libcarla.pyi
+@@ -4001,6 +4001,34 @@ class Vehicle(Actor):
+             `simfile_path (str)`: Path to the `.simfile` file with the parameters of the simulation.
+         """
+ 
++    def enable_external_dynamics(self):
++        """Hands this vehicle's dynamics over to an external solver running on the client side (e.g. CarSim through its VS API). PhysX is disabled for the vehicle and its body becomes kinematic; drive it every frame with `apply_external_state`. Call `restore_physx_physics` to give control back to Unreal.
++        """
++
++    def apply_external_state(
++        self,
++        transform: Transform,
++        velocity: Vector3D = Vector3D(),
++        angular_velocity: Vector3D = Vector3D(),
++        wheel_steer: list[float] = [],
++        wheel_rotation: list[float] = [],
++        wheel_suspension: list[float] = [],
++        throttle: float = 0.0,
++        steer: float = 0.0,
++        brake: float = 0.0,
++        gear: int = 0):
++        """Applies, in a single call, the full state computed by the external solver. Requires `enable_external_dynamics` first. The pose, velocities and wheel animation are applied atomically in the same frame, so in synchronous mode send it before `world.tick()`.
++
++        Args:
++            `transform (Transform)`: Actor transform (meters, degrees).
++            `velocity (Vector3D)`: World-frame linear velocity (m/s). Reported by `get_velocity` and used for acceleration.
++            `angular_velocity (Vector3D)`: World-frame angular velocity (deg/s). Reported by `get_angular_velocity` and the IMU.
++            `wheel_steer (list[float])`: Road-wheel steer angle per wheel (deg, positive = right), ordered FL, FR, RL, RR.
++            `wheel_rotation (list[float])`: Accumulated wheel spin angle per wheel (deg), same order.
++            `wheel_suspension (list[float])`: Suspension travel per wheel relative to the design position (m, positive = compression / wheel up), same order.
++            `throttle (float)`, `steer (float)`, `brake (float)`, `gear (int)`: Driver inputs, reported by `get_control`.
++        """
++
+     def enable_chrono_physics(
+         self,
+         max_substeps: int,
+diff --git a/PythonAPI/carla/source/libcarla/Actor.cpp b/PythonAPI/carla/source/libcarla/Actor.cpp
+index e637f5c..7534b8c 100644
+--- a/PythonAPI/carla/source/libcarla/Actor.cpp
++++ b/PythonAPI/carla/source/libcarla/Actor.cpp
+@@ -10,8 +10,10 @@
+ #include <carla/client/Walker.h>
+ #include <carla/client/WalkerAIController.h>
+ #include <carla/rpc/TrafficLightState.h>
++#include <carla/rpc/VehicleExternalState.h>
+ #include <carla/trafficmanager/TrafficManager.h>
+ 
++#include <boost/python/stl_iterator.hpp>
+ #include <boost/python/suite/indexing/vector_indexing_suite.hpp>
+ 
+ #include <ostream>
+@@ -64,6 +66,38 @@ static void ApplyControl(carla::client::Walker &self, const ControlT &control) {
+   self.ApplyControl(control);
+ }
+ 
++static std::vector<float> PyIterableToFloatVector(const boost::python::object &iterable) {
++  return std::vector<float>(
++      boost::python::stl_input_iterator<float>(iterable),
++      boost::python::stl_input_iterator<float>());
++}
++
++static void ApplyVehicleExternalState(
++    carla::client::Vehicle &self,
++    const carla::geom::Transform &transform,
++    const carla::geom::Vector3D &velocity,
++    const carla::geom::Vector3D &angular_velocity,
++    const boost::python::object &wheel_steer,
++    const boost::python::object &wheel_rotation,
++    const boost::python::object &wheel_suspension,
++    float throttle,
++    float steer,
++    float brake,
++    int gear) {
++  carla::rpc::VehicleExternalState state;
++  state.transform = transform;
++  state.velocity = velocity;
++  state.angular_velocity = angular_velocity;
++  state.wheel_steer = PyIterableToFloatVector(wheel_steer);
++  state.wheel_rotation = PyIterableToFloatVector(wheel_rotation);
++  state.wheel_suspension = PyIterableToFloatVector(wheel_suspension);
++  state.throttle = throttle;
++  state.steer = steer;
++  state.brake = brake;
++  state.gear = gear;
++  self.ApplyExternalState(state);
++}
++
+ static auto GetLightBoxes(const carla::client::TrafficLight &self) {
+   boost::python::list result;
+   for (const auto &bb : self.GetLightBoxes()) {
+@@ -207,6 +241,18 @@ void export_actor() {
+       .def("use_carsim_road", &cc::Vehicle::UseCarSimRoad, (arg("enabled")))
+       .def("enable_chrono_physics", &cc::Vehicle::EnableChronoPhysics, (arg("max_substeps")=30, arg("max_substep_delta_time")=0.002, arg("vehicle_json")="", arg("powetrain_json")="", arg("tire_json")="", arg("base_json_path")=""))
+       .def("restore_physx_physics", &cc::Vehicle::RestorePhysXPhysics)
++      .def("enable_external_dynamics", &cc::Vehicle::EnableExternalDynamics)
++      .def("apply_external_state", &ApplyVehicleExternalState,
++          (arg("transform"),
++           arg("velocity") = carla::geom::Vector3D(),
++           arg("angular_velocity") = carla::geom::Vector3D(),
++           arg("wheel_steer") = list(),
++           arg("wheel_rotation") = list(),
++           arg("wheel_suspension") = list(),
++           arg("throttle") = 0.0f,
++           arg("steer") = 0.0f,
++           arg("brake") = 0.0f,
++           arg("gear") = 0))
+       .def("get_failure_state", &cc::Vehicle::GetFailureState)
+       .def("get_vehicle_bone_world_transforms", &cc::Vehicle::GetVehicleBoneWorldTransforms)
+       .def(self_ns::str(self_ns::self))
+diff --git a/Unreal/CarlaUE4/Plugins/Carla/Source/Carla/Actor/CarlaActor.cpp b/Unreal/CarlaUE4/Plugins/Carla/Source/Carla/Actor/CarlaActor.cpp
+index fabc45c..3f20b0d 100644
+--- a/Unreal/CarlaUE4/Plugins/Carla/Source/Carla/Actor/CarlaActor.cpp
++++ b/Unreal/CarlaUE4/Plugins/Carla/Source/Carla/Actor/CarlaActor.cpp
+@@ -15,6 +15,7 @@
+ #include "Carla/Game/Tagger.h"
+ #include "Carla/Vehicle/MovementComponents/CarSimManagerComponent.h"
+ #include "Carla/Vehicle/MovementComponents/ChronoMovementComponent.h"
++#include "Carla/Vehicle/MovementComponents/ExternalDynamicsMovementComponent.h"
+ #include "Carla/Traffic/TrafficLightBase.h"
+ #include "Carla/Game/CarlaStatics.h"
+ #include "Components/CapsuleComponent.h"
+@@ -377,6 +378,12 @@ FVector FCarlaActor::GetActorAngularVelocity() const
+   }
+   else
+   {
++    FVector ExternalAngularVelocity;
++    if (UExternalDynamicsMovementComponent::GetExternalAngularVelocity(
++        GetActor(), ExternalAngularVelocity))
++    {
++      return ExternalAngularVelocity;
++    }
+     UPrimitiveComponent* Primitive =
+         Cast<UPrimitiveComponent>(GetActor()->GetRootComponent());
+     if (Primitive)
+@@ -1132,6 +1139,53 @@ ECarlaServerResponse FVehicleActor::RestorePhysXPhysics()
+   return ECarlaServerResponse::Success;
+ }
+ 
++ECarlaServerResponse FVehicleActor::EnableExternalDynamics()
++{
++  if (IsDormant())
++  {
++    return ECarlaServerResponse::FunctionNotAvailiableWhenDormant;
++  }
++  auto Vehicle = Cast<ACarlaWheeledVehicle>(GetActor());
++  if (Vehicle == nullptr)
++  {
++    return ECarlaServerResponse::NotAVehicle;
++  }
++  if (!Vehicle->GetCarlaMovementComponent<UExternalDynamicsMovementComponent>())
++  {
++    UExternalDynamicsMovementComponent::CreateExternalDynamicsMovementComponent(Vehicle);
++  }
++  return ECarlaServerResponse::Success;
++}
++
++ECarlaServerResponse FVehicleActor::ApplyVehicleExternalState(
++    const FVehicleExternalState& State)
++{
++  if (IsDormant())
++  {
++    // Keep the stored state moving so the actor wakes up where the external
++    // solver says it is.
++    SetActorGlobalTransform(State.Transform, ETeleportType::TeleportPhysics);
++    FActorData* ActorData = GetActorData();
++    ActorData->Velocity = State.Velocity;
++    ActorData->AngularVelocity = State.AngularVelocity;
++    return ECarlaServerResponse::Success;
++  }
++  auto Vehicle = Cast<ACarlaWheeledVehicle>(GetActor());
++  if (Vehicle == nullptr)
++  {
++    return ECarlaServerResponse::NotAVehicle;
++  }
++  auto* Component =
++      Vehicle->GetCarlaMovementComponent<UExternalDynamicsMovementComponent>();
++  if (!Component)
++  {
++    return ECarlaServerResponse::ExternalDynamicsNotEnabled;
++  }
++  SetActorGlobalTransform(State.Transform, ETeleportType::TeleportPhysics);
++  Component->ApplyExternalState(State);
++  return ECarlaServerResponse::Success;
++}
++
+ // FSensorActor functions ---------------------
+ 
+ // FtrafficSignActor functions ---------------------
+diff --git a/Unreal/CarlaUE4/Plugins/Carla/Source/Carla/Actor/CarlaActor.h b/Unreal/CarlaUE4/Plugins/Carla/Source/Carla/Actor/CarlaActor.h
+index 0c960ed..30ee1fd 100644
+--- a/Unreal/CarlaUE4/Plugins/Carla/Source/Carla/Actor/CarlaActor.h
++++ b/Unreal/CarlaUE4/Plugins/Carla/Source/Carla/Actor/CarlaActor.h
+@@ -19,6 +19,7 @@
+ #include "Carla/Server/CarlaServerResponse.h"
+ 
+ class AActor;
++struct FVehicleExternalState;
+ 
+ /// A view over an actor and its properties.
+ class FCarlaActor
+@@ -364,6 +365,16 @@ public:
+     return ECarlaServerResponse::ActorTypeMismatch;
+   }
+ 
++  virtual ECarlaServerResponse EnableExternalDynamics()
++  {
++    return ECarlaServerResponse::ActorTypeMismatch;
++  }
++
++  virtual ECarlaServerResponse ApplyVehicleExternalState(const FVehicleExternalState&)
++  {
++    return ECarlaServerResponse::ActorTypeMismatch;
++  }
++
+   // Traffic light functions
+ 
+   virtual ECarlaServerResponse SetTrafficLightState(const ETrafficLightState&)
+@@ -563,6 +574,11 @@ public:
+       const FString& TireJSON, const FString& BaseJSONPath) final;
+ 
+   virtual ECarlaServerResponse RestorePhysXPhysics();
++
++  virtual ECarlaServerResponse EnableExternalDynamics() final;
++
++  virtual ECarlaServerResponse ApplyVehicleExternalState(
++      const FVehicleExternalState& State) final;
+ };
+ 
+ class FSensorActor : public FCarlaActor
+diff --git a/Unreal/CarlaUE4/Plugins/Carla/Source/Carla/Sensor/InertialMeasurementUnit.cpp b/Unreal/CarlaUE4/Plugins/Carla/Source/Carla/Sensor/InertialMeasurementUnit.cpp
+index b0ce194..c308cde 100644
+--- a/Unreal/CarlaUE4/Plugins/Carla/Source/Carla/Sensor/InertialMeasurementUnit.cpp
++++ b/Unreal/CarlaUE4/Plugins/Carla/Source/Carla/Sensor/InertialMeasurementUnit.cpp
+@@ -10,6 +10,7 @@
+ #include "Carla/Actor/ActorBlueprintFunctionLibrary.h"
+ #include "Carla/Sensor/WorldObserver.h"
+ #include "Carla/Vehicle/CarlaWheeledVehicle.h"
++#include "Carla/Vehicle/MovementComponents/ExternalDynamicsMovementComponent.h"
+ 
+ #include <compiler/disable-ue4-macros.h>
+ #include "carla/geom/Math.h"
+@@ -61,7 +62,13 @@ FVector AInertialMeasurementUnit::GetActorAngularVelocityInRadians(
+ 
+   if (RootComponent != nullptr) {
+       const FQuat ActorGlobalRotation = RootComponent->GetComponentTransform().GetRotation();
+-      const FVector GlobalAngularVelocity = RootComponent->GetPhysicsAngularVelocityInRadians();
++      // Kinematic vehicles driven by an external solver have no PhysX
++      // angular velocity; use the one reported by the solver.
++      FVector ExternalAngularVelocityDeg;
++      const FVector GlobalAngularVelocity =
++          UExternalDynamicsMovementComponent::GetExternalAngularVelocity(&Actor, ExternalAngularVelocityDeg) ?
++              FMath::DegreesToRadians(ExternalAngularVelocityDeg) :
++              RootComponent->GetPhysicsAngularVelocityInRadians();
+       AngularVelocity = ActorGlobalRotation.UnrotateVector(GlobalAngularVelocity);
+   } else {
+       AngularVelocity = FVector::ZeroVector;
+diff --git a/Unreal/CarlaUE4/Plugins/Carla/Source/Carla/Sensor/WorldObserver.cpp b/Unreal/CarlaUE4/Plugins/Carla/Source/Carla/Sensor/WorldObserver.cpp
+index e2e2441..772f996 100644
+--- a/Unreal/CarlaUE4/Plugins/Carla/Source/Carla/Sensor/WorldObserver.cpp
++++ b/Unreal/CarlaUE4/Plugins/Carla/Source/Carla/Sensor/WorldObserver.cpp
+@@ -18,6 +18,7 @@
+ #include "Carla/Traffic/TrafficSignBase.h"
+ #include "Carla/Traffic/SignComponent.h"
+ #include "Carla/Walker/WalkerController.h"
++#include "Carla/Vehicle/MovementComponents/ExternalDynamicsMovementComponent.h"
+ 
+ #include "CoreGlobals.h"
+ 
+@@ -246,6 +247,11 @@ static auto FWorldObserver_GetDormantActorState(const FCarlaActor &View, const F
+ 
+ static carla::geom::Vector3D FWorldObserver_GetAngularVelocity(const AActor &Actor)
+ {
++  FVector ExternalAngularVelocity;
++  if (UExternalDynamicsMovementComponent::GetExternalAngularVelocity(&Actor, ExternalAngularVelocity))
++  {
++    return {ExternalAngularVelocity.X, ExternalAngularVelocity.Y, ExternalAngularVelocity.Z};
++  }
+   const auto RootComponent = Cast<UPrimitiveComponent>(Actor.GetRootComponent());
+   const FVector AngularVelocity =
+       RootComponent != nullptr ?
+diff --git a/Unreal/CarlaUE4/Plugins/Carla/Source/Carla/Server/CarlaServer.cpp b/Unreal/CarlaUE4/Plugins/Carla/Source/Carla/Server/CarlaServer.cpp
+index 7cf0f42..3e54b04 100644
+--- a/Unreal/CarlaUE4/Plugins/Carla/Source/Carla/Server/CarlaServer.cpp
++++ b/Unreal/CarlaUE4/Plugins/Carla/Source/Carla/Server/CarlaServer.cpp
+@@ -31,6 +31,7 @@
+ #include "Carla/Game/CarlaStatics.h"
+ #include "Carla/Vehicle/MovementComponents/CarSimManagerComponent.h"
+ #include "Carla/Vehicle/MovementComponents/ChronoMovementComponent.h"
++#include "Carla/Vehicle/MovementComponents/ExternalDynamicsMovementComponent.h"
+ #include "Carla/Lights/CarlaLightSubsystem.h"
+ #include "Carla/Actor/ActorData.h"
+ #include "CarlaServerResponse.h"
+@@ -66,6 +67,7 @@
+ #include <carla/rpc/VehicleDoor.h>
+ #include <carla/rpc/VehicleAckermannControl.h>
+ #include <carla/rpc/VehicleControl.h>
++#include <carla/rpc/VehicleExternalState.h>
+ #include <carla/rpc/VehiclePhysicsControl.h>
+ #include <carla/rpc/VehicleLightState.h>
+ #include <carla/rpc/VehicleLightStateList.h>
+@@ -2561,6 +2563,69 @@ BIND_SYNC(is_sensor_enabled_for_ros) << [this](carla::streaming::detail::stream_
+     return R<void>::Success();
+   };
+ 
++  BIND_SYNC(enable_external_dynamics) << [this](
++      cr::ActorId ActorId) -> R<void>
++  {
++    REQUIRE_CARLA_EPISODE();
++    FCarlaActor* CarlaActor = Episode->FindCarlaActor(ActorId);
++    if (!CarlaActor)
++    {
++      return RespondError(
++          "enable_external_dynamics",
++          ECarlaServerResponse::ActorNotFound,
++          " Actor Id: " + FString::FromInt(ActorId));
++    }
++    ECarlaServerResponse Response = CarlaActor->EnableExternalDynamics();
++    if (Response != ECarlaServerResponse::Success)
++    {
++      return RespondError(
++          "enable_external_dynamics",
++          Response,
++          " Actor Id: " + FString::FromInt(ActorId));
++    }
++    return R<void>::Success();
++  };
++
++  BIND_SYNC(apply_vehicle_external_state) << [this](
++      cr::ActorId ActorId,
++      cr::VehicleExternalState InState) -> R<void>
++  {
++    REQUIRE_CARLA_EPISODE();
++    FCarlaActor* CarlaActor = Episode->FindCarlaActor(ActorId);
++    if (!CarlaActor)
++    {
++      return RespondError(
++          "apply_vehicle_external_state",
++          ECarlaServerResponse::ActorNotFound,
++          " Actor Id: " + FString::FromInt(ActorId));
++    }
++    FVehicleExternalState State;
++    State.Transform = InState.transform;
++    State.Velocity = InState.velocity.ToCentimeters().ToFVector();
++    State.AngularVelocity = InState.angular_velocity.ToFVector();
++    State.WheelSteer = TArray<float>(InState.wheel_steer.data(), static_cast<int32>(InState.wheel_steer.size()));
++    State.WheelRotation = TArray<float>(InState.wheel_rotation.data(), static_cast<int32>(InState.wheel_rotation.size()));
++    for (float Travel : InState.wheel_suspension)
++    {
++      State.WheelSuspension.Add(Travel * 100.f);  // m -> cm
++    }
++    State.Control.Throttle = InState.throttle;
++    State.Control.Steer = InState.steer;
++    State.Control.Brake = InState.brake;
++    State.Control.Gear = InState.gear;
++    State.Control.bReverse = InState.gear < 0;
++    State.Control.bManualGearShift = true;
++    ECarlaServerResponse Response = CarlaActor->ApplyVehicleExternalState(State);
++    if (Response != ECarlaServerResponse::Success)
++    {
++      return RespondError(
++          "apply_vehicle_external_state",
++          Response,
++          " Actor Id: " + FString::FromInt(ActorId));
++    }
++    return R<void>::Success();
++  };
++
+   // ~~ Traffic lights ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+ 
+   BIND_SYNC(set_traffic_light_state) << [this](
+diff --git a/Unreal/CarlaUE4/Plugins/Carla/Source/Carla/Server/CarlaServerResponse.cpp b/Unreal/CarlaUE4/Plugins/Carla/Source/Carla/Server/CarlaServerResponse.cpp
+index 2e59011..dcae366 100644
+--- a/Unreal/CarlaUE4/Plugins/Carla/Source/Carla/Server/CarlaServerResponse.cpp
++++ b/Unreal/CarlaUE4/Plugins/Carla/Source/Carla/Server/CarlaServerResponse.cpp
+@@ -38,6 +38,8 @@ FString CarlaGetStringError(ECarlaServerResponse Response)
+       return "Actor is not a traffic light";
+     case ECarlaServerResponse::FunctionNotAvailiableWhenDormant:
+       return "Function not availiable when the actor is dormant";
++    case ECarlaServerResponse::ExternalDynamicsNotEnabled:
++      return "External dynamics not enabled, call enable_external_dynamics() first";
+   }
+   return "unknown error";
+ }
+diff --git a/Unreal/CarlaUE4/Plugins/Carla/Source/Carla/Server/CarlaServerResponse.h b/Unreal/CarlaUE4/Plugins/Carla/Source/Carla/Server/CarlaServerResponse.h
+index 70125d0..baacce1 100644
+--- a/Unreal/CarlaUE4/Plugins/Carla/Source/Carla/Server/CarlaServerResponse.h
++++ b/Unreal/CarlaUE4/Plugins/Carla/Source/Carla/Server/CarlaServerResponse.h
+@@ -22,7 +22,8 @@ enum class ECarlaServerResponse
+   AutoPilotNotSupported,
+   CarSimPluginNotEnabled,
+   NotATrafficLight,
+-  FunctionNotAvailiableWhenDormant
++  FunctionNotAvailiableWhenDormant,
++  ExternalDynamicsNotEnabled
+ };
+ 
+ FString CarlaGetStringError(ECarlaServerResponse Response);
+diff --git a/LibCarla/source/carla/rpc/VehicleExternalState.h b/LibCarla/source/carla/rpc/VehicleExternalState.h
+new file mode 100644
+index 0000000..69d406d
+--- /dev/null
++++ b/LibCarla/source/carla/rpc/VehicleExternalState.h
+@@ -0,0 +1,70 @@
++// Copyright (c) 2026 Computer Vision Center (CVC) at the Universitat Autonoma
++// de Barcelona (UAB).
++//
++// This work is licensed under the terms of the MIT license.
++// For a copy, see <https://opensource.org/licenses/MIT>.
++
++#pragma once
++
++#include "carla/MsgPack.h"
++#include "carla/geom/Transform.h"
++#include "carla/geom/Vector3D.h"
++
++#include <vector>
++
++namespace carla {
++namespace rpc {
++
++  /// Full kinematic state of a vehicle computed by an external dynamics
++  /// solver (e.g. CarSim). Applied atomically on the server in a single call,
++  /// so that body pose, velocities and wheel animation stay consistent within
++  /// the same simulation frame.
++  ///
++  /// All quantities are expressed in CARLA conventions: meters, degrees,
++  /// left-handed world frame (x forward, y right, z up).
++  class VehicleExternalState {
++  public:
++
++    VehicleExternalState() = default;
++
++    /// Actor transform (actor origin, not the CarSim sprung-mass origin).
++    geom::Transform transform;
++
++    /// Linear velocity in world frame [m/s].
++    geom::Vector3D velocity;
++
++    /// Angular velocity in world frame [deg/s].
++    geom::Vector3D angular_velocity;
++
++    /// Road-wheel steer angle per wheel [deg], ordered FL, FR, RL, RR, ...
++    /// Positive values steer to the right (CARLA convention).
++    std::vector<float> wheel_steer;
++
++    /// Accumulated wheel spin (pitch) angle per wheel [deg], same order.
++    std::vector<float> wheel_rotation;
++
++    /// Suspension travel per wheel relative to the design position [m],
++    /// positive = compression (wheel moves up towards the body), same order.
++    std::vector<float> wheel_suspension;
++
++    /// Driver inputs reported back through Vehicle.get_control().
++    float throttle = 0.0f;
++    float steer = 0.0f;
++    float brake = 0.0f;
++    int32_t gear = 0;
++
++    MSGPACK_DEFINE_ARRAY(
++        transform,
++        velocity,
++        angular_velocity,
++        wheel_steer,
++        wheel_rotation,
++        wheel_suspension,
++        throttle,
++        steer,
++        brake,
++        gear);
++  };
++
++} // namespace rpc
++} // namespace carla
+diff --git a/Unreal/CarlaUE4/Plugins/Carla/Source/Carla/Vehicle/MovementComponents/ExternalDynamicsMovementComponent.cpp b/Unreal/CarlaUE4/Plugins/Carla/Source/Carla/Vehicle/MovementComponents/ExternalDynamicsMovementComponent.cpp
+new file mode 100644
+index 0000000..31d3f02
+--- /dev/null
++++ b/Unreal/CarlaUE4/Plugins/Carla/Source/Carla/Vehicle/MovementComponents/ExternalDynamicsMovementComponent.cpp
+@@ -0,0 +1,169 @@
++// Copyright (c) 2026 Computer Vision Center (CVC) at the Universitat Autonoma
++// de Barcelona (UAB).
++//
++// This work is licensed under the terms of the MIT license.
++// For a copy, see <https://opensource.org/licenses/MIT>.
++
++#include "ExternalDynamicsMovementComponent.h"
++#include "DefaultMovementComponent.h"
++#include "Carla/Vehicle/CarlaWheeledVehicle.h"
++#include "VehicleAnimInstance.h"
++
++#include <compiler/disable-ue4-macros.h>
++#include <carla/Logging.h>
++#include <compiler/enable-ue4-macros.h>
++
++UExternalDynamicsMovementComponent*
++UExternalDynamicsMovementComponent::CreateExternalDynamicsMovementComponent(
++    ACarlaWheeledVehicle* Vehicle)
++{
++  // PhysX vehicle simulation can only be switched off from the default
++  // movement component, so fall back to it first if another special physics
++  // backend (CarSim plugin, Chrono, ...) is currently active.
++  if (!Vehicle->GetCarlaMovementComponent<UDefaultMovementComponent>())
++  {
++    UBaseCarlaMovementComponent* Current = Vehicle->GetCarlaMovementComponent();
++    if (Current)
++    {
++      Current->DisableSpecialPhysics();
++    }
++  }
++  // Destroys the PhysX vehicle state and makes the root body kinematic. From
++  // here on the vehicle anim instance uses the custom wheel rotations we set.
++  Vehicle->SetSimulatePhysics(false);
++
++  UExternalDynamicsMovementComponent* Component =
++      NewObject<UExternalDynamicsMovementComponent>(Vehicle);
++  Vehicle->SetCarlaMovementComponent(Component);
++  Component->RegisterComponent();
++  return Component;
++}
++
++bool UExternalDynamicsMovementComponent::GetExternalAngularVelocity(
++    const AActor* Actor, FVector& OutAngularVelocity)
++{
++  const ACarlaWheeledVehicle* Vehicle = Cast<ACarlaWheeledVehicle>(Actor);
++  if (!Vehicle)
++  {
++    return false;
++  }
++  const UExternalDynamicsMovementComponent* Component =
++      Vehicle->GetCarlaMovementComponent<UExternalDynamicsMovementComponent>();
++  if (!Component)
++  {
++    return false;
++  }
++  OutAngularVelocity = Component->GetAngularVelocity();
++  return true;
++}
++
++void UExternalDynamicsMovementComponent::BeginPlay()
++{
++  Super::BeginPlay();
++}
++
++void UExternalDynamicsMovementComponent::ApplyExternalState(
++    const FVehicleExternalState& State)
++{
++  // The transform itself is applied by FVehicleActor so that large-map
++  // global/local conversion and dormant actors are handled in one place.
++  Velocity = State.Velocity;
++  AngularVelocity = State.AngularVelocity;
++  WheelSteer = State.WheelSteer;
++  WheelRotation = State.WheelRotation;
++  WheelSuspension = State.WheelSuspension;
++  Gear = State.Control.Gear;
++
++  ApplyWheelAnimation();
++
++  if (CarlaVehicle)
++  {
++    // Report the external solver's driver inputs through get_control().
++    CarlaVehicle->ApplyVehicleControl(State.Control, EVehicleInputPriority::Client);
++  }
++}
++
++void UExternalDynamicsMovementComponent::ApplyWheelAnimation() const
++{
++  if (!CarlaVehicle)
++  {
++    return;
++  }
++  UVehicleAnimInstance* VehicleAnim =
++      Cast<UVehicleAnimInstance>(CarlaVehicle->GetMesh()->GetAnimInstance());
++  if (!VehicleAnim)
++  {
++    return;
++  }
++  // Never index past the wheels the vehicle blueprint actually has.
++  const int32 NumWheels =
++      CarlaVehicle->GetVehicleMovementComponent()->WheelSetups.Num();
++
++  for (int32 i = 0; i < NumWheels; ++i)
++  {
++    // SetWheelRotYaw also switches the anim proxy to custom wheel data, so it
++    // is called for every wheel even without a steer value; otherwise pitch
++    // and height would be ignored.
++    VehicleAnim->SetWheelRotYaw(
++        static_cast<uint8>(i), WheelSteer.IsValidIndex(i) ? WheelSteer[i] : 0.f);
++    if (WheelRotation.IsValidIndex(i))
++    {
++      VehicleAnim->SetWheelPitchAngle(static_cast<uint8>(i), WheelRotation[i]);
++    }
++#ifdef PHYSXVEHICLES_HAS_SET_PITCH_HEIGHT
++    // CARLA's UE4 fork: offset applied to the wheel bone translation, the
++    // same channel PhysX suspension jounce drives when physics is on.
++    if (WheelSuspension.IsValidIndex(i))
++    {
++      VehicleAnim->SetWheelHeight(static_cast<uint8>(i), WheelSuspension[i]);
++    }
++#endif
++  }
++}
++
++void UExternalDynamicsMovementComponent::ProcessControl(FVehicleControl& Control)
++{
++  // Driver inputs go to the external solver, not to UE. Only keep the gear
++  // consistent with what the solver reported.
++  Control.Gear = Gear;
++}
++
++FVector UExternalDynamicsMovementComponent::GetVelocity() const
++{
++  return Velocity;
++}
++
++int32 UExternalDynamicsMovementComponent::GetVehicleCurrentGear() const
++{
++  return Gear;
++}
++
++float UExternalDynamicsMovementComponent::GetVehicleForwardSpeed() const
++{
++  if (!CarlaVehicle)
++  {
++    return 0.f;
++  }
++  return FVector::DotProduct(Velocity, CarlaVehicle->GetActorForwardVector());
++}
++
++void UExternalDynamicsMovementComponent::DisableSpecialPhysics()
++{
++  if (!CarlaVehicle)
++  {
++    return;
++  }
++  // Keep local copies: creating the default component destroys this one.
++  ACarlaWheeledVehicle* Vehicle = CarlaVehicle;
++  const FVector LastVelocity = Velocity;
++  const FVector LastAngularVelocity = AngularVelocity;
++
++  UDefaultMovementComponent::CreateDefaultMovementComponent(Vehicle);
++  Vehicle->SetSimulatePhysics(true);
++  // Restoring the physics control re-creates the PhysX vehicle, which resets
++  // its velocity, so it must come before the velocity hand-over.
++  Vehicle->RestoreVehiclePhysicsControl();
++  // Hand over with the last external velocities so the car does not stop dead.
++  Vehicle->GetMesh()->SetPhysicsLinearVelocity(LastVelocity);
++  Vehicle->GetMesh()->SetPhysicsAngularVelocityInDegrees(LastAngularVelocity);
++}
+diff --git a/Unreal/CarlaUE4/Plugins/Carla/Source/Carla/Vehicle/MovementComponents/ExternalDynamicsMovementComponent.h b/Unreal/CarlaUE4/Plugins/Carla/Source/Carla/Vehicle/MovementComponents/ExternalDynamicsMovementComponent.h
+new file mode 100644
+index 0000000..8622e67
+--- /dev/null
++++ b/Unreal/CarlaUE4/Plugins/Carla/Source/Carla/Vehicle/MovementComponents/ExternalDynamicsMovementComponent.h
+@@ -0,0 +1,72 @@
++// Copyright (c) 2026 Computer Vision Center (CVC) at the Universitat Autonoma
++// de Barcelona (UAB).
++//
++// This work is licensed under the terms of the MIT license.
++// For a copy, see <https://opensource.org/licenses/MIT>.
++
++#pragma once
++
++#include "BaseCarlaMovementComponent.h"
++#include "Carla/Vehicle/VehicleControl.h"
++#include "ExternalDynamicsMovementComponent.generated.h"
++
++/// Vehicle state produced by an external dynamics solver, already converted
++/// to Unreal units (cm, cm/s, deg, deg/s).
++struct FVehicleExternalState
++{
++  FTransform Transform;
++  FVector Velocity = FVector::ZeroVector;
++  FVector AngularVelocity = FVector::ZeroVector;
++  TArray<float> WheelSteer;
++  TArray<float> WheelRotation;
++  TArray<float> WheelSuspension;  // cm, + = compression
++  FVehicleControl Control;
++};
++
++/// Movement component that hands the vehicle dynamics over to an external
++/// solver (e.g. CarSim running in another process or machine). PhysX vehicle
++/// simulation is disabled; every frame the client pushes the full state
++/// (pose, velocities, per-wheel steer, spin and suspension travel) which is
++/// applied kinematically.
++UCLASS(Blueprintable, meta=(BlueprintSpawnableComponent))
++class CARLA_API UExternalDynamicsMovementComponent : public UBaseCarlaMovementComponent
++{
++  GENERATED_BODY()
++
++public:
++
++  static UExternalDynamicsMovementComponent* CreateExternalDynamicsMovementComponent(
++      ACarlaWheeledVehicle* Vehicle);
++
++  /// Returns true and fills OutAngularVelocity [deg/s] if Actor is a vehicle
++  /// driven by external dynamics. Kinematic bodies report zero angular
++  /// velocity from PhysX, so sensors and snapshots must ask here instead.
++  static bool GetExternalAngularVelocity(const AActor* Actor, FVector& OutAngularVelocity);
++
++  void ApplyExternalState(const FVehicleExternalState& State);
++
++  virtual void BeginPlay() override;
++
++  virtual void ProcessControl(FVehicleControl& Control) override;
++
++  virtual FVector GetVelocity() const override;
++
++  FVector GetAngularVelocity() const { return AngularVelocity; }
++
++  virtual int32 GetVehicleCurrentGear() const override;
++
++  virtual float GetVehicleForwardSpeed() const override;
++
++  virtual void DisableSpecialPhysics() override;
++
++private:
++
++  void ApplyWheelAnimation() const;
++
++  FVector Velocity = FVector::ZeroVector;
++  FVector AngularVelocity = FVector::ZeroVector;
++  TArray<float> WheelSteer;
++  TArray<float> WheelRotation;
++  TArray<float> WheelSuspension;
++  int32 Gear = 0;
++};

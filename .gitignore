@@ -1,0 +1,20 @@
+# Downloaded / built elsewhere — never commit (tens of GB)
+CARLA_0.9.16/
+carla_src/
+venv/
+venv_build/
+# separate repo: github.com/Mrchengyuan/python_carsim_env
+python_carsim_env/
+
+# Build outputs (Windows exe goes to GitHub Releases instead)
+cosim_gui/build*/
+
+# Runtime files
+__pycache__/
+*.pyc
+*.log
+*.csv
+cosim_studio_prefs.json
+cosim_config.json
+datasets/
+*.ppm

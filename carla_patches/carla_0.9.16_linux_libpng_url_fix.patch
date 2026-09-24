@@ -1,0 +1,22 @@
+diff --git a/Util/BuildTools/Setup.sh b/Util/BuildTools/Setup.sh
+index 9f93676..5f697c0 100755
+--- a/Util/BuildTools/Setup.sh
++++ b/Util/BuildTools/Setup.sh
+@@ -422,7 +422,7 @@ unset RECAST_BASENAME
+ # ==============================================================================
+ 
+ LIBPNG_VERSION=1.6.37
+-LIBPNG_REPO=https://sourceforge.net/projects/libpng/files/libpng16/${LIBPNG_VERSION}/libpng-${LIBPNG_VERSION}.tar.xz
++LIBPNG_REPO=https://sourceforge.net/projects/libpng/files/libpng16/older-releases/${LIBPNG_VERSION}/libpng-${LIBPNG_VERSION}.tar.xz/download
+ LIBPNG_BASENAME=libpng-${LIBPNG_VERSION}
+ LIBPNG_INSTALL=${LIBPNG_BASENAME}-install
+ 
+@@ -435,7 +435,7 @@ else
+   log "Retrieving libpng."
+ 
+   start=$(date +%s)
+-  wget ${LIBPNG_REPO}
++  wget -O libpng-${LIBPNG_VERSION}.tar.xz ${LIBPNG_REPO}
+   end=$(date +%s)
+   echo "Elapsed Time downloading libpng: $(($end-$start)) seconds"
+ 

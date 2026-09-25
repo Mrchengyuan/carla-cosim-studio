@@ -50,6 +50,72 @@ git clone https://github.com/Mrchengyuan/python_carsim_env
 | [CarSim 导出变量清单](carsim_carla_bridge/docs/CarSim导出变量清单.md) | CarSim 里要导出哪些变量、单位、坐标约定 |
 | [Windows 编译指南](carsim_carla_bridge/docs/Windows编译指南.md) | 在 Windows 上编译改版 CARLA |
 
+## 原版 CARLA 与改版 CARLA
+
+本平台能用两种 CARLA。**两种都能和 CarSim 联合仿真，画面上的同步效果完全一样**，区别只在速度 / IMU 读数和悬架动画。**不确定就先用原版。**
+
+- **原版 CARLA**：官方发布的 [CARLA 0.9.16](https://github.com/carla-simulator/carla/releases/tag/0.9.16)，下载解压就能用。每一帧由后端把车直接摆到 CarSim 算出的位置（界面上叫“兼容模式”）。
+- **改版 CARLA**：官方 0.9.16 源码打上本仓库的补丁 [`carla_patches/carla_0.9.16_external_dynamics.patch`](carla_patches/carla_0.9.16_external_dynamics.patch) 后**自己编译**得到。补丁给 CARLA 增加“外部动力学接口”：CarSim 每一帧把完整的车辆状态（位置、姿态、速度、角速度、四轮转向角、车轮转角、悬架行程）一次交给 CARLA，CARLA 里的速度和传感器读数因此是真实值。
+
+| | 原版 CARLA | 改版 CARLA |
+|---|---|---|
+| 怎么得到 | 从官方下载（约 8 GB） | 自己编译：Ubuntu 约 150 GB 磁盘、2–3 小时；Windows 约 165–200 GB；GitHub 账号要先关联 Epic Games |
+| 车身位置、姿态 | ✅ 同步 | ✅ 同步 |
+| 四轮转向角、车轮转动 | ✅ 同步 | ✅ 同步 |
+| 悬架行程（车轮上下跳动） | ❌ 没有 | ✅ 同步 |
+| CARLA 里的 `get_velocity()`、角速度、IMU 传感器 | ❌ 读数为 0 | ✅ CarSim 的真实值 |
+| 界面“连接”页显示 | 黄色“原版 CARLA：兼容模式”（或“服务器是原版 CARLA：兼容模式”） | 绿色“改版 CARLA：可用” |
+| 默认端口 | 2000 | 3000 |
+| Ubuntu 桌面图标 | **CARLA CoSim Studio** | **CARLA CoSim Studio（改版）** |
+
+**什么时候需要改版**：要用 CARLA 自己的速度、IMU 传感器读数（例如采集的数据集里要有 IMU，或别的程序通过 `get_velocity()` 读车速），或者要看到悬架动画。只是调控制算法、看画面、采集相机 / 语义分割 / 深度 / 激光雷达 / 毫米波雷达数据，原版就够了。
+
+### 本仓库里有什么，没有什么
+
+| 有 | 没有 |
+|---|---|
+| 对 CARLA 的全部改动：`carla_patches/carla_0.9.16_external_dynamics.patch` | **编译好的改版 CARLA**（也没有原版 CARLA，原版请从官方下载） |
+| Linux 编译用的修复补丁：`carla_patches/carla_0.9.16_linux_libpng_url_fix.patch` | |
+| 一键编译脚本：`scripts/build_ue4.sh`、`scripts/build_carla.sh` | |
+| 启动脚本：`scripts/carla_mod_server.sh`、`scripts/start_studio.sh mod` | |
+| 编译教程：[Ubuntu 使用指南 第 8 节](docs/Ubuntu使用指南.md)、[Windows 编译指南](carsim_carla_bridge/docs/Windows编译指南.md) | |
+
+为什么不直接上传编译好的改版 CARLA：一是太大（CARLA 源码加地图资源约 31 GB，它依赖的定制版 UE4 引擎约 93 GB）；二是 UE4 引擎的代码只对关联了 Epic Games 的 GitHub 账号开放，不能再分发。所以每台电脑需要自己编译一次，脚本已经把步骤都写好了。
+
+### 怎么编译改版 CARLA
+
+**Ubuntu 22.04**（本平台就是在这个环境下编译和测试的）。完整步骤和常见问题见 [Ubuntu 使用指南 第 8 节](docs/Ubuntu使用指南.md)，概要：
+
+1. 把 GitHub 账号关联到 Epic Games（免费，只需一次），这样才有权限下载 CARLA 定制版 UE4。
+2. `./scripts/build_ue4.sh`：下载并编译 UE4，约 1 小时、95 GB。
+3. `./scripts/build_carla.sh`：下载 CARLA 0.9.16 源码到 `carla_src/` → 打上 `carla_patches/` 里的补丁 → 下载地图资源 → 编译 Python 包和 CARLA，约 1 小时。运行前先 `source venv/bin/activate` 并装好 CARLA 的编译依赖（命令见指南 8.3）。
+4. 把编译出的改版 Python 包装进单独的环境 `venv_build`：
+   ```bash
+   python3 -m venv venv_build
+   venv_build/bin/pip install carla_src/PythonAPI/carla/dist/carla-0.9.16-cp310-cp310-linux_x86_64.whl numpy pillow shapely networkx
+   venv_build/bin/python -c "import carla; print(hasattr(carla.Vehicle, 'apply_external_state'))"   # 输出 True 就对了
+   ```
+5. `bash scripts/install_desktop_icons.sh`，双击桌面上的 **CARLA CoSim Studio（改版）**。第一次启动要编译着色器（20–40 分钟），以后约 40 秒（本机实测 42 秒）。
+6. 验证：`venv_build/bin/python carsim_carla_bridge/tests/test_modified_carla.py --port 3000`，10 项全部 PASS。
+
+双击图标后 CARLA 没起来或中途消失：看 `~/.cache/carla_cosim_studio/launch_mod.log`（启动过程、CARLA 何时退出）和 `~/.cache/carla_cosim_studio/stop.log`（每次关闭 CARLA 是谁、因为什么），详见 [Ubuntu 使用指南 常见问题](docs/Ubuntu使用指南.md)。启动时关掉“正在启动”进度窗口不影响启动。
+
+**Windows**：按 [Windows 编译指南](carsim_carla_bridge/docs/Windows编译指南.md)（需要 VS 2022；流程和官方 0.9.16 一样，只是编译前多打一个补丁）。Windows 上的编译步骤还没有在实机上完整走过一遍。
+
+### Python 的 carla 包也分原版和改版
+
+后端通过 Python 的 `carla` 包和 CARLA 通信，这个包也有两种：
+
+| 包 | 怎么装 | 能连 |
+|---|---|---|
+| 原版包 | `pip install carla==0.9.16`（Ubuntu 上装在 `venv`） | 原版和改版 CARLA 都能连，但**都只能用兼容模式** |
+| 改版包 | 编译改版 CARLA 时生成的 `.whl`（Ubuntu 上装在 `venv_build`） | 连改版 CARLA 用外部动力学接口；连原版 CARLA **自动改用兼容模式** |
+
+- 要用改版的功能，**CARLA 服务器和 Python 包都必须是改版**。
+- Ubuntu 桌面图标和 `start_studio.sh`：有 `venv_build` 就用它，否则用 `venv`，不用手动切换。
+- 界面“CarSim 动力学”页的“CARLA 接口”默认是“自动”，保持默认即可。
+- 当前用的是哪种，看界面“连接”页“外部动力学接口”那一行。
+
 ## 功能
 
 | 模块 | 能做什么 |
@@ -87,8 +153,8 @@ git clone https://github.com/Mrchengyuan/python_carsim_env
                                                            └────────────────┘
 ```
 
-- `carla_patches/` 给 CARLA 0.9.16 新增 `vehicle.enable_external_dynamics()` / `vehicle.apply_external_state()`：一帧一次下发位姿、速度、角速度、四轮转向 / 转角 / 悬架，`get_velocity()`、IMU 等读数为真实值。
-- 不打补丁也能用：自动退化为原版接口（画面相同，速度类读数为 0，无悬架动画）。
+- 改版 CARLA：`carla_patches/` 给 CARLA 0.9.16 新增 `vehicle.enable_external_dynamics()` / `vehicle.apply_external_state()`，一帧一次下发位姿、速度、角速度、四轮转向 / 转角 / 悬架，`get_velocity()`、IMU 等读数为真实值。
+- 原版 CARLA：自动用兼容模式（画面相同，速度类读数为 0，无悬架动画）。两者的区别见 [原版 CARLA 与改版 CARLA](#原版-carla-与改版-carla)。
 
 ## 目录
 
@@ -96,21 +162,20 @@ git clone https://github.com/Mrchengyuan/python_carsim_env
 |---|---|
 | `cosim_gui/` | 图形界面源码，依赖（ImGui、ImPlot、GLFW、json、Font Awesome）已放在 `third_party/`，编译不需要联网 |
 | `carsim_carla_bridge/` | Python 后端、CarSim 桥接、驾驶模式、数据采集、测试和文档 |
-| `carla_patches/` | CARLA 0.9.16 补丁：外部动力学接口；以及 Linux 编译用的 libpng 地址修复 |
+| `carla_patches/` | CARLA 0.9.16 补丁（改版 CARLA 就是官方源码打上它编译出来的）：外部动力学接口；以及 Linux 编译用的 libpng 地址修复 |
 | `scripts/` | Ubuntu：`build_ue4.sh`、`build_carla.sh`、`carla_server.sh`、`carla_mod_server.sh`、`start_studio.sh`、`stop_carla.sh`、`install_desktop_icons.sh`；`scripts/windows/`：`start_studio.bat`、`stop_carla.bat`、`install_shortcuts.bat`、`env.bat` |
 | `docs/` | 截图 |
 
 ## 快速开始
 
 ### 1. CARLA
-- **原版**：下载 [CARLA 0.9.16](https://github.com/carla-simulator/carla/releases/tag/0.9.16) 直接运行即可。
-- **改版**（推荐）：在 0.9.16 源码上 `git apply carla_patches/carla_0.9.16_external_dynamics.patch` 后编译，
-  步骤见 [Windows 编译指南](carsim_carla_bridge/docs/Windows编译指南.md)（Linux 流程相同，另打 libpng 补丁）。
+- **原版**（先用这个）：下载 [CARLA 0.9.16](https://github.com/carla-simulator/carla/releases/tag/0.9.16)，解压后直接运行。
+- **改版**（可选）：本仓库只提供补丁和编译脚本，需要自己编译，见上面的 [原版 CARLA 与改版 CARLA](#原版-carla-与改版-carla)。
 
 ### 2. 后端
 ```bash
 pip install numpy pillow shapely networkx
-pip install carla==0.9.16          # 或安装改版编译出的 PythonAPI/carla/dist/*.whl
+pip install carla==0.9.16          # 原版 carla 包；编译了改版 CARLA 就装改版的 .whl（见上文）
 git clone https://github.com/Mrchengyuan/python_carsim_env   # CarSim 的 Python 接口，放在仓库根目录
 ```
 

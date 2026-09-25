@@ -348,6 +348,8 @@ python tests/test_modified_carla.py --port 3000      # 改版 CARLA 接口（需
 | 连接时提示 `Version mismatch` | 用改版客户端连原版服务器（或反过来）时的正常提示，不影响使用 |
 | 采集点“运行”被拒绝 | 没设停止条件，或预计大小超过磁盘剩余空间（需保留 10 GB），在“数据采集”页调整 |
 | CARLA 关了但显存还被占 | 双击“关闭 CARLA”图标，或执行 `./scripts/stop_carla.sh` |
+| 双击桌面图标后 CARLA 没起来 / 中途消失 | 看两个记录：`~/.cache/carla_cosim_studio/launch_stock.log`（改版是 `launch_mod.log`）记录了启动过程和 CARLA 退出的时间；`~/.cache/carla_cosim_studio/stop.log` 记录了每一次“关闭 CARLA”是谁、因为什么触发的（界面关闭、启动失败、“关闭 CARLA”图标）。CARLA 退出了而 `stop.log` 里没有对应记录，说明是 CARLA 自己退出的，再看下一行 |
+| 改版 CARLA 启动很慢，想关掉“正在启动”进度窗口 | 可以关，不影响启动（CARLA 会继续加载，好了以后界面照常打开）；改版第一次启动要编译着色器（20–40 分钟），以后约 40 秒 |
 | 改版 CARLA 启动后崩溃 | 看 `carla_src/Unreal/CarlaUE4/Saved/Crashes/` 下最新的 `Diagnostics.txt`；确认用的是 `scripts/carla_mod_server.sh` 启动 |
 | 显示器分辨率高、界面太小 | 在系统设置里调整缩放，界面会跟随系统缩放 |
 

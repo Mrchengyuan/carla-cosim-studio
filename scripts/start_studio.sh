@@ -6,6 +6,10 @@
 source "$(dirname "$0")/env.sh"
 source "$(dirname "$0")/carla_stop_lib.sh"
 MODE=${1:-stock}
+# Started from a desktop icon there is no terminal: keep a log to see what happened.
+LOG="${XDG_CACHE_HOME:-$HOME/.cache}/carla_cosim_studio/launch_$MODE.log"
+mkdir -p "$(dirname "$LOG")" && : > "$LOG" && exec > >(tee -a "$LOG") 2>&1
+echo "$(date '+%F %T') start_studio.sh $MODE"
 if [ "$MODE" = "mod" ]; then
   PORT=$CARLA_MOD_PORT; SESSION=carla_mod; NAME="改版 CARLA"; TIMEOUT=900; KIND=mod
   START="bash '$COSIM_ROOT/scripts/carla_mod_server.sh'"
@@ -19,22 +23,26 @@ notify() { command -v zenity >/dev/null && zenity "$@" 2>/dev/null; }
 
 STARTED=0
 if ! listening; then
-  tmux new -d -s "$SESSION" "$START"
+  # Record when the server ends; stop.log says whether a script stopped it.
+  tmux new -d -s "$SESSION" "$START; echo \"\$(date '+%F %T') $NAME 已退出，退出码 \$?\" >> '$LOG'"
   STARTED=1
   (
+    # Closing the progress window must not end this wait: CARLA would then be
+    # stopped as "failed to start" while it is still loading.
+    trap '' PIPE
     for i in $(seq 1 $TIMEOUT); do
-      listening && { sleep 3; echo 100; exit 0; }
+      listening && { sleep 3; echo 100 2>/dev/null; exit 0; }
       tmux has-session -t "$SESSION" 2>/dev/null || exit 1
-      echo "# 正在启动 $NAME（端口 $PORT），已等待 $i 秒 ..."
+      echo "# 正在启动 $NAME（端口 $PORT），已等待 $i 秒 ..." 2>/dev/null
       sleep 1
     done
     exit 1
   ) | { if command -v zenity >/dev/null; then zenity --progress --pulsate --auto-close --no-cancel \
           --title="CARLA CoSim Studio" --text="正在启动 $NAME ..." --width=420 2>/dev/null; else cat >/dev/null; fi; }
   if ! listening; then
-    notify --error --title="CARLA CoSim Studio" --width=420 --text="$NAME 没有启动成功。\n可以在终端执行 tmux attach -t $SESSION 查看原因。"
+    notify --error --title="CARLA CoSim Studio" --width=420 --text="$NAME 没有启动成功。\n启动记录：$LOG"
     echo "$NAME failed to start"
-    stop_carla_server "$KIND"
+    stop_carla_server "$KIND" "端口 $PORT 没有打开（启动失败）"
     exit 1
   fi
 fi
@@ -43,5 +51,5 @@ fi
   --carla-port "$PORT" --auto-connect
 
 if [ "$STARTED" = 1 ]; then
-  stop_carla_server "$KIND"
+  stop_carla_server "$KIND" "界面已关闭"
 fi

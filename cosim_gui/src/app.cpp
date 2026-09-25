@@ -610,7 +610,7 @@ void App::BuildTour() {
       {kPanelTraffic, [this] { traffic_vehicles_ = 12; traffic_walkers_ = 8; SpawnTraffic(); }, idle, "06_traffic"},
       {kPanelDrive, [this] {
          cfg_["drive"]["dynamics"] = "cosim";
-         cfg_["drive"]["cosim_driver"] = "route";
+         cfg_["drive"]["cosim_driver"] = "carsim";
          cfg_["drive"]["target_speed_kmh"] = 35.0;
        }, idle, "07_drive"},
       {kPanelCoSim, [this] {

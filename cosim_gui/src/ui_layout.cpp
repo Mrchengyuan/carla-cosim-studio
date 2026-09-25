@@ -39,6 +39,7 @@ const char* DriverName(const json& cfg) {
   const json& d = cfg["drive"];
   const bool cosim = d.value("dynamics", std::string("cosim")) == "cosim";
   const std::string v = cosim ? d.value("cosim_driver", std::string("demo")) : d.value("carla_driver", std::string("route"));
+  if (v == "carsim") return "CarSim 驾驶员";
   if (v == "demo") return "演示";
   if (v == "pid") return "PID 跟踪";
   if (v == "route") return "路线跟随";

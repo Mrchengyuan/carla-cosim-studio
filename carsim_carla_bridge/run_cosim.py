@@ -37,7 +37,7 @@ def main():
     ap.add_argument("--duration", type=float, help="simulated seconds")
     ap.add_argument("--spawn-index", type=int, help="CARLA spawn point used as CarSim origin")
     ap.add_argument("--vehicle")
-    ap.add_argument("--driver", choices=("demo", "pid"))
+    ap.add_argument("--driver", choices=("carsim", "demo", "pid"))
     ap.add_argument("--record", help="save chase-camera frames here")
     ap.add_argument("--log")
     ap.add_argument("--no-external-api", action="store_true", help="force the stock-CARLA fallback")

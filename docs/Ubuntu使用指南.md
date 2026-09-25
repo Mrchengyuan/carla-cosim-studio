@@ -304,6 +304,7 @@ source ../venv/bin/activate
 python run_cosim.py --mock --duration 20                      # 模拟 CarSim，演示驾驶
 python run_cosim.py --config ../cosim_config.json             # 用界面保存的配置
 python run_cosim.py --sim /path/to/simfile.sim --driver pid   # 真实 CarSim + 你的 PID 控制器
+python run_cosim.py --sim /path/to/simfile.sim --driver carsim  # CarSim 用自己的驾驶员开车，CARLA 跟随
 ```
 在自己的训练代码里使用（每个 `env.control_step()` 之后加两行）：
 ```python

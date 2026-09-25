@@ -632,6 +632,9 @@ class Backend:
             self._log("联合仿真开始：%s，参考点 %s，每帧 %d 个 CarSim 步，驾驶：%s" % (
                 "改版 CARLA 接口" if info["external_api"] else "原版兼容模式",
                 info["reference_point"], info["inner_steps"], d["run"]["driver"]))
+            if d["run"]["driver"] == "carsim" and info.get("declared_imports"):
+                self._log("CarSim 驾驶员模式：模型声明了 %d 个导入变量，Python 不写它们；若是 REPLACE 模式会一直是 0，"
+                          "会覆盖 CarSim 自己的驾驶员（车不动或不转向），请在 CarSim 里删掉导入或改成 ADD" % info["declared_imports"], "warn")
             if info["clock_warning"]:
                 self._log("frame_dt 不是 CarSim t_step 的整数倍，两边时钟会漂移", "warn")
         else:

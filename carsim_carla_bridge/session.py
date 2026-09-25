@@ -35,7 +35,30 @@ def make_env(d):
         raise ValueError("CarSim .sim file not set (carsim.sim_path)")
     sys.path.insert(0, os.path.abspath(c["repo_path"]))
     from carsim_env import CarSimEnv
-    return CarSimEnv(c["sim_path"])
+    env = CarSimEnv(c["sim_path"])
+    if d["run"]["driver"] == "carsim":
+        self_driven(env)
+    return env
+
+
+def self_driven(env):
+    """Let CarSim's own driver model (speed / path control set up in the
+    CarSim GUI) drive: the run may have no imports at all, and Python never
+    writes the import array. Wraps the instance, python_carsim_env is untouched."""
+    read = env.solver.read_configuration
+
+    def read_configuration(path):
+        cfg = read(path)
+        if cfg is not None:
+            env.declared_imports = int(cfg.get("n_import", 0))
+            if env.declared_imports <= 0:
+                cfg["n_import"] = 1   # spare slot for CarSimEnv's buffers; VS reads no imports
+        return cfg
+
+    write = env._write_action
+    env.solver.read_configuration = read_configuration
+    env._write_action = lambda action: None if action is None else write(action)
+    return env
 
 
 def make_driver(d, ex):
@@ -96,7 +119,9 @@ class CoSimSession:
         drv = d["run"]["driver"]
         self.command_driver = None
         self._speed = 0.0
-        if drv in ("route", "manual"):
+        if drv == "carsim":
+            self.driver = lambda obs, t: None     # CarSim drives itself
+        elif drv in ("route", "manual"):
             dr = d["drive"]
             if drv == "route":
                 dest = int(dr.get("destination_index", -1))
@@ -130,6 +155,7 @@ class CoSimSession:
                                 "carla_x", "carla_y", "carla_yaw", "steer_fl", "steer_fr", "speed_carla"])
         self._wall0 = time.perf_counter()
         return {"external_api": self.sync.external_api,
+                "declared_imports": getattr(self.env, "declared_imports", None),
                 "reference_point": [round(float(x), 3) for x in self.sync.ref_local],
                 "t_step": t_step, "inner_steps": self.inner, "clock_warning": self.clock_warning}
 
@@ -155,6 +181,8 @@ class CoSimSession:
         env, frame_dt = self.env, self.d["sync"]["frame_dt"]
         action = self.driver(self.obs, env.t_current)
         self.obs, _, done, info = env.control_step(action, self.inner)
+        if action is None:
+            action = self._carsim_inputs()
         if info.get("error"):
             raise RuntimeError("CarSim error: %s" % info["error"])
         state = self.sync.sync(self.obs, env.t_current, frame_dt)
@@ -193,6 +221,14 @@ class CoSimSession:
             "dynamics": "CarSim",
             "done": self.done,
         }
+
+    def _carsim_inputs(self):
+        """Driver inputs CarSim chose itself, read back from the exports."""
+        ex = self.sync.ex
+        scale = float(self.d["drive"].get("brake_scale", 1.0)) or 1.0
+        return [float(ex.raw(self.obs, "Throttle")) if ex.has("Throttle") else 0.0,
+                float(ex.raw(self.obs, "Pbk_Con")) / scale if ex.has("Pbk_Con") else 0.0,
+                float(ex.angle(self.obs, "Steer_SW")) if ex.has("Steer_SW") else 0.0]
 
     def carsim_state(self):
         """CarSim exports of the current step, for the data collector."""

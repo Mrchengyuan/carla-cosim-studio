@@ -98,6 +98,28 @@ def main():
         check("CarSim route follower drives", moved > 25 and tels[-1]["speed_kmh"] > 15,
               "moved %.0f m, %.1f km/h, max wheel steer %.1f°" % (moved, tels[-1]["speed_kmh"], steer_used))
 
+        # ---- CarSim's own driver model drives, CARLA follows -------------------
+        r = json.loads(json.dumps(cfg))
+        r["carsim"]["mock"] = True
+        r["drive"].update({"dynamics": "cosim"})
+        r["run"]["driver"] = "carsim"
+        r["sync"]["duration"] = 8.0
+        r["sync"]["frame_dt"] = 0.02
+        c.events.clear()
+        c.call("cosim_start", config=r)
+        tels = []
+        while True:
+            e = c.wait_event(lambda e: e.get("event") in ("telemetry", "cosim_state"), 180)
+            c.events.remove(e)
+            if e["event"] == "cosim_state" and e["state"] in ("finished", "error"):
+                break
+            if e["event"] == "telemetry":
+                tels.append(e["data"])
+        moved = math.dist(tels[0]["location"][:2], tels[-1]["location"][:2])
+        check("CarSim driver mode: CARLA car follows CarSim", moved > 20 and max(t["action"][0] for t in tels) > 0.1
+              and max(abs(t["action"][2]) for t in tels) > 10,
+              "moved %.0f m, %.1f km/h, inputs read back from CarSim exports" % (moved, tels[-1]["speed_kmh"]))
+
         # ---- manual keyboard control in CARLA physics --------------------------
         r = json.loads(json.dumps(cfg))
         r["drive"].update({"dynamics": "carla", "carla_driver": "manual"})

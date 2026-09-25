@@ -205,7 +205,9 @@ python carsim_env.py                              rem carsim_env.py 默认读取
 - **推荐**：`Vx Vy AVx AVy AVz`（真实速度 / IMU）、`AVy_L1 AVy_R1 AVy_L2 AVy_R2`（车轮转速，能看到打滑）、`Jnc_L1 Jnc_R1 Jnc_L2 Jnc_R2`（悬架行程）、`Steer_SW Throttle GearStat`、`Steer_L2 Steer_R2`（后轮转向）
 
 **记下变量的顺序**，界面里要按同样的顺序填。
-Import（输入）保持你原来的三个：油门、制动、方向盘转角（度），和 python_carsim_env 一致。
+Import（输入）要看你打算用哪种驾驶方式：
+- **CarSim 驾驶员**（CarSim 自己开车，CARLA 跟随）：在 CarSim 里设置好驾驶员模型（车速控制、转向 / 路径跟随），油门、制动、方向盘**不要**作为 REPLACE 导入变量（删掉，或改成 ADD），否则会覆盖 CarSim 驾驶员。可以再导出 `Pbk_Con`，界面能显示制动。
+- **路线跟随 / 键盘驾驶 / 演示 / PID**（Python 算控制量送给 CarSim）：保持你原来的三个导入：油门、制动、方向盘转角（度），和 python_carsim_env 一致。
 
 ### 8.3 在界面里配置
 1. **车辆与视角**：点“测量全部车型尺寸”，挑一款轴距、轮胎半径和你的 CarSim 车型接近的车；选出生点（CarSim 原点放在这里）。
@@ -216,6 +218,7 @@ Import（输入）保持你原来的三个：油门、制动、方向盘转角�
    - 导出变量：按 8.2 的顺序填（可以从 CarSim 复制后“用粘贴内容替换”），看到绿色“必需变量齐全”。
    - 单位：CarSim 默认用户单位（deg、km/h、deg/s、rpm、mm），一般不用改。
 3. **驾驶模式**：CarSim 动力学 +
+   - **CarSim 驾驶员**（想让 CarSim 操控 CARLA 里的车就选这个）：CarSim 用它自己的驾驶员模型开车，CARLA 的车完全跟着 CarSim 走，Python 不发任何控制。CarSim 路径的原点就是第 1 步选的出生点，车头朝出生点方向；CarSim 里的路径要按 CARLA 地图的道路来建，否则车会开出路面；
    - **路线跟随**：程序在 CARLA 路网上规划路线，算出油门、制动、方向盘角送给 CarSim；
    - **键盘驾驶**：用 WASD 开 CarSim 的车；
    - **PID 路径跟踪**：用你项目里的 SimplePathFollower。选中后在同一页填“横向误差变量”“车速变量”“目标车速”，这两个变量也必须在导出变量列表里。

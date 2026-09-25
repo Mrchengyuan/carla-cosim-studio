@@ -45,7 +45,7 @@ def default_dict():
                         "speed": _defaults.PID_SPEED,
                         "target_speed": _defaults.PID_TARGET_SPEED}},
         # dynamics: "cosim" = CarSim drives the car, "carla" = CARLA PhysX.
-        # driver: demo | pid (CarSim only) | route | manual | autopilot (CARLA only)
+        # driver: carsim (CarSim's own driver) | demo | pid (CarSim only) | route | manual | autopilot (CARLA only)
         "drive": {"dynamics": "cosim", "carla_driver": "route", "target_speed_kmh": 40.0,
                   "destination_index": -1, "brake_scale": 1.0,
                   "tm_speed_diff_pct": 0.0, "tm_ignore_lights": False},

@@ -37,7 +37,16 @@ class MockCarSimEnv:
         self.done = False
         return self._exports()
 
+    def own_driver(self):
+        """Stands in for CarSim's built-in driver model (action None): hold
+        ~40 km/h and weave gently, like a CarSim procedure would."""
+        throttle = max(0.0, min(1.0, 0.1 * (40.0 / 3.6 - self.v)))
+        steer_sw = 0.0 if self.t_current < 4.0 else 45.0 * math.sin(2 * math.pi * 0.1 * (self.t_current - 4.0))
+        return [throttle, 0.0, steer_sw]
+
     def control_step(self, action, inner_steps):
+        if action is None:
+            action = self.own_driver()
         throttle, brake, steer_sw = (list(action) + [0.0, 0.0, 0.0])[:3]
         self.throttle, self.steer_sw = throttle, steer_sw
         delta = math.radians(steer_sw / self.STEER_RATIO)  # + = left (ISO)

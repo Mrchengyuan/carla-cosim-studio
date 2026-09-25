@@ -455,6 +455,7 @@ void App::DrawPanelDrive() {
   ui::BeginCard(ICON_FA_ROBOT, "驾驶方式");
   struct D { const char* id; const char* icon; const char* title; const char* desc; bool cosim, carla; };
   static const D kD[] = {
+      {"carsim", ICON_FA_CAR_SIDE, "CarSim 驾驶员", "CarSim 用它自己的驾驶员模型（车速、路径控制）开车，CARLA 里的车完全跟随，Python 不发控制。", true, false},
       {"route", ICON_FA_ROUTE, "路线跟随", "在路网上规划路线，自动转向、控速，走完一段自动换下一个目的地。", true, true},
       {"autopilot", ICON_FA_TRAFFIC_LIGHT, "CARLA 自动驾驶", "交通管理器驾驶：遵守信号灯、跟车、变道。", false, true},
       {"manual", ICON_FA_KEYBOARD, "键盘驾驶", "W/S 油门刹车，A/D 转向，在界面里直接开。", true, true},
@@ -502,7 +503,12 @@ void App::DrawPanelDrive() {
     ui::Row("目标车速 km/h", nullptr, fs * 8);
     EditDouble(pid, "target_speed", 5, "%.0f", 0, 300);
   }
-  if (cosim && cur != "demo" && cur != "pid") {
+  if (cosim && cur == "carsim") {
+    ImGui::TextColored(p.text_dim, "在 CarSim 里设置好驾驶员（车速控制、转向/路径跟随），界面只负责让 CARLA 的车跟着 CarSim 走。");
+    ImGui::TextColored(p.warning, ICON_FA_TRIANGLE_EXCLAMATION "  CarSim 模型里不要把油门、制动、方向盘设成 REPLACE 导入变量，否则会覆盖 CarSim 驾驶员。");
+    ImGui::TextColored(p.text_dim, "CarSim 路径的原点 = “车辆与视角”页选的出生点，车头朝向该出生点方向。");
+  }
+  if (cosim && cur != "demo" && cur != "pid" && cur != "carsim") {
     float b = dr.value("brake_scale", 1.0f);
     ui::Row("制动输入比例", "0..1 的制动指令乘以这个系数再送给 CarSim（例如 CarSim 用制动压力 MPa 时设为 10）", fs * 8);
     if (ImGui::InputFloat("##bscale", &b, 0.5f, 1.0f, "%.2f")) dr["brake_scale"] = std::max(0.0f, b);

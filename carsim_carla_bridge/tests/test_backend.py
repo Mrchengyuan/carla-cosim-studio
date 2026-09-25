@@ -142,7 +142,9 @@ def main():
 
         actors = c.call("list_actors")
         check("list_actors", any(a["ego"] for a in actors), len(actors))
-        c.call("remove_sensor", id=cam["id"])
+        # Each run respawns the ego and re-adds its sensors, so look the camera up again.
+        cam_id = next(s["id"] for s in c.call("list_sensors") if s["type"] == "rgb")
+        c.call("remove_sensor", id=cam_id)
         check("remove_sensor", len(c.call("list_sensors")) == 1)
         c.call("clear_traffic")
         after = c.call("list_actors", filter="vehicle.*")

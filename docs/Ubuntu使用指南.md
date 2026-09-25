@@ -87,7 +87,7 @@ pip 可以用清华镜像：`pip install -i https://pypi.tuna.tsinghua.edu.cn/si
 cd ~
 git clone https://github.com/Mrchengyuan/carla-cosim-studio.git
 cd carla-cosim-studio
-git clone https://github.com/Mrchengyuan/python_carsim_env.git
+git clone https://github.com/Mrchengyuan/python_carsim_env.git   # 原始仓库：https://github.com/dyZhou2001/python_carsim_env（原作者 dyZhou2001）
 ```
 > 如果仓库是私有的，`git clone` 时会要求输入 GitHub 用户名和 Personal Access Token（在 GitHub → Settings → Developer settings → Personal access tokens 创建，勾选 `repo` 权限）。
 

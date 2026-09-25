@@ -74,7 +74,7 @@ C:\carla-cosim-studio\                     ← 本仓库（路径里最好不要
 cd /d C:\
 git clone https://github.com/Mrchengyuan/carla-cosim-studio.git
 cd carla-cosim-studio
-git clone https://github.com/Mrchengyuan/python_carsim_env.git
+git clone https://github.com/Mrchengyuan/python_carsim_env.git   # 原始仓库：https://github.com/dyZhou2001/python_carsim_env（原作者 dyZhou2001）
 ```
 > 仓库是私有的话，Git 会弹出登录窗口，用 GitHub 账号登录（或用户名 + Personal Access Token）。
 > 不想用 Git 的话，也可以在 GitHub 页面点 **Code → Download ZIP**，解压到 `C:\carla-cosim-studio`。

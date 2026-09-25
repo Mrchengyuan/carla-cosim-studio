@@ -74,6 +74,12 @@ int App::DatasetFrameNumber() const {
 
 void App::DatasetRequestFrame() {
   if (ds_root_.empty() || DatasetFrameCount() == 0) return;
+  if (ds_pending_ > 0) {
+    // Scrubbing: one render at a time; when it is back, fetch only the latest frame.
+    ds_dirty_ = true;
+    return;
+  }
+  ds_dirty_ = false;
   const int frame = DatasetFrameNumber();
   const std::string sensors[2] = {ds_left_, ds_right_};
   for (int i = 0; i < 2; ++i) {
@@ -82,6 +88,7 @@ void App::DatasetRequestFrame() {
     json args = {{"root", ds_root_}, {"frame", frame}, {"sensor", sensors[i]}, {"max_w", i == 0 ? 1280 : 720}, {"boxes", ds_boxes_}};
     be_.Request("dataset_frame", args, [this, i](bool ok, const json& r, const std::string& err) {
       ds_pending_ = std::max(0, ds_pending_ - 1);
+      if (ds_pending_ == 0 && ds_dirty_) DatasetRequestFrame();  // the user moved on meanwhile
       if (!ok) {
         Log(err, "error");
         ds_play_ = false;
@@ -335,7 +342,7 @@ void App::DrawPanelDataset() {
       ImGui::TableSetColumnIndex(1); ImGui::TextUnformatted(ob.value("class", std::string()).c_str());
       ImGui::TableSetColumnIndex(2); ImGui::Text("%.1f", ob.value("distance", 0.0));
       ImGui::TableSetColumnIndex(3);
-      if (ob["lidar_pts"].is_null()) ImGui::TextDisabled("-"); else ImGui::Text("%d", ob["lidar_pts"].get<int>());
+      if (!ob["lidar_pts"].is_number()) ImGui::TextDisabled("-"); else ImGui::Text("%d", ob["lidar_pts"].get<int>());
     }
     ImGui::EndTable();
   }
@@ -379,8 +386,15 @@ void App::DrawPanelDataset() {
     }
     ds_export_result_ = json::object();
     ds_export_done_ = 0;
-    Call("dataset_export", args, [this](const json& r) {
-      ds_exporting_ = true;
+    // Set before sending: the export thread can finish (export_done) before
+    // this reply arrives, and the done event must have the last word.
+    ds_exporting_ = true;
+    be_.Request("dataset_export", args, [this](bool ok, const json& r, const std::string& err) {
+      if (!ok) {
+        ds_exporting_ = false;
+        Log(err, "error");
+        return;
+      }
       ds_export_total_ = r.value("frames", 0);
       Log(Fmt("开始导出到 %s（预计 %.0f MB）", r.value("out", std::string()).c_str(), r.value("estimate_mb", 0.0)));
     });

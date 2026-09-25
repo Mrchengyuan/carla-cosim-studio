@@ -147,7 +147,6 @@ void App::Frame() {
     if (panel_ == kPanelCollect || panel_ == kPanelRig) RefreshDisk();
     last_panel = panel_;
   }
-  TourClick();
   DatasetTick();
   UploadViewTexture();
   UpdateKeyboardDriving();
@@ -259,7 +258,7 @@ void App::DrawMenuBar() {
     if (ImGui::MenuItem(ICON_FA_FORWARD_STEP "  单步", "F10", false, run_state_ == "paused")) RunCommand("cosim_step");
     if (ImGui::MenuItem(ICON_FA_STOP "  停止", "Shift+F5", false, Running())) RunCommand("cosim_stop");
     ImGui::Separator();
-    if (ImGui::MenuItem(ICON_FA_PLUG "  连接 CARLA", nullptr, false, be_.Connected() && busy_.empty())) ConnectCarla();
+    if (ImGui::MenuItem(ICON_FA_PLUG "  连接 CARLA", nullptr, false, be_.Connected() && busy_.empty() && !Running())) ConnectCarla();
     ImGui::EndMenu();
   }
   if (ImGui::BeginMenu("视图")) {
@@ -804,7 +803,7 @@ void App::DrawPane(int i, ImVec2 pos, ImVec2 size) {
     for (const json& s : RigSensors())
       if ("rig:" + s.value("name", std::string()) == pane.source) kind = s.value("type", std::string());
   const char* legend = kind == "lidar" ? "俯视 · 车头朝上 · 圆环间隔 10 m · 颜色 = 高度（蓝低 红高）"
-                     : kind == "radar" ? "俯视 · 车头朝上 · 圆环间隔 10 m · 红 = 接近  蓝 = 远离  白 = 静止"
+                     : kind == "radar" ? "俯视 · 车头朝上 · 圆环间隔 10 m · 相对速度：红 = 靠近  蓝 = 远离  白 = 无相对运动"
                      : kind == "semantic" ? "CityScapes 配色：路面紫 · 车辆蓝 · 行人红 · 植被绿"
                      : kind == "depth" ? "对数深度：越亮越远" : nullptr;
   if (legend && size.y > fs * 6) {
@@ -851,7 +850,7 @@ void App::DrawHud(ImVec2 anchor) {
   const json act = have ? last_tel_["action"] : json::array();
   const bool cosim = last_tel_.value("dynamics", std::string()) == "CarSim";
   const float sw_max = std::max(1.0f, cfg_.contains("sync") ? cfg_["sync"].value("steering_wheel_max_deg", 540.0f) : 540.0f);
-  const float raw = act.size() > 2 ? act[2].get<float>() : 0.0f;
+  const float raw = act.size() > 2 ? static_cast<float>(appui::NumAt(act, 2)) : 0.0f;
   const float wheel_deg = cosim ? -raw : raw * sw_max;  // CarSim: deg, + left; CARLA: -1..1, + right
   const ImVec2 wc(a.x + fs * 10.2f, a.y + H * 0.45f);
   const float r = fs * 2.1f;
@@ -870,7 +869,7 @@ void App::DrawHud(ImVec2 anchor) {
   dl->AddText(ImVec2(wc.x - ws.x * 0.5f, b.y - fs * 1.4f), ImGui::GetColorU32(kHudDim), wd.c_str());
 
   // Pedals
-  const float thr = act.size() > 0 ? act[0].get<float>() : 0.0f, brk = act.size() > 1 ? std::min(1.0f, act[1].get<float>()) : 0.0f;
+  const float thr = act.size() > 0 ? static_cast<float>(appui::NumAt(act, 0)) : 0.0f, brk = act.size() > 1 ? std::min(1.0f, static_cast<float>(appui::NumAt(act, 1))) : 0.0f;
   auto pedal = [&](float x, float v, const ImVec4& col, const char* label) {
     const float y0 = a.y + fs * 0.8f, y1 = b.y - fs * 1.6f, bw = fs * 0.75f;
     dl->AddRectFilled(ImVec2(x, y0), ImVec2(x + bw, y1), ImGui::GetColorU32(ImVec4(1, 1, 1, 0.08f)), 2.0f);
@@ -922,8 +921,8 @@ void App::DrawMinimap(ImVec2 tl, float size) {
   }
   if (!last_tel_.empty()) {
     const json& loc = last_tel_["location"];
-    const float yaw = last_tel_["rotation"][1].get<float>() * kPi / 180.0f;
-    const ImVec2 c = map(loc[0].get<float>(), loc[1].get<float>());
+    const float yaw = static_cast<float>(appui::NumAt(last_tel_["rotation"], 1)) * kPi / 180.0f;
+    const ImVec2 c = map(static_cast<float>(appui::NumAt(loc, 0)), static_cast<float>(appui::NumAt(loc, 1)));
     const float s = fs * 0.55f;
     const ImVec2 f(c.x + std::cos(yaw) * s, c.y + std::sin(yaw) * s);
     const ImVec2 l(c.x + std::cos(yaw + 2.5f) * s * 0.8f, c.y + std::sin(yaw + 2.5f) * s * 0.8f);
@@ -1050,8 +1049,8 @@ void App::DrawVehicleState() {
     ImGui::TextColored(p.text_dim, ICON_FA_SLIDERS "  控制输入");
     const json a = have ? last_tel_["action"] : json::array();
     const bool cosim = last_tel_.value("dynamics", std::string()) == "CarSim";
-    const float thr = a.size() > 0 ? a[0].get<float>() : 0.0f, brk = a.size() > 1 ? a[1].get<float>() : 0.0f;
-    const float sw = a.size() > 2 ? a[2].get<float>() : 0.0f;
+    const float thr = a.size() > 0 ? static_cast<float>(appui::NumAt(a, 0)) : 0.0f, brk = a.size() > 1 ? static_cast<float>(appui::NumAt(a, 1)) : 0.0f;
+    const float sw = a.size() > 2 ? static_cast<float>(appui::NumAt(a, 2)) : 0.0f;
     const float steer = cosim ? -sw / std::max(1.0f, cfg_["sync"].value("steering_wheel_max_deg", 540.0f)) : sw;
     ControlBar("油门", thr, 0, 1, p.success, false);
     ControlBar("制动", std::min(1.0f, brk), 0, 1, p.danger, false);
@@ -1071,8 +1070,8 @@ void App::DrawVehicleState() {
       if (have) {
         const json& loc = last_tel_["location"];
         const json& rot = last_tel_["rotation"];
-        const double v[] = {loc[0].get<double>(), loc[1].get<double>(), loc[2].get<double>(),
-                            rot[1].get<double>(), rot[0].get<double>(), rot[2].get<double>()};
+        const double v[] = {appui::NumAt(loc, 0), appui::NumAt(loc, 1), appui::NumAt(loc, 2),
+                            appui::NumAt(rot, 1), appui::NumAt(rot, 0), appui::NumAt(rot, 2)};
         std::copy(v, v + 6, vals);
       }
       for (int i = 0; i < 6; ++i) {
@@ -1104,9 +1103,9 @@ void App::DrawVehicleState() {
         ImGui::TableNextRow();
         ImGui::TableSetColumnIndex(0); ImGui::TextColored(p.text_dim, "%s", kW[i]);
         if (ui::GetFonts().mono) ImGui::PushFont(ui::GetFonts().mono);
-        ImGui::TableSetColumnIndex(1); if (i < st.size()) ImGui::Text("%+7.2f", st[i].get<double>()); else ImGui::TextDisabled("   -");
-        ImGui::TableSetColumnIndex(2); if (i < ro.size()) ImGui::Text("%6.0f", ro[i].get<double>()); else ImGui::TextDisabled("   -");
-        ImGui::TableSetColumnIndex(3); if (i < su.size()) ImGui::Text("%+6.1f", su[i].get<double>()); else ImGui::TextDisabled("   -");
+        ImGui::TableSetColumnIndex(1); if (i < st.size()) ImGui::Text("%+7.2f", appui::NumAt(st, i)); else ImGui::TextDisabled("   -");
+        ImGui::TableSetColumnIndex(2); if (i < ro.size()) ImGui::Text("%6.0f", appui::NumAt(ro, i)); else ImGui::TextDisabled("   -");
+        ImGui::TableSetColumnIndex(3); if (i < su.size()) ImGui::Text("%+6.1f", appui::NumAt(su, i)); else ImGui::TextDisabled("   -");
         if (ui::GetFonts().mono) ImGui::PopFont();
       }
       ImGui::EndTable();

@@ -204,7 +204,7 @@ void App::Init(int argc, char** argv) {
 void App::SavePrefs() {
   prefs_["dark_theme"] = dark_;
   std::ofstream f(fs::u8path(prefs_path_));
-  if (f) f << prefs_.dump(2);
+  if (f) f << prefs_.dump(2, ' ', false, json::error_handler_t::replace);
 }
 
 void App::Log(const std::string& msg, const std::string& level) {
@@ -275,15 +275,16 @@ void App::ConnectBackend() {
     return;
   }
   Log("已连接后端");
-  if (!cfg_.contains("carsim")) {
-    Call("default_config", json::object(), [this](const json& r) {
-      json carla = cfg_["carla"];
-      cfg_ = r;
-      cfg_["carla"].update(carla);
-      if (!cfg_["drive"].contains("cosim_driver")) cfg_["drive"]["cosim_driver"] = cfg_["run"].value("driver", std::string("custom"));
-      RefreshDisk();
-    });
-  }
+  // Always start from the backend's full defaults and lay what we already have
+  // (e.g. a loaded, possibly partial config file) on top, so every section the
+  // pages read exists.
+  Call("default_config", json::object(), [this](const json& r) {
+    json cur = cfg_.is_object() ? cfg_ : json::object();
+    cfg_ = r;
+    cfg_.merge_patch(cur);
+    if (!cfg_["drive"].contains("cosim_driver")) cfg_["drive"]["cosim_driver"] = cfg_["run"].value("driver", std::string("custom"));
+    RefreshDisk();
+  });
   Call("rig_presets", json::object(), [this](const json& r) { rig_presets_ = r; });
 }
 
@@ -295,6 +296,7 @@ void App::ConnectCarla() {
     carla_connected_ = true;
     server_info_ = r;
     world_ = r;
+    if (r.contains("cosim_state") && r["cosim_state"].is_string()) run_state_ = r["cosim_state"].get<std::string>();
     map_choice_ = r.value("map", std::string());
     SavePrefs();
     RefreshAfterMapChange();
@@ -307,6 +309,8 @@ void App::ConnectCarla() {
 void App::RefreshWorld() {
   Call("world_info", json::object(), [this](const json& r) {
     world_ = r;
+    // The backend's run state is authoritative (e.g. after a reconnect).
+    if (r.contains("cosim_state") && r["cosim_state"].is_string()) run_state_ = r["cosim_state"].get<std::string>();
     weather_edit_ = r.value("weather", json::object());
   });
 }
@@ -489,8 +493,10 @@ json App::PaneSpec(const std::string& source, int w, int h) const {
     for (const json& s : const_cast<App*>(this)->RigSensors()) {
       if (s.value("name", std::string()) != name) continue;
       const std::string t = s.value("type", std::string());
+      if (t != "rgb" && t != "depth" && t != "semantic" && t != "instance" && t != "lidar" && t != "radar")
+        return json();  // e.g. an IMU: nothing to show as an image
       v["kind"] = t;
-      v["mount"] = {{"x", s["x"]}, {"y", s["y"]}, {"z", s["z"]}, {"pitch", s["pitch"]}, {"yaw", s["yaw"]}, {"roll", s["roll"]}};
+      v["mount"] = json{{"x", s.value("x", 0.0)}, {"y", s.value("y", 0.0)}, {"z", s.value("z", 0.0)}, {"pitch", s.value("pitch", 0.0)}, {"yaw", s.value("yaw", 0.0)}, {"roll", s.value("roll", 0.0)}};
       v["attrs"] = s.value("attributes", json::object());
       if (t == "lidar" || t == "radar") v["width"] = v["height"] = std::min(w, h);
       return v;
@@ -537,7 +543,13 @@ void App::SendViews() {
     views.push_back(v);
     panes_[i].frames = 0;
   }
-  Call("views_set", {{"views", views}}, [this](const json&) { view_on_ = true; });
+  // view_on_ follows the "views_active" event, which comes before this reply:
+  // setting it here would reopen views the user closed while the call was running.
+  ++views_pending_;
+  be_.Request("views_set", {{"views", views}}, [this](bool ok, const json&, const std::string& err) {
+    --views_pending_;
+    if (!ok) Log(err, "error");
+  });
 }
 
 static void UploadRgb(unsigned int& tex, int w, int h, const std::vector<unsigned char>& px) {
@@ -621,7 +633,7 @@ void App::SaveConfig(const std::string& path) {
     Log("无法写入 " + path, "error");
     return;
   }
-  f << cfg_.dump(2);
+  f << cfg_.dump(2, ' ', false, json::error_handler_t::replace);
   cfg_path_ = path;
   prefs_["last_config"] = path;
   SavePrefs();
@@ -664,23 +676,30 @@ void App::OnEvent(const json& ev) {
       kb_throttle_ = kb_brake_ = kb_steer_ = 0;
     }
   } else if (type == "telemetry") {
-    last_tel_ = ev["data"];
+    last_tel_ = ev.value("data", json::object());
+    // Defence in depth: a number the backend could not send (NaN) arrives as
+    // null; the readers below expect numbers.
+    for (auto& kv : last_tel_.items()) {
+      if (kv.value().is_null()) kv.value() = 0.0;
+      if (kv.value().is_array())
+        for (auto& e : kv.value()) if (e.is_null()) e = 0.0;
+    }
     const json& d = last_tel_;
     PushHist(h_t_, d.value("t", 0.0f), kHist);
     if (d.contains("location") && d["location"].size() >= 2) {
-      PushHist(trail_x_, d["location"][0].get<float>(), 6000);
-      PushHist(trail_y_, d["location"][1].get<float>(), 6000);
+      PushHist(trail_x_, static_cast<float>(appui::NumAt(d["location"], 0)), 6000);
+      PushHist(trail_y_, static_cast<float>(appui::NumAt(d["location"], 1)), 6000);
     }
     PushHist(h_speed_, d.value("speed_kmh", 0.0f), kHist);
     PushHist(h_rt_, d.value("rt_factor", 0.0f), kHist);
     const json& st = d["wheel_steer"];
-    PushHist(h_steer_fl_, st.size() > 0 ? st[0].get<float>() : 0.0f, kHist);
-    PushHist(h_steer_fr_, st.size() > 1 ? st[1].get<float>() : 0.0f, kHist);
+    PushHist(h_steer_fl_, st.size() > 0 ? static_cast<float>(appui::NumAt(st, 0)) : 0.0f, kHist);
+    PushHist(h_steer_fr_, st.size() > 1 ? static_cast<float>(appui::NumAt(st, 1)) : 0.0f, kHist);
     const json& su = d["wheel_suspension_mm"];
-    for (size_t i = 0; i < 4; ++i) PushHist(h_susp_[i], su.size() > i ? su[i].get<float>() : 0.0f, kHist);
+    for (size_t i = 0; i < 4; ++i) PushHist(h_susp_[i], su.size() > i ? static_cast<float>(appui::NumAt(su, i)) : 0.0f, kHist);
     const json& a = d["action"];
-    PushHist(h_thr_, a.size() > 0 ? a[0].get<float>() : 0.0f, kHist);
-    PushHist(h_brk_, a.size() > 1 ? a[1].get<float>() : 0.0f, kHist);
+    PushHist(h_thr_, a.size() > 0 ? static_cast<float>(appui::NumAt(a, 0)) : 0.0f, kHist);
+    PushHist(h_brk_, a.size() > 1 ? static_cast<float>(appui::NumAt(a, 1)) : 0.0f, kHist);
   } else if (type == "collect_stats") {
     collect_stats_ = ev;
   } else if (type == "frame") {
@@ -709,7 +728,7 @@ void App::OnEvent(const json& ev) {
   } else if (type == "views_active") {
     // The backend says which live views exist (e.g. none after a failed respawn).
     view_on_ = !ev.value("ids", json::array()).empty();
-    if (!view_on_) view_frames_ = 0;
+    view_frames_ = 0;  // a new set of views: count its own frames
   } else if (type == "export_progress") {
     ds_export_done_ = ev.value("done", 0);
     ds_export_total_ = ev.value("total", 0);
@@ -721,7 +740,16 @@ void App::OnEvent(const json& ev) {
     else
       Log("导出失败：" + ev.value("error", std::string()), "error");
   } else if (type == "disconnected") {
+    // Nothing the backend owned is valid any more: never stay "running" or busy.
     carla_connected_ = false;
+    if (Running()) run_state_ = "error";
+    busy_.clear();
+    view_on_ = false;
+    ds_play_ = false;
+    ds_pending_ = 0;
+    ds_dirty_ = false;
+    ds_exporting_ = false;
+    last_tel_ = json::object();
     Log("与后端的连接断开了", "error");
   }
 }
@@ -793,7 +821,8 @@ void App::BuildTour() {
       {kPanelDrive, [this] { click_target_ = "继续"; }, [this] { return run_state_ == "running"; }, ""},
       {kPanelDrive, [this] { click_target_ = "停止"; },
        [this] { return run_state_ == "stopped" && last_tel_.empty(); }, "11b_stopped"},
-      {kPanelDrive, [this] { click_target_ = "view:wheel"; }, [this] { return view_on_ && view_mode_ == "wheel" && busy_.empty(); }, ""},
+      {kPanelDrive, [this] { click_target_ = "view:wheel"; },
+       [this] { return view_on_ && view_mode_ == "wheel" && busy_.empty() && views_pending_ == 0 && view_frames_ > 3; }, ""},
       {kPanelDrive, [this] { click_target_ = "view:close"; }, [this] { return !view_on_; }, ""},
       {kPanelDrive, [this] { click_target_ = "viewport:action"; }, [this] { return view_on_; }, ""},
       {-1, [this] { click_target_ = "tab:传感器"; }, [this] { return panel_ == kPanelRig; }, ""},
@@ -916,8 +945,9 @@ void App::TourTick() {
       started = false;
     }
   } else if (frames_in_step > 60 * 240) {
-    Log("TOUR step " + std::to_string(tour_i_) + " TIMEOUT", "error");
-    if (!s.shot.empty()) shot_name_ = s.shot + "_TIMEOUT";
+    Log("TOUR step " + std::to_string(tour_i_) + " TIMEOUT (click " + (click_target_.empty() ? "-" : click_target_) +
+        ", busy " + (busy_.empty() ? "-" : busy_) + ", run " + run_state_ + ", view " + (view_on_ ? "on" : "off") + ")", "error");
+    shot_name_ = (s.shot.empty() ? "step" + std::to_string(tour_i_) : s.shot) + "_TIMEOUT";
     ++tour_i_;
     started = false;
   }
@@ -935,8 +965,10 @@ void App::TourClick() {
     return;
   }
   ImGuiIO& io = ImGui::GetIO();
+  // Every frame: with the window focused (e.g. on Windows) the GLFW backend
+  // reports the real cursor each frame, which would move the press elsewhere.
+  if (click_phase_ < 6) io.AddMousePosEvent(c.x, c.y);
   switch (click_phase_++) {
-    case 0: io.AddMousePosEvent(c.x, c.y); break;
     case 2: io.AddMouseButtonEvent(ImGuiMouseButton_Left, true); break;
     case 4: io.AddMouseButtonEvent(ImGuiMouseButton_Left, false); break;
     case 6: io.AddMousePosEvent(-FLT_MAX, -FLT_MAX); click_target_.clear(); click_phase_ = 0; break;

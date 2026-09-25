@@ -260,7 +260,7 @@ Import（输入）保持你原来的三个，REPLACE 模式：油门、制动、
 6. 安装改版 Python 包：`pip install C:\carla\PythonAPI\carla\dist\carla-0.9.16-cp310-cp310-win_amd64.whl --force-reinstall`，
    检查 `python -c "import carla; print(hasattr(carla.Vehicle, 'apply_external_state'))"` 输出 `True`。
 7. 双击 **CARLA CoSim Studio (mod)**；界面“连接”页会显示绿色的“改版 CARLA：可用”。
-8. 验证：`python carsim_carla_bridge\tests\test_modified_carla.py --port 3000`，应该 11 项全部 PASS。
+8. 验证：`python carsim_carla_bridge\tests\test_modified_carla.py --port 3000`，应该 10 项全部 PASS。
 
 ---
 

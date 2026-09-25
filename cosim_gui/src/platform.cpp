@@ -6,6 +6,7 @@
 #include <winsock2.h>
 #include <ws2tcpip.h>
 #include <windows.h>
+#include <shellapi.h>
 #else
 #include <arpa/inet.h>
 #include <fcntl.h>
@@ -177,6 +178,26 @@ void Kill(Process& p) {
   waitpid(static_cast<pid_t>(p.handle), &status, 0);
 #endif
   p.handle = 0;
+}
+
+std::vector<std::string> Utf8Args(int argc, char** argv) {
+  std::vector<std::string> out;
+#ifdef _WIN32
+  int n = 0;
+  LPWSTR* w = CommandLineToArgvW(GetCommandLineW(), &n);
+  if (w) {
+    for (int i = 0; i < n; ++i) {
+      int len = WideCharToMultiByte(CP_UTF8, 0, w[i], -1, nullptr, 0, nullptr, nullptr);
+      std::string s(static_cast<size_t>(len > 0 ? len - 1 : 0), '\0');
+      if (len > 1) WideCharToMultiByte(CP_UTF8, 0, w[i], -1, &s[0], len, nullptr, nullptr);
+      out.push_back(s);
+    }
+    LocalFree(w);
+    return out;
+  }
+#endif
+  for (int i = 0; i < argc; ++i) out.emplace_back(argv[i]);
+  return out;
 }
 
 std::string ExecutableDir() {

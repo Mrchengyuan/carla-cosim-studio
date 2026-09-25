@@ -21,6 +21,7 @@ CAMERA_MOUNTS = {
     "top": carla.Transform(carla.Location(z=22.0), carla.Rotation(pitch=-90)),
 }
 CAMERA_KINDS = ("rgb", "depth", "semantic", "instance")
+VIEW_KINDS = CAMERA_KINDS + ("lidar", "radar")  # sensors that can be shown as an image
 
 # Height colour map for lidar points: blue (low) -> cyan -> green -> yellow -> red (high).
 _STOPS = np.array([[40, 90, 255], [0, 210, 255], [60, 220, 90], [255, 220, 40], [255, 70, 50]], dtype=np.float32)
@@ -91,6 +92,7 @@ class ViewStreamer:
         with self.lock:
             views, self.views = self.views, {}
         for v in views.values():
+            v["dead"] = True  # late callbacks of this actor are ignored
             try:
                 v["actor"].stop()
                 v["actor"].destroy()
@@ -102,65 +104,74 @@ class ViewStreamer:
 
     def set(self, world, vehicle, specs):
         """Replace all views. spec: {id, kind, mode?, mount?, attrs?, width, height, fps}."""
+        for spec in specs:  # validate everything before touching the world
+            if spec.get("kind", "rgb") not in VIEW_KINDS:
+                raise ValueError("不能作为视图显示的传感器类型：%s" % spec.get("kind"))
+            if not spec.get("id"):
+                raise ValueError("视图缺少 id")
         self.stop(notify=False)
-        bl = world.get_blueprint_library()
-        out = []
-        for spec in specs:
-            kind = spec.get("kind", "rgb")
-            if kind not in rigmod.SENSOR_BLUEPRINTS:
-                raise ValueError("不支持的视图类型 %s" % kind)
-            bp = bl.find(rigmod.SENSOR_BLUEPRINTS[kind])
-            attrs = dict(rigmod.default_attrs(kind))
-            attrs.update(spec.get("attrs") or {})
-            w, h = int(spec.get("width", 640)), int(spec.get("height", 360))
-            mount = spec.get("mount")
-            if kind in CAMERA_KINDS:
-                attrs["image_size_x"], attrs["image_size_y"] = w, h
-                if not mount and "fov" not in (spec.get("attrs") or {}):
-                    attrs["fov"] = 60 if spec.get("mode") == "wheel" else 90
-                tf = _transform(mount) if mount else CAMERA_MOUNTS.get(spec.get("mode", "chase"), CAMERA_MOUNTS["chase"])
-            else:
-                if kind == "lidar":
-                    attrs.setdefault("rotation_frequency", 10.0)
-                tf = _transform(mount or default_mount(kind, vehicle))
-            for k, val in attrs.items():
-                if bp.has_attribute(k):
-                    bp.set_attribute(k, str(val))
-            actor = world.spawn_actor(bp, tf, attach_to=vehicle)
-            v = {"actor": actor, "spec": dict(spec), "kind": kind, "period": 1.0 / max(1.0, float(spec.get("fps", 12))),
-                 "last": 0.0, "mount": tf, "buf": [], "sweep": 0.0}
-            if kind in ("lidar", "radar"):
-                size = min(w, h)
-                rng = float(attrs.get("range", 60.0))
-                if kind == "lidar":
-                    rng = min(rng, 80.0)
-                    v["sweep"] = 1.0 / max(1.0, float(attrs.get("rotation_frequency", 10.0)))
-                else:
-                    v["sweep"] = 0.1
-                v["bev"] = _Bev(size, rng, vehicle)
-            vid = spec["id"]
-            with self.lock:
-                self.views[vid] = v
-            actor.listen(lambda data, vid=vid: self._on_data(vid, data))
-            out.append({"id": vid, "kind": kind, "actor": actor.id})
+        try:
+            out = [self._add(world, vehicle, spec) for spec in specs]
+        except Exception:
+            self.stop(notify=False)  # no half-built set of views
+            self.emit({"event": "views_active", "ids": []})  # the old ones are gone too
+            raise
         self.emit({"event": "views_active", "ids": [o["id"] for o in out]})
         return out
 
-    # ------------------------------------------------------------ rendering
-    def _on_data(self, vid, data):
-        v = self.views.get(vid)
-        if v is None:
-            return
-        kind = v["kind"]
+    def _add(self, world, vehicle, spec):
+        bl = world.get_blueprint_library()
+        kind = spec.get("kind", "rgb")
+        bp = bl.find(rigmod.SENSOR_BLUEPRINTS[kind])
+        attrs = dict(rigmod.default_attrs(kind))
+        attrs.update(spec.get("attrs") or {})
+        w, h = int(spec.get("width", 640)), int(spec.get("height", 360))
+        mount = spec.get("mount")
+        if kind in CAMERA_KINDS:
+            attrs["image_size_x"], attrs["image_size_y"] = w, h
+            if not mount and "fov" not in (spec.get("attrs") or {}):
+                attrs["fov"] = 60 if spec.get("mode") == "wheel" else 90
+            tf = _transform(mount) if mount else CAMERA_MOUNTS.get(spec.get("mode", "chase"), CAMERA_MOUNTS["chase"])
+        else:
+            if kind == "lidar":
+                attrs.setdefault("rotation_frequency", 10.0)
+            tf = _transform(mount or default_mount(kind, vehicle))
+        for k, val in attrs.items():
+            if bp.has_attribute(k):
+                bp.set_attribute(k, str(val))
+        v = {"spec": dict(spec), "kind": kind, "period": 1.0 / max(1.0, float(spec.get("fps", 12))),
+             "last": 0.0, "mount": tf, "buf": [], "sweep": 0.0}
         if kind in ("lidar", "radar"):
-            # Collect one full sweep before drawing (the sensor returns a slice per tick).
-            v["buf"].append((data.timestamp, self._points(v, data)))
-            v["buf"] = [b for b in v["buf"] if data.timestamp - b[0] < v["sweep"] - 1e-6]
-        now = time.time()
-        if now - v["last"] < v["period"]:
+            size = min(w, h)
+            rng = float(attrs.get("range", 60.0))
+            if kind == "lidar":
+                rng = min(rng, 80.0)
+                v["sweep"] = 1.0 / max(1.0, float(attrs.get("rotation_frequency", 10.0)))
+            else:
+                v["sweep"] = 0.1
+            v["bev"] = _Bev(size, rng, vehicle)
+        v["actor"] = actor = world.spawn_actor(bp, tf, attach_to=vehicle)
+        vid = spec["id"]
+        with self.lock:
+            self.views[vid] = v
+        # Bound to this view object, not its id: a late frame of a replaced
+        # view must not be drawn with the new view's settings.
+        actor.listen(lambda data, v=v, vid=vid: self._on_data(vid, v, data))
+        return {"id": vid, "kind": kind, "actor": actor.id}
+
+    # ------------------------------------------------------------ rendering
+    def _on_data(self, vid, v, data):
+        if v.get("dead"):
             return
-        v["last"] = now
+        now = time.time()
         try:
+            if v["kind"] in ("lidar", "radar"):
+                # Collect one full sweep before drawing (the sensor returns a slice per tick).
+                v["buf"].append((data.timestamp, self._points(v, data)))
+                v["buf"] = [b for b in v["buf"] if data.timestamp - b[0] < v["sweep"] - 1e-6]
+            if now - v["last"] < v["period"]:
+                return
+            v["last"] = now
             rgb = self._render(v, data)
         except Exception as e:  # never kill the sensor thread
             print("view %s render failed: %s" % (vid, e), flush=True)
@@ -195,7 +206,8 @@ class ViewStreamer:
         if kind == "lidar":
             idx = np.clip((pts[:, 2] + 2.5) / 4.0 * 255, 0, 255).astype(np.int32)
             return v["bev"].draw(pts[:, 0], pts[:, 1], _LUT[idx], dot=1)
-        # Radar: red = approaching, blue = moving away, white = static.
+        # Radar: velocity is relative to the sensor: red = closing in, blue = moving
+        # away, white = same speed (a static object reads as closing while the ego drives).
         vel = pts[:, 2]
         t = np.clip(np.abs(vel) / 10.0, 0, 1)[:, None]
         white = np.array([235, 235, 235], np.float32)

@@ -105,7 +105,7 @@ make launch           :: 编译 Unreal 插件并打开 UE4 编辑器，点 Play 
 ## 6. 编译验证情况（已在 Ubuntu 22.04 上完整编译并运行）
 
 - UE4 定制版、CARLA 编辑器（含本补丁的 Unreal 插件）、LibCarla 和 PythonAPI 都已在服务器上用官方工具链编译通过，0 个错误。
-- 改版服务器上跑 `tests/test_modified_carla.py`，11 项全部通过：位姿零误差、`get_velocity` 和角速度是真实值、
+- 改版服务器上跑 `tests/test_modified_carla.py`，10 项全部通过：位姿零误差、`get_velocity` 和角速度是真实值、
   IMU 陀螺仪读到正确的横摆角速度、四轮转向、悬架（车轮骨骼按指令移动 4 cm）、切回 PhysX 时速度交接。
   连续 300 帧 0 帧延迟，`apply_external_state` 每帧约 0.65 ms。
 - `apply_external_state` 是**阻塞调用**：CARLA 服务器用多线程处理 RPC，如果不等待返回，偶尔会被下一次 tick 抢先，

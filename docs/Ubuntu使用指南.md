@@ -288,7 +288,7 @@ python -c "import carla; print(hasattr(carla.Vehicle, 'apply_external_state'))" 
 - **第一次启动要编译着色器，可能需要 20–40 分钟**，以后每次约 1–2 分钟。
 - 改版 CARLA 是以“编辑器游戏模式”运行的，**第一次切换到某张地图也要现场编译，会很慢**。需要频繁切换地图时，可以打包成正式版：`cd carla_src && make package`（再需要 1–2 小时和约 20 GB 空间），打包版切换地图约 6 秒。
 - 只测试接口、不需要画面时：`./scripts/carla_mod_server.sh --norender`。
-- 验证改版接口：`venv_build/bin/python carsim_carla_bridge/tests/test_modified_carla.py --port 3000`，应该 11 项全部 PASS。
+- 验证改版接口：`venv_build/bin/python carsim_carla_bridge/tests/test_modified_carla.py --port 3000`，应该 10 项全部 PASS。
 
 编译过程中我们遇到并已在脚本里处理的问题（供参考）：
 - CARLA 0.9.16 的 `Setup.sh` 里 libpng 下载地址已失效 → `carla_patches/carla_0.9.16_linux_libpng_url_fix.patch`。
@@ -326,6 +326,8 @@ CARLA 启动后，在 `carsim_carla_bridge` 目录执行：
 python tests/test_coords.py                          # 坐标换算（不需要 CARLA）
 python tests/test_backend.py                         # 界面后端全部命令，约 2 分钟
 python tests/test_features.py                        # 驾驶模式 + 3 帧采集（测完自动删除）
+python tests/test_robustness.py                      # 控制算法出错、NaN、错误请求、重新连接时的清理
+python tests/test_dataset.py                         # 6 帧采集 → 浏览 → KITTI / nuScenes 导出（测完自动删除）
 python tests/test_modified_carla.py --port 3000      # 改版 CARLA 接口（需要改版 CARLA 和 venv_build）
 ```
 界面自动演示：`./cosim_gui/build/carla_cosim_studio --tour /tmp/tour --auto-connect`（会依次操作每个页面并截图到 `/tmp/tour`）。

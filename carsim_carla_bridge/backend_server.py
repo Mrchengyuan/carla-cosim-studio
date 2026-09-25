@@ -19,6 +19,7 @@ import math
 import os
 import queue
 import random
+import re
 import shutil
 import signal
 import sys
@@ -91,6 +92,25 @@ class Backend:
         except RuntimeError:
             return False
 
+    @staticmethod
+    def _try(fn):
+        """Run one cleanup step; a failure (e.g. CARLA gone) must not stop the next."""
+        try:
+            fn()
+        except Exception:
+            traceback.print_exc()
+
+    def _teardown(self):
+        """Remove everything this backend put into the world (run, views, sensors,
+        traffic, ego), best effort: used before reconnecting and on exit."""
+        self._try(lambda: self._stop_cosim_if_running("stopped"))
+        self._try(self.views.stop)
+        for sid in list(self.sensors):
+            self._try(lambda sid=sid: self.cmd_remove_sensor(sid))
+        self._try(self.cmd_clear_traffic)
+        self._try(lambda: self.ego.destroy() if self._alive(self.ego) else None)
+        self.ego = self.anchor = None
+
     def _tick_or_wait(self, n=1):
         w = self._need_world()
         for _ in range(n):
@@ -104,15 +124,26 @@ class Backend:
         return "pong"
 
     def cmd_connect(self, host="localhost", port=2000, timeout=20.0):
+        if self.world is not None:
+            # Reconnecting: take our ego, sensors, views and traffic out of the
+            # old world first, or they stay behind as orphans.
+            self._teardown()
         self.client = carla.Client(host, int(port))
         self.client.set_timeout(float(timeout))
         self.world = self.client.get_world()
         self.tm = self.client.get_trafficmanager(8000)
         self.ego = None
+        sv, cv = self.client.get_server_version(), self.client.get_client_version()
+        # Does the server have the external-dynamics API? A server built from
+        # the same tree as the patched client has; a plain release (e.g.
+        # "0.9.16") has not; otherwise the first co-sim run finds out.
+        self.server_api = None
+        if hasattr(carla.Vehicle, "apply_external_state"):
+            self.server_api = True if sv == cv else False if re.fullmatch(r"\d+\.\d+\.\d+", sv) else None
         info = self.cmd_world_info()
         info.update({
-            "server_version": self.client.get_server_version(),
-            "client_version": self.client.get_client_version(),
+            "server_version": sv,
+            "client_version": cv,
             "external_api_client": hasattr(carla.Vehicle, "apply_external_state"),
         })
         self._log("已连接 %s:%s，地图 %s" % (host, port, info["map"]))
@@ -132,6 +163,7 @@ class Backend:
             "spectator_mode": self.spectator_mode,
             "cosim_state": self.cosim_state,
             "idle_tick": self.idle_tick,
+            "external_api_server": getattr(self, "server_api", None),
         }
 
     # ---------------------------------------------------------------- world
@@ -273,13 +305,18 @@ class Backend:
 
     def cmd_spawn_ego(self, blueprint="vehicle.tesla.model3", spawn_index=0, color=""):
         w = self._need_world()
+        # Validate before destroying the current ego, so a bad request loses nothing.
+        bp = next((b for b in w.get_blueprint_library() if b.id == blueprint), None)
+        if bp is None:
+            raise RuntimeError("这个 CARLA 里没有车型 %s，请在“车辆与视角”页重新选择" % blueprint)
+        pts = w.get_map().get_spawn_points()
+        if not pts:
+            raise RuntimeError("当前地图没有出生点")
         self._stop_cosim_if_running()
         self.cmd_destroy_ego()
-        bp = w.get_blueprint_library().find(blueprint)
         bp.set_attribute("role_name", "hero")
         if color and bp.has_attribute("color"):
             bp.set_attribute("color", color)
-        pts = w.get_map().get_spawn_points()
         spawn_index = int(spawn_index) % len(pts)
         self.anchor = pts[spawn_index]
         self.ego = w.try_spawn_actor(bp, self.anchor)
@@ -538,6 +575,8 @@ class Backend:
             raise RuntimeError("不是采集生成的数据集目录，拒绝删除：%s" % root)
         if self.collector is not None and os.path.abspath(getattr(self.collector, "root", "")) == root:
             raise RuntimeError("这个数据集正在采集中")
+        if self.exporter.busy() and self.exporter.root == root:
+            raise RuntimeError("这个数据集正在导出，等导出结束再删除")
         size = dsmod.dir_size(root)
         shutil.rmtree(root)
         if self._ds is not None and self._ds.root == root:
@@ -619,47 +658,42 @@ class Backend:
         view_specs = self.views.specs()
         color = self.ego.attributes.get("color", "") if self._alive(self.ego) else ""
         old = (self.ego.type_id, self.ego.get_transform(), self.anchor) if self._alive(self.ego) else None
+        prev_ego = self.ego
         try:
             self.cmd_spawn_ego(c["vehicle"], c["spawn_index"], color)
-        except RuntimeError:
+        except Exception:
             # The run did not start: put the previous ego back where it was, with
             # its sensors and views, so a failed start costs the user nothing.
-            if old is not None:
-                bp = w.get_blueprint_library().find(old[0])
-                bp.set_attribute("role_name", "hero")
-                if color and bp.has_attribute("color"):
-                    bp.set_attribute("color", color)
-                tf = old[1]
-                for attempt in range(5):
-                    # The destroyed ego only leaves the physics scene on the next frame.
-                    self._tick_or_wait(1)
-                    tf.location.z += 0.1
-                    self.ego = w.try_spawn_actor(bp, tf)
-                    if self.ego is not None:
-                        break
-                if self.ego is not None:  # is_alive can lag one frame behind the spawn
-                    self.anchor = old[2]
-                    self._tick_or_wait(1)
-                    for spec in sensor_specs:
-                        self.cmd_add_sensor(**spec)
-                    if view_specs:
-                        self.cmd_views_set(view_specs)
+            # (Nothing to do when the request was refused before the ego was touched.)
+            if old is not None and not (self.ego is prev_ego and self._alive(prev_ego)):
+                try:
+                    self._restore_ego(old, color, sensor_specs, view_specs)
+                except Exception:
+                    traceback.print_exc()  # report the original error, not this one
             raise
         for spec in sensor_specs:
             self.cmd_add_sensor(**spec)
         if view_specs:
             self.cmd_views_set(view_specs)
-        # Settle under PhysX so the bridge reads a resting vehicle.
+        self._unsent_tel = None
         self._pre_cosim_settings = w.get_settings()
-        s = w.get_settings()
-        s.synchronous_mode, s.fixed_delta_seconds = True, d["sync"]["frame_dt"]
-        w.apply_settings(s)
-        self.tm.set_synchronous_mode(True)
-        for _ in range(20):
-            w.tick()
-        cosim = d["drive"]["dynamics"] == "cosim"
-        self.session = CoSimSession(w, self.ego, self.anchor, d) if cosim else \
-            CarlaDriveSession(w, self.ego, d, self.tm)
+        try:
+            # Settle under PhysX so the bridge reads a resting vehicle.
+            s = w.get_settings()
+            s.synchronous_mode, s.fixed_delta_seconds = True, d["sync"]["frame_dt"]
+            w.apply_settings(s)
+            self.tm.set_synchronous_mode(True)
+            for _ in range(20):
+                w.tick()
+            cosim = d["drive"]["dynamics"] == "cosim"
+            self.session = CoSimSession(w, self.ego, self.anchor, d) if cosim else \
+                CarlaDriveSession(w, self.ego, d, self.tm)
+        except BaseException:
+            # Never leave the world in sync mode with nobody ticking it.
+            pre, self._pre_cosim_settings = self._pre_cosim_settings, None
+            self._try(lambda: w.apply_settings(pre))
+            self._try(lambda: self.tm.set_synchronous_mode(pre.synchronous_mode))
+            raise
         try:
             info = self.session.start()
             if col_cfg["enabled"]:
@@ -668,10 +702,12 @@ class Backend:
                 info["collect"] = self.collector.start()
                 self._log("数据采集开始：%d 个传感器 → %s（预计 %.1f MB/s）" % (
                     len(self.collector.sensor_cfgs), info["collect"]["root"], info["collect"]["estimate"]["mb_per_s"]))
-        except Exception:
+        except BaseException:  # SystemExit from a user controller included
             self._stop_cosim_if_running("error")
             raise
         self._set_cosim_state("running")
+        if info.get("server_api") is not None:
+            self.server_api = info["server_api"]
         if cosim:
             self._log("联合仿真开始：%s，参考点 %s，每帧 %d 个 CarSim 步，驾驶：%s" % (
                 "改版 CARLA 接口" if info["external_api"] else "原版兼容模式",
@@ -681,6 +717,33 @@ class Backend:
         else:
             self._log("仿真开始：CARLA 物理，驾驶：%s" % d["drive"]["carla_driver"])
         return info
+
+    def _restore_ego(self, old, color, sensor_specs, view_specs):
+        """Put the previous ego (type, transform, anchor) back with its sensors and views."""
+        w = self.world
+        if self._alive(self.ego):  # spawned, then something after the spawn failed
+            self._try(self.cmd_destroy_ego)
+        self.ego = None
+        bp = w.get_blueprint_library().find(old[0])
+        bp.set_attribute("role_name", "hero")
+        if color and bp.has_attribute("color"):
+            bp.set_attribute("color", color)
+        tf = old[1]
+        for _ in range(5):
+            # The destroyed ego only leaves the physics scene on the next frame.
+            self._tick_or_wait(1)
+            tf.location.z += 0.1
+            self.ego = w.try_spawn_actor(bp, tf)
+            if self.ego is not None:
+                break
+        if self.ego is None:  # is_alive can lag one frame behind the spawn, so test for None
+            return
+        self.anchor = old[2]
+        self._tick_or_wait(1)
+        for spec in sensor_specs:
+            self.cmd_add_sensor(**spec)
+        if view_specs:
+            self.cmd_views_set(view_specs)
 
     def cmd_manual_control(self, throttle=0.0, brake=0.0, steer=0.0):
         drv = getattr(self.session, "command_driver", None) if self.session else None
@@ -737,28 +800,32 @@ class Backend:
 
     def cmd_cosim_stop(self):
         self._stop_cosim_if_running("stopped")
+        # Always report the state, so a GUI that is out of sync (e.g. after a
+        # backend restart) stops showing "running".
+        self._set_cosim_state(self.cosim_state if self.cosim_state not in ("running", "paused") else "stopped")
         return True
 
     def _stop_cosim_if_running(self, final="stopped", detail=""):
-        if self.collector is not None:
-            try:
-                self.collector.stop()
-            finally:
-                self.collector = None
-        if self.session is None:
+        """Best effort: every step runs even if an earlier one fails (CARLA may be
+        gone), and afterwards there is no session and the state is `final`."""
+        col, self.collector = self.collector, None
+        if col is not None:
+            self._try(col.stop)
+        ses, self.session = self.session, None
+        self._unsent_tel = None
+        if ses is None:
+            if self.cosim_state in ("running", "paused"):
+                self._set_cosim_state(final, detail)
             return
-        try:
-            self.session.stop(release_vehicle=True)
-        finally:
-            self.session = None
-            # Back to what the user had before co-sim (usually async), so the
-            # world does not stay frozen in sync mode with nobody ticking.
-            if getattr(self, "_pre_cosim_settings", None) is not None:
-                self.world.apply_settings(self._pre_cosim_settings)
-                self._pre_cosim_settings = None
-            self.tm.set_synchronous_mode(self.world.get_settings().synchronous_mode)
-            self._park_ego()
-            self._set_cosim_state(final, detail)
+        self._try(lambda: ses.stop(release_vehicle=True))
+        # Back to what the user had before co-sim (usually async), so the
+        # world does not stay frozen in sync mode with nobody ticking.
+        pre, self._pre_cosim_settings = getattr(self, "_pre_cosim_settings", None), None
+        if pre is not None:
+            self._try(lambda: self.world.apply_settings(pre))
+        self._try(lambda: self.tm.set_synchronous_mode(self.world.get_settings().synchronous_mode))
+        self._try(self._park_ego)
+        self._set_cosim_state(final, detail)
 
     def _park_ego(self):
         """Stop means stop, like the end of a CarSim run: without this the car
@@ -775,6 +842,9 @@ class Backend:
             pass
 
     def _cosim_frame(self, always_emit=False):
+        if self.session is None:  # state says running but the run is gone
+            self._stop_cosim_if_running("error", "仿真会话已丢失")
+            return
         try:
             tel = self.session.step()
             if self.collector is not None:
@@ -783,8 +853,9 @@ class Backend:
                     self._log("数据采集结束：%s，共 %d 帧，%.1f MB" % (
                         self.collector.stop_reason, self.collector.frames, self.collector.bytes / 1e6))
                     tel["done"] = True
-        except Exception as e:
-            self._log("仿真出错：%s" % e, "error")
+        except (Exception, SystemExit) as e:  # SystemExit: e.g. argparse in a user controller
+            traceback.print_exc()
+            self._log("仿真出错：%s" % (e or e.__class__.__name__), "error")
             self._stop_cosim_if_running("error", str(e))
             return
         self._update_spectator()
@@ -804,12 +875,7 @@ class Backend:
         if getattr(self, "_cleaned", False) or self.world is None:
             return
         self._cleaned = True
-        for step in (lambda: self._stop_cosim_if_running("stopped"), self.cmd_view_stop,
-                     self.cmd_clear_traffic, self.cmd_destroy_ego):
-            try:
-                step()
-            except Exception:
-                traceback.print_exc()
+        self._teardown()
 
     def cmd_shutdown(self):
         self.cleanup()
@@ -824,32 +890,58 @@ class Backend:
         return fn(**(req.get("args") or {}))
 
     def run_worker(self):
+        """The one thread that touches CARLA. It must never die: an uncaught
+        error here would leave the GUI waiting forever for replies."""
         while True:
-            if self.cosim_state == "running":
-                self._cosim_frame()
-                timeout = 0.0
-            else:
-                timeout = 0.05
-            # Serve every queued request between frames.
-            while True:
-                try:
-                    req, reply = self.requests.get(timeout=timeout)
-                except queue.Empty:
-                    break
-                timeout = 0.0
-                try:
-                    reply({"id": req.get("id"), "ok": True, "result": self.handle(req)})
-                except Exception as e:  # report every failure to the GUI
-                    traceback.print_exc()
-                    reply({"id": req.get("id"), "ok": False, "error": str(e) or e.__class__.__name__})
-            if self.cosim_state != "running" and self.world is not None:
-                try:
-                    if self.idle_tick and self.world.get_settings().synchronous_mode:
-                        self.world.tick()
-                        time.sleep(self.frame_dt)
-                    self._update_spectator()
-                except RuntimeError:
-                    pass
+            try:
+                self._worker_iteration()
+            except BaseException:
+                traceback.print_exc()
+                self._try(lambda: self._stop_cosim_if_running("error", "后端内部错误"))
+                time.sleep(0.1)
+
+    def _worker_iteration(self):
+        if self.cosim_state == "running":
+            self._cosim_frame()
+            timeout = 0.0
+        else:
+            timeout = 0.05
+        # Serve every queued request between frames.
+        while True:
+            try:
+                req, reply = self.requests.get(timeout=timeout)
+            except queue.Empty:
+                break
+            timeout = 0.0
+            try:
+                reply({"id": req.get("id"), "ok": True, "result": self.handle(req)})
+            except BaseException as e:  # report every failure to the GUI (SystemExit too)
+                traceback.print_exc()
+                reply({"id": req.get("id"), "ok": False, "error": str(e) or e.__class__.__name__})
+        if self.cosim_state != "running" and self.world is not None:
+            try:
+                if self.idle_tick and self.world.get_settings().synchronous_mode:
+                    self.world.tick()
+                    time.sleep(self.frame_dt)
+                self._update_spectator()
+            except RuntimeError:
+                pass
+
+
+def _json_safe(o):
+    """Replace non-finite floats with None and unknown objects with their str()."""
+    if isinstance(o, float):
+        return o if math.isfinite(o) else None
+    if isinstance(o, dict):
+        return {str(k): _json_safe(v) for k, v in o.items()}
+    if isinstance(o, (list, tuple)):
+        return [_json_safe(v) for v in o]
+    if o is None or isinstance(o, (str, int, bool)):
+        return o
+    try:
+        return _json_safe(float(o))  # numpy scalars
+    except (TypeError, ValueError):
+        return str(o)
 
 
 def serve(port, exit_with_client=False):
@@ -867,7 +959,13 @@ def serve(port, exit_with_client=False):
         lock = threading.Lock()
 
         def send(msg, conn=conn, lock=lock):
-            data = (json.dumps(msg, ensure_ascii=False) + "\n").encode("utf-8")
+            try:
+                text = json.dumps(msg, ensure_ascii=False, allow_nan=False)
+            except (ValueError, TypeError):
+                # NaN / inf (e.g. a diverging CarSim) are not valid JSON and the GUI
+                # would drop the whole message: send them as null instead.
+                text = json.dumps(_json_safe(msg), ensure_ascii=False, allow_nan=False)
+            data = (text + "\n").encode("utf-8")
             with lock:
                 try:
                     conn.sendall(data)
@@ -884,8 +982,14 @@ def serve(port, exit_with_client=False):
                 buf += chunk
                 while b"\n" in buf:
                     line, buf = buf.split(b"\n", 1)
-                    if line.strip():
-                        backend.requests.put((json.loads(line.decode("utf-8")), send))
+                    if not line.strip():
+                        continue
+                    try:
+                        req = json.loads(line.decode("utf-8"))
+                    except ValueError as e:  # one bad line must not end the backend
+                        send({"event": "log", "level": "error", "msg": "后端收到无法解析的请求：%s" % e})
+                        continue
+                    backend.requests.put((req, send))
         except OSError:
             pass
         finally:

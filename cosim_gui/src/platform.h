@@ -28,6 +28,9 @@ bool IsAlive(const Process& p);
 void Kill(Process& p);
 
 std::string ExecutableDir();
+// Command-line arguments as UTF-8 (on Windows argv is in the ANSI code page,
+// which breaks non-ASCII paths; there the wide command line is used instead).
+std::vector<std::string> Utf8Args(int argc, char** argv);
 bool FileExists(const std::string& path);
 
 }  // namespace plat

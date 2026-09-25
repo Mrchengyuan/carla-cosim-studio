@@ -102,12 +102,20 @@ class CarlaVehicleSync:
         self.wheel_angle = [0.0] * 4
         self._prev = None  # (time, position, R) for finite differences
 
-        if use_external_api is None:
-            use_external_api = hasattr(vehicle, "apply_external_state")
-        self.external_api = use_external_api
+        auto = use_external_api is None
+        self.external_api = hasattr(vehicle, "apply_external_state") if auto else bool(use_external_api)
+        self.server_api = None  # does the server have the API: True / False / not tried
         if self.external_api:
-            vehicle.enable_external_dynamics()
-        else:
+            try:
+                vehicle.enable_external_dynamics()
+                self.server_api = True
+            except RuntimeError as e:
+                # A patched client talks to an original server: the call is unknown there.
+                if not auto:
+                    raise RuntimeError("这个 CARLA 服务器不是改版，不支持外部动力学接口；"
+                                       "请把“CARLA 接口”设为“自动”或“强制原版兼容”（%s）" % e)
+                self.external_api, self.server_api = False, False
+        if not self.external_api:
             vehicle.set_simulate_physics(False)
 
     # ------------------------------------------------------------------ setup

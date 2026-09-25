@@ -37,6 +37,7 @@ class BackendClient {
 
  private:
   void ReaderLoop();
+  void FailPending(const std::string& why);
 
   plat::Socket sock_ = plat::kInvalidSocket;
   std::atomic<bool> connected_{false};

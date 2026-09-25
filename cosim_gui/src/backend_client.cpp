@@ -1,5 +1,8 @@
 #include "backend_client.h"
 
+#include <algorithm>
+#include <unordered_map>
+
 bool BackendClient::Connect(const std::string& host, int port, std::string& err) {
   Disconnect();
   sock_ = plat::TcpConnect(host, port, err);
@@ -16,12 +19,13 @@ void BackendClient::Disconnect() {
     sock_ = plat::kInvalidSocket;
   }
   if (reader_.joinable()) reader_.join();
+  FailPending("与后端的连接已断开");
+}
+
+void BackendClient::FailPending(const std::string& why) {
+  // Every outstanding request gets an error reply, so the UI never waits forever.
   std::lock_guard<std::mutex> lock(mu_);
-  // Fail every outstanding request so the UI never waits forever.
-  for (auto& kv : pending_) {
-    json fail = {{"id", kv.first}, {"ok", false}, {"error", "与后端的连接已断开"}};
-    inbox_.push_back(fail);
-  }
+  for (auto& kv : pending_) inbox_.push_back({{"id", kv.first}, {"ok", false}, {"error", why}});
 }
 
 void BackendClient::Request(const std::string& cmd, json args, Callback cb) {
@@ -37,7 +41,9 @@ void BackendClient::Request(const std::string& cmd, json args, Callback cb) {
     return;
   }
   json req = {{"id", id}, {"cmd", cmd}, {"args", std::move(args)}};
-  std::string line = req.dump() + "\n";
+  // Invalid UTF-8 (e.g. a non-ASCII path from the Windows ANSI code page) is
+  // replaced instead of throwing.
+  std::string line = req.dump(-1, ' ', false, json::error_handler_t::replace) + "\n";
   std::lock_guard<std::mutex> lock(send_mu_);
   if (!plat::SendAll(sock_, line)) {
     connected_ = false;
@@ -53,24 +59,37 @@ int BackendClient::PendingCount() {
 
 void BackendClient::ReaderLoop() {
   std::string buf;
+  size_t searched = 0;  // bytes of buf already known to hold no newline
+  int bad_lines = 0;
   char chunk[65536];
   while (connected_) {
     int n = plat::Recv(sock_, chunk, sizeof(chunk));
     if (n <= 0) break;
     buf.append(chunk, static_cast<size_t>(n));
-    size_t pos;
-    while ((pos = buf.find('\n')) != std::string::npos) {
-      std::string line = buf.substr(0, pos);
-      buf.erase(0, pos + 1);
+    size_t start = 0, pos;
+    while ((pos = buf.find('\n', std::max(start, searched))) != std::string::npos) {
+      std::string line = buf.substr(start, pos - start);
+      start = pos + 1;
+      searched = start;
       if (line.empty()) continue;
       json msg = json::parse(line, nullptr, false);
-      if (msg.is_discarded()) continue;
       std::lock_guard<std::mutex> lock(mu_);
+      if (msg.is_discarded()) {
+        // Should not happen (the backend sends strict JSON); say so rather than
+        // silently losing a reply the UI may be waiting for.
+        if (bad_lines++ < 5)
+          inbox_.push_back({{"event", "log"}, {"level", "error"},
+                            {"msg", "收到后端无法解析的消息（" + std::to_string(line.size()) + " 字节），已忽略"}});
+        continue;
+      }
       inbox_.push_back(std::move(msg));
     }
+    buf.erase(0, start);
+    searched = buf.size();
   }
   if (connected_) {
     connected_ = false;
+    FailPending("与后端的连接已断开");
     std::lock_guard<std::mutex> lock(mu_);
     inbox_.push_back({{"event", "disconnected"}});
   }
@@ -82,11 +101,22 @@ void BackendClient::Poll(const EventHandler& on_event) {
     std::lock_guard<std::mutex> lock(mu_);
     msgs.swap(inbox_);
   }
-  for (auto& msg : msgs) {
+  // Frames of the same view that piled up since the last poll: only the newest
+  // is worth decoding and uploading.
+  std::unordered_map<std::string, size_t> last_frame;
+  for (size_t i = 0; i < msgs.size(); ++i)
+    if (msgs[i].is_object() && msgs[i].value("event", std::string()) == "frame")
+      last_frame[msgs[i].value("view", std::string("p0"))] = i;
+  for (size_t i = 0; i < msgs.size(); ++i) {
+    json& msg = msgs[i];
+    if (msg.is_object() && msg.value("event", std::string()) == "frame" &&
+        last_frame[msg.value("view", std::string("p0"))] != i)
+      continue;
     if (msg.contains("id")) {
       Callback cb;
       {
         std::lock_guard<std::mutex> lock(mu_);
+        if (!msg["id"].is_number_integer()) continue;
         auto it = pending_.find(msg["id"].get<int>());
         if (it == pending_.end()) continue;
         cb = std::move(it->second);

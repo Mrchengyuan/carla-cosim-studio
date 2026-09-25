@@ -36,6 +36,9 @@ class App {
 
   void Init(int argc, char** argv);
   void Frame();
+  // Between the platform backend's NewFrame (which reads the real cursor) and
+  // ImGui::NewFrame: tour clicks queued here win over the cursor on every OS.
+  void BeforeNewFrame() { TourClick(); }
   void AfterRender(int fb_w, int fb_h);
   bool WantsQuit() const { return quit_; }
   std::string FontPathOverride() const { return font_path_; }
@@ -217,6 +220,7 @@ class App {
   int view_res_ = 2;  // 960x540: the viewport is large
   unsigned int view_tex_ = 0;
   int view_w_ = 0, view_h_ = 0, view_frames_ = 0;
+  int views_pending_ = 0;  // views_set calls not answered yet
   std::vector<unsigned char> view_pixels_;
   bool view_dirty_ = false;
   json view_rig_mount_;          // mount of the rig camera shown in the main pane
@@ -238,7 +242,7 @@ class App {
   json ds_export_result_ = json::object();
   std::string ds_root_, ds_left_, ds_right_, ds_export_cam_, ds_export_lidar_, ds_out_, ds_delete_;
   int ds_idx_ = 0, ds_pending_ = 0, ds_fps_ = 5, ds_fmt_ = 0, ds_min_pts_ = 1, ds_export_done_ = 0, ds_export_total_ = 0;
-  bool ds_boxes_ = true, ds_play_ = false, ds_exporting_ = false;
+  bool ds_boxes_ = true, ds_play_ = false, ds_exporting_ = false, ds_dirty_ = false;
   bool props_scroll_end_ = false;  // tour: scroll the properties panel to its end next frame
   double ds_last_step_ = 0;
   ViewPane ds_panes_[2];
@@ -270,4 +274,9 @@ bool ComboStr(const char* label, std::string& value, const std::vector<std::stri
               const std::vector<std::string>* shown = nullptr);
 std::string Fmt(const char* fmt, ...);
 bool Base64(const std::string& in, std::vector<unsigned char>& out);
+// Element i of a JSON array as a number; `def` when missing, null (the backend
+// sends NaN / inf as null) or not a number. Never throws.
+inline double NumAt(const json& j, size_t i, double def = 0.0) {
+  return j.is_array() && i < j.size() && j[i].is_number() ? j[i].get<double>() : def;
+}
 }  // namespace appui

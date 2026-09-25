@@ -119,27 +119,27 @@ class Session:
 
     def __init__(self, root):
         self.root = os.path.abspath(root)
-        with open(os.path.join(self.root, "calib.json")) as f:
+        with open(os.path.join(self.root, "calib.json"), encoding="utf-8") as f:
             self.calib = json.load(f)
         with open(os.path.join(self.root, "meta.json"), encoding="utf-8") as f:
             self.meta = json.load(f)
         self.sensors = self.calib["sensors"]
-        self.frames = sorted(int(os.path.basename(p)[:-5]) for p in glob.glob(os.path.join(self.root, "ego", "*.json")))
+        self.frames = sorted(int(os.path.basename(p)[:-5]) for p in glob.glob(os.path.join(glob.escape(self.root), "ego", "*.json")))
         self.extrinsic = {n: np.array(s["extrinsic_sensor_to_ego"]) for n, s in self.sensors.items()}
 
     def file(self, sensor, frame):
-        hits = glob.glob(os.path.join(self.root, sensor, "%06d.*" % frame))
+        hits = glob.glob(os.path.join(glob.escape(self.root), glob.escape(sensor), "%06d.*" % frame))
         return hits[0] if hits else None
 
     def ego(self, frame):
-        with open(os.path.join(self.root, "ego", "%06d.json" % frame)) as f:
+        with open(os.path.join(self.root, "ego", "%06d.json" % frame), encoding="utf-8") as f:
             return json.load(f)
 
     def labels(self, frame):
         p = os.path.join(self.root, "labels", "%06d.json" % frame)
         if not os.path.exists(p):
             return []
-        with open(p) as f:
+        with open(p, encoding="utf-8") as f:
             return json.load(f).get("objects", [])
 
     def lidar_points(self, sensor, frame):
@@ -179,7 +179,7 @@ class Session:
 
 def list_sessions(out_dir):
     out = []
-    for p in sorted(glob.glob(os.path.join(os.path.abspath(out_dir or "."), "*", "calib.json"))):
+    for p in sorted(glob.glob(os.path.join(glob.escape(os.path.abspath(out_dir or ".")), "*", "calib.json"))):
         root = os.path.dirname(p)
         try:
             s = Session(root).summary()
@@ -366,9 +366,9 @@ def export_kitti(ses, out, camera=None, lidar=None, min_lidar_pts=1, progress=No
 
     W = int(ses.sensors[camera]["attributes"]["image_size_x"])
     H = int(ses.sensors[camera]["attributes"]["image_size_y"])
-    ids, n_obj = [], 0
+    ids, pairs, n_obj = [], [], 0
     for idx, frame in enumerate(ses.frames):
-        name = "%06d" % idx
+        name = "%06d" % len(ids)  # contiguous KITTI indices even if a frame is skipped
         src = ses.file(camera, frame)
         if src is None:
             continue
@@ -377,7 +377,7 @@ def export_kitti(ses, out, camera=None, lidar=None, min_lidar_pts=1, progress=No
         pts_ego = ses.to_ego(lidar, pts)
         pts[:, 1] *= -1.0
         pts.tofile(os.path.join(tr, "velodyne", name + ".bin"))
-        with open(os.path.join(tr, "calib", name + ".txt"), "w") as f:
+        with open(os.path.join(tr, "calib", name + ".txt"), "w", encoding="utf-8") as f:
             for k in ("P0", "P1", "P2", "P3"):
                 f.write("%s: %s\n" % (k, row(P)))
             f.write("R0_rect: %s\n" % row(np.eye(3)))
@@ -417,19 +417,20 @@ def export_kitti(ses, out, camera=None, lidar=None, min_lidar_pts=1, progress=No
                 KITTI_TYPES.get(o["class"], "Misc"), min(1.0, max(0.0, trunc)), occ, alpha, cx0, cy0, cx1, cy1,
                 2 * ez, 2 * ey, 2 * ex, bottom[0], bottom[1], bottom[2], ry))
         n_obj += len(lines)
-        with open(os.path.join(tr, "label_2", name + ".txt"), "w") as f:
+        with open(os.path.join(tr, "label_2", name + ".txt"), "w", encoding="utf-8") as f:
             f.write("\n".join(lines) + ("\n" if lines else ""))
         ids.append(name)
+        pairs.append((name, frame))
         if progress:
             progress(idx + 1, len(ses.frames))
     for split in ("train", "trainval"):
-        with open(os.path.join(out, "ImageSets", split + ".txt"), "w") as f:
+        with open(os.path.join(out, "ImageSets", split + ".txt"), "w", encoding="utf-8") as f:
             f.write("\n".join(ids) + "\n")
-    with open(os.path.join(out, "ImageSets", "val.txt"), "w") as f:
+    with open(os.path.join(out, "ImageSets", "val.txt"), "w", encoding="utf-8") as f:
         f.write("")
-    with open(os.path.join(out, "carla_frames.txt"), "w") as f:
+    with open(os.path.join(out, "carla_frames.txt"), "w", encoding="utf-8") as f:
         f.write("# kitti_index carla_frame\n")
-        f.write("".join("%s %d\n" % (i, fr) for i, fr in zip(ids, ses.frames)))
+        f.write("".join("%s %d\n" % (i, fr) for i, fr in pairs))
     with open(os.path.join(out, "README_carla.txt"), "w", encoding="utf-8") as f:
         f.write("由 CARLA CoSim Studio 从 %s 导出。\n相机 %s -> image_2，激光雷达 %s -> velodyne（y 轴已翻转为 KITTI 左手->右手约定）。\n"
                 "occluded 由框内激光点数估计：>=50 为 0，>=10 为 1，其余为 2；框内点数少于 %d 的目标不导出。\n"
@@ -542,15 +543,19 @@ def export_nuscenes(ses, out, version="v1.0-carla", progress=None):
                 last_sd[ch]["next"] = sd_tok
             last_sd[ch] = rec
             tables["sample_data"].append(rec)
-        # Annotations in the global frame.
-        pts_ego = ses.to_ego(lidar_name, ses.lidar_points(lidar_name, frame)) if lidar_name else np.zeros((0, 3))
-        rad_ego = np.concatenate([ses.to_ego(r, ses.radar_points(r, frame)) for r in radar_names]) if radar_names else np.zeros((0, 3))
+        # Annotations in the global frame. Boxes are upright in the world (yaw
+        # only), so points are counted there too: with the ego pitched or rolled
+        # an upright box in the ego frame would hold different points.
+        pts_w = ses.to_ego(lidar_name, ses.lidar_points(lidar_name, frame)) @ M[:3, :3].T + M[:3, 3] if lidar_name else np.zeros((0, 3))
+        rad_w = (np.concatenate([ses.to_ego(r, ses.radar_points(r, frame)) for r in radar_names]) @ M[:3, :3].T + M[:3, 3]
+                 if radar_names else np.zeros((0, 3)))
         yaw_ego_world = ego["pose"]["yaw"]
         for o in ses.labels(frame):
             cls = o["class"]
-            npts = int(points_in_box(pts_ego, o).sum()) if len(pts_ego) else 0
-            nrad = int(points_in_box(rad_ego, o).sum()) if len(rad_ego) else 0
             c_world = M[:3, :3] @ np.array(o["center_ego"]) + M[:3, 3]
+            box_w = {"center_ego": c_world, "extent": o["extent"], "yaw_ego": yaw_ego_world + o["yaw_ego"]}
+            npts = int(points_in_box(pts_w, box_w).sum()) if len(pts_w) else 0
+            nrad = int(points_in_box(rad_w, box_w).sum()) if len(rad_w) else 0
             yaw_rh = -math.radians(yaw_ego_world + o["yaw_ego"])
             speed = math.hypot(o["velocity"][0], o["velocity"][1])
             if cls == "pedestrian":
@@ -590,7 +595,7 @@ def export_nuscenes(ses, out, version="v1.0-carla", progress=None):
     vdir = os.path.join(out, version)
     os.makedirs(vdir, exist_ok=True)
     for k, rows in tables.items():
-        with open(os.path.join(vdir, k + ".json"), "w") as f:
+        with open(os.path.join(vdir, k + ".json"), "w", encoding="utf-8") as f:
             json.dump(rows, f, indent=0)
     return {"format": "nuscenes", "out": os.path.abspath(out), "version": version, "frames": len(ses.frames),
             "objects": len(tables["sample_annotation"]), "channels": sorted(channels.values())}
@@ -602,6 +607,7 @@ class Exporter:
     def __init__(self, emit):
         self.emit = emit
         self.thread = None
+        self.root = None
 
     def busy(self):
         return self.thread is not None and self.thread.is_alive()
@@ -615,7 +621,10 @@ class Exporter:
         need = estimate_export(ses, fmt, opts.get("camera"))
         probe = os.path.abspath(out)
         while not os.path.exists(probe):
-            probe = os.path.dirname(probe)
+            parent = os.path.dirname(probe)
+            if parent == probe:  # e.g. a drive letter or network share that does not exist
+                raise RuntimeError("输出目录所在的磁盘或网络位置不存在：%s" % out)
+            probe = parent
         free = shutil.disk_usage(probe).free
         if need > free - 10e9:
             raise RuntimeError("预计需要 %.1f GB，磁盘只剩 %.1f GB（需保留 10 GB）" % (need / 1e9, free / 1e9))
@@ -636,6 +645,7 @@ class Exporter:
             except Exception as e:
                 self.emit({"event": "export_done", "ok": False, "error": str(e)})
 
+        self.root = ses.root
         self.thread = threading.Thread(target=run, daemon=True)
         self.thread.start()
         return {"estimate_mb": need / 1e6, "frames": len(ses.frames)}

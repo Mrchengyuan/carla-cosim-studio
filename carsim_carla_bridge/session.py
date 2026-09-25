@@ -63,21 +63,34 @@ def load_controller(d, ex):
     if not os.path.isfile(path):
         raise ValueError("控制算法文件不存在：%s" % path)
     # Let the algorithm import its neighbours and python_carsim_env modules.
-    for p in (os.path.abspath(d["carsim"]["repo_path"]), os.path.dirname(path)):
+    folder = os.path.dirname(path)
+    for p in (os.path.abspath(d["carsim"]["repo_path"]), folder):
         if p not in sys.path:
             sys.path.insert(0, p)
+    # "Reloaded every run" also for helper modules next to the algorithm file.
+    # (Not when the file sits next to the backend's own modules.)
+    if folder != os.path.dirname(os.path.abspath(__file__)):
+        for name, m in list(sys.modules.items()):
+            f = getattr(m, "__file__", None)
+            if f and os.path.dirname(os.path.abspath(f)) == folder:
+                del sys.modules[name]
     spec = importlib.util.spec_from_file_location("user_controller", path)
     mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
+    sys.modules["user_controller"] = mod  # dataclasses & co. look the module up here
     entry = c.get("entry") or "Controller"
-    obj = getattr(mod, entry, None)
-    if obj is None:
-        raise ValueError("%s 里没有找到 %s" % (os.path.basename(path), entry))
-    if isinstance(obj, type):
-        obj = obj()
-        if hasattr(obj, "reset"):
-            obj.reset()
-        obj = obj.control
+    try:
+        spec.loader.exec_module(mod)
+        obj = getattr(mod, entry, None)
+        if obj is None:
+            raise ValueError("%s 里没有找到 %s" % (os.path.basename(path), entry))
+        if isinstance(obj, type):
+            obj = obj()
+            if hasattr(obj, "reset"):
+                obj.reset()
+            obj = obj.control
+    except SystemExit as e:  # e.g. argparse at module level: must not end the backend
+        raise RuntimeError("控制算法 %s 在加载时调用了 sys.exit（常见原因：模块顶层用了 argparse）：%s"
+                           % (os.path.basename(path), e))
     dt = d["sync"]["frame_dt"]
     names = list(ex.index)
     return lambda obs, t: [float(v) for v in obj({n: ex.raw(obs, n) for n in names}, t, dt)]
@@ -152,39 +165,51 @@ class CoSimSession:
         self.n_frames = int(round(d["sync"]["duration"] / frame_dt)) if d["sync"]["duration"] > 0 else 0
 
         if d["run"]["log_path"]:
-            self._log_file = open(d["run"]["log_path"], "w", newline="")
+            self._log_file = open(d["run"]["log_path"], "w", newline="", encoding="utf-8")
             self._log = csv.writer(self._log_file)
             self._log.writerow(["t", "carsim_x", "carsim_y", "carsim_yaw", "cmd_x", "cmd_y", "cmd_yaw",
                                 "carla_x", "carla_y", "carla_yaw", "steer_fl", "steer_fr", "speed_carla"])
         self._wall0 = time.perf_counter()
-        return {"external_api": self.sync.external_api,
+        return {"external_api": self.sync.external_api, "server_api": self.sync.server_api,
                 "reference_point": [round(float(x), 3) for x in self.sync.ref_local],
                 "t_step": t_step, "inner_steps": self.inner, "clock_warning": self.clock_warning}
 
     def stop(self, release_vehicle=True):
+        """Best effort: one failing step (CarSim or CARLA gone) must not skip the rest."""
+        def step(fn):
+            try:
+                fn()
+            except Exception as e:
+                print("CoSimSession.stop: %s" % e, flush=True)
         if self.env is not None:
-            self.env.close()
+            step(self.env.close)
         if self.camera is not None:
-            self.camera.stop()
-            self.camera.destroy()
+            step(self.camera.stop)
+            step(self.camera.destroy)
             self.camera = None
         if self._log_file is not None:
-            self._log_file.close()
+            step(self._log_file.close)
             self._log_file = None
         if release_vehicle and self.sync is not None:
-            self.sync.release()
+            step(self.sync.release)
         if self._original_settings is not None:
-            self.world.apply_settings(self._original_settings)
-            self._original_settings = None
+            orig, self._original_settings = self._original_settings, None
+            step(lambda: self.world.apply_settings(orig))
 
     # -------------------------------------------------------------------- step
     def step(self):
         """Advance one CARLA frame. Returns a telemetry dict."""
         env, frame_dt = self.env, self.d["sync"]["frame_dt"]
         action = self.driver(self.obs, env.t_current)
+        if not all(math.isfinite(a) for a in action):
+            raise RuntimeError("控制算法输出了无效数值（NaN / 无穷大）：%s" % list(action))
         self.obs, _, done, info = env.control_step(action, self.inner)
         if info.get("error"):
             raise RuntimeError("CarSim error: %s" % info["error"])
+        bad = [n for n, i in self.sync.ex.index.items() if i < len(self.obs) and not math.isfinite(float(self.obs[i]))]
+        if bad:
+            # Never hand NaN / inf to CARLA as a pose; stop with a clear reason.
+            raise RuntimeError("CarSim 输出了无效数值（NaN / 无穷大），仿真已停止：%s" % ", ".join(bad[:6]))
         state = self.sync.sync(self.obs, env.t_current, frame_dt)
         world_frame = self.world.tick()
         self.frame += 1
@@ -261,12 +286,12 @@ class CarlaDriveSession:
             self.command_driver = ManualDriver()
         self.n_frames = int(round(d["sync"]["duration"] / dt)) if d["sync"]["duration"] > 0 else 0
         self._wall0 = time.perf_counter()
-        return {"external_api": False, "reference_point": [0, 0, 0], "t_step": dt, "inner_steps": 1,
+        return {"external_api": False, "server_api": None, "reference_point": [0, 0, 0], "t_step": dt, "inner_steps": 1,
                 "clock_warning": False, "dynamics": "CARLA"}
 
     def stop(self, release_vehicle=True):
         try:
-            if self.mode == "autopilot":
+            if getattr(self, "mode", None) == "autopilot":  # start() may have failed before setting it
                 self.vehicle.set_autopilot(False, self.tm.get_port())
         except RuntimeError:
             pass

@@ -99,7 +99,7 @@ void App::DrawPanelConnect() {
   if (ImGui::InputInt("##cport", &cport)) prefs_["carla_port"] = cport;
   ImGui::Dummy(ImVec2(0, 2));
   ImGui::SetCursorPosX(ImGui::GetCursorPosX() + ui::LabelWidth());
-  ImGui::BeginDisabled(!be_.Connected() || !busy_.empty());
+  ImGui::BeginDisabled(!be_.Connected() || !busy_.empty() || Running());  // reconnecting ends the run's world
   if (ui::Button(ICON_FA_PLUG, carla_connected_ ? "重新连接" : "连接 CARLA", ui::Kind::Primary)) ConnectCarla();
   ImGui::EndDisabled();
   if (carla_connected_) {
@@ -111,10 +111,17 @@ void App::DrawPanelConnect() {
     ui::Row("当前地图");
     ImGui::TextUnformatted(world_.value("map", std::string()).c_str());
     ui::Row("外部动力学接口", "改版 CARLA 一帧一次下发完整状态，速度 / IMU 读数真实，悬架同步可用");
-    if (server_info_.value("external_api_client", false))
+    // The client may be the patched one while the server is the original:
+    // the server side is only known after the first co-sim run.
+    const json srv = world_.contains("external_api_server") ? world_["external_api_server"] : json();
+    if (!server_info_.value("external_api_client", false))
+      ui::Pill(ICON_FA_TRIANGLE_EXCLAMATION " 原版 CARLA：兼容模式", p.warning);
+    else if (srv.is_boolean() && !srv.get<bool>())
+      ui::Pill(ICON_FA_TRIANGLE_EXCLAMATION " 服务器是原版 CARLA：兼容模式", p.warning);
+    else if (srv.is_boolean())
       ui::Pill(ICON_FA_CIRCLE_CHECK " 改版 CARLA：可用", p.success);
     else
-      ui::Pill(ICON_FA_TRIANGLE_EXCLAMATION " 原版 CARLA：兼容模式", p.warning);
+      ui::Pill(ICON_FA_CIRCLE_INFO " 改版客户端：服务器是否改版在第一次运行时确认", p.accent);
   }
   ui::EndCard();
 
@@ -332,12 +339,12 @@ void App::DrawPanelVehicle() {
       ImGui::TableSetColumnIndex(1); ImGui::TextColored(p.text_dim, "%s", v.value("base_type", std::string()).c_str());
       const json& s = v.contains("spec") ? v["spec"] : json();
       if (s.is_object()) {
-        ImGui::TableSetColumnIndex(2); ImGui::Text("%.3f", s["wheel_radius_m"].empty() ? 0.0 : s["wheel_radius_m"][0].get<double>());
+        ImGui::TableSetColumnIndex(2); ImGui::Text("%.3f", s["wheel_radius_m"].empty() ? 0.0 : appui::NumAt(s["wheel_radius_m"], 0));
         ImGui::TableSetColumnIndex(3); ImGui::Text("%.3f", s.value("wheelbase_m", 0.0));
         ImGui::TableSetColumnIndex(4); ImGui::Text("%.3f", s.value("track_m", 0.0));
         ImGui::TableSetColumnIndex(5); ImGui::Text("%.2f × %.2f × %.2f", s.value("length_m", 0.0), s.value("width_m", 0.0), s.value("height_m", 0.0));
         ImGui::TableSetColumnIndex(6); ImGui::Text("%.0f", s.value("mass_kg", 0.0));
-        ImGui::TableSetColumnIndex(7); ImGui::Text("%.0f", s["max_steer_deg"].empty() ? 0.0 : s["max_steer_deg"][0].get<double>());
+        ImGui::TableSetColumnIndex(7); ImGui::Text("%.0f", s["max_steer_deg"].empty() ? 0.0 : appui::NumAt(s["max_steer_deg"], 0));
       } else {
         for (int c = 2; c < 8; ++c) { ImGui::TableSetColumnIndex(c); ImGui::TextColored(p.text_dim, "-"); }
       }
@@ -374,7 +381,7 @@ void App::DrawPanelVehicle() {
       ImPlot::PlotScatter("选中", &xs[static_cast<size_t>(sp)], &ys[static_cast<size_t>(sp)], 1, s);
     }
     if (!last_tel_.empty() && Running()) {
-      float ex = last_tel_["location"][0].get<float>(), ey = last_tel_["location"][1].get<float>();
+      float ex = static_cast<float>(appui::NumAt(last_tel_["location"], 0)), ey = static_cast<float>(appui::NumAt(last_tel_["location"], 1));
       ImPlotSpec s;
       s.Marker = ImPlotMarker_Square;
       s.MarkerSize = 6.0f;
@@ -674,16 +681,20 @@ void App::DrawPanelCoSim() {
   const std::vector<std::string> zmodes = {"carsim", "ground"}, znames = {"使用 CarSim 高度", "贴合 CARLA 路面"};
   ui::Row("高度模式", "CarSim 路面与 CARLA 地图高度不一致时选“贴合 CARLA 路面”", fs * 12);
   if (ComboStr("##zmode", zm, zmodes, &znames)) sy["z_mode"] = zm;
-  bool front_axle = sy["reference_point"].is_string();
+  // A reference point is "front_axle" or [x, y, z]; anything else counts as front axle.
+  const json& rp = sy["reference_point"];
+  const bool rp_ok = rp.is_array() && rp.size() >= 3 && rp[0].is_number() && rp[1].is_number() && rp[2].is_number();
+  bool front_axle = !rp_ok;
   ui::Row("参考点在前轴中心", "CarSim 的 Xo/Yo/Zo 默认是前轴中心地面处；不是的话取消勾选并填写偏移");
   if (ImGui::Checkbox("##refpt", &front_axle))
     sy["reference_point"] = front_axle ? json("front_axle") : json::array({1.5, 0.0, 0.0});
   if (!front_axle) {
-    float pt[3] = {sy["reference_point"][0].get<float>(), sy["reference_point"][1].get<float>(), sy["reference_point"][2].get<float>()};
+    float pt[3] = {rp_ok ? static_cast<float>(appui::NumAt(rp, 0)) : 1.5f, rp_ok ? static_cast<float>(appui::NumAt(rp, 1)) : 0.0f, rp_ok ? static_cast<float>(appui::NumAt(rp, 2)) : 0.0f};
     ui::Row("参考点 x/y/z m", nullptr, fs * 14);
     if (ImGui::InputFloat3("##refxyz", pt, "%.3f")) sy["reference_point"] = {pt[0], pt[1], pt[2]};
   }
-  std::string ext = sy["use_external_api"].is_string() ? std::string("auto") : (sy["use_external_api"].get<bool>() ? "on" : "off");
+  const json& ea = sy["use_external_api"];
+  std::string ext = ea.is_boolean() ? (ea.get<bool>() ? "on" : "off") : std::string("auto");
   const std::vector<std::string> exts = {"auto", "on", "off"}, extn = {"自动", "强制改版接口", "强制原版兼容"};
   ui::Row("CARLA 接口", nullptr, fs * 12);
   if (ComboStr("##ext", ext, exts, &extn)) sy["use_external_api"] = ext == "auto" ? json("auto") : json(ext == "on");
@@ -882,8 +893,9 @@ void App::DrawPanelView() {
       for (const json& s : RigSensors())
         if (s.value("name", std::string()) == pick) {
           view_rig_sensor_ = pick;
-          json m = {{"x", s["x"]}, {"y", s["y"]}, {"z", s["z"]}, {"pitch", s["pitch"]}, {"yaw", s["yaw"]}, {"roll", s["roll"]}};
-          StartView(m, s["attributes"].value("fov", 90.0f));
+          json m = json{{"x", s.value("x", 0.0)}, {"y", s.value("y", 0.0)}, {"z", s.value("z", 0.0)}, {"pitch", s.value("pitch", 0.0)}, {"yaw", s.value("yaw", 0.0)}, {"roll", s.value("roll", 0.0)}};
+          const json attrs = s.value("attributes", json::object());
+          StartView(m, attrs.is_object() ? attrs.value("fov", 90.0f) : 90.0f);
           view_rig_sensor_ = pick;
         }
     }

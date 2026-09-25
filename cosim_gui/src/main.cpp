@@ -139,7 +139,14 @@ static void ApplyAllThemes(bool dark, float scale) {
   ps.PlotDefaultSize = ImVec2(400, 150);
 }
 
-int main(int argc, char** argv) {
+int main(int argc_raw, char** argv_raw) {
+  // UTF-8 arguments on every platform (Windows passes the ANSI code page).
+  std::vector<std::string> args = plat::Utf8Args(argc_raw, argv_raw);
+  std::vector<char*> argv_utf8;
+  for (auto& a : args) argv_utf8.push_back(&a[0]);
+  argv_utf8.push_back(nullptr);
+  const int argc = static_cast<int>(args.size());
+  char** argv = argv_utf8.data();
   glfwSetErrorCallback(GlfwError);
   std::signal(SIGTERM, OnQuitSignal);
   std::signal(SIGINT, OnQuitSignal);
@@ -187,6 +194,7 @@ int main(int argc, char** argv) {
     if (app.ThemeChanged()) ApplyAllThemes(app.DarkTheme(), scale);
     ImGui_ImplOpenGL3_NewFrame();
     ImGui_ImplGlfw_NewFrame();
+    app.BeforeNewFrame();
     ImGui::NewFrame();
     app.Frame();
     ImGui::Render();

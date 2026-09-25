@@ -132,7 +132,7 @@ class DataCollector:
                 a = s["attributes"]
                 entry["K"] = camera_K(int(a["image_size_x"]), int(a["image_size_y"]), float(a["fov"]))
             calib["sensors"][s["name"]] = entry
-        with open(os.path.join(self.root, "calib.json"), "w") as f:
+        with open(os.path.join(self.root, "calib.json"), "w", encoding="utf-8") as f:
             json.dump(calib, f, indent=2)
         w = self.world
         meta = {"map": w.get_map().name, "weather": {k: getattr(w.get_weather(), k) for k in
@@ -144,7 +144,7 @@ class DataCollector:
                             "semantic_png": "R channel = CARLA semantic tag",
                             "instance_png": "R = semantic tag, G + B*256 = object id",
                             "radar": "rows of [velocity m/s, azimuth rad, altitude rad, depth m]"}}
-        with open(os.path.join(self.root, "meta.json"), "w") as f:
+        with open(os.path.join(self.root, "meta.json"), "w", encoding="utf-8") as f:
             json.dump(meta, f, indent=2, ensure_ascii=False)
         self.writer = threading.Thread(target=self._write_loop, daemon=True)
         self.writer.start()
@@ -308,7 +308,7 @@ class DataCollector:
                     if obj is None:
                         continue
                     path = os.path.join(self.root, sub, "%06d.json" % frame)
-                    with open(path, "w") as f:
+                    with open(path, "w", encoding="utf-8") as f:
                         json.dump(obj, f)
                     self.bytes += os.path.getsize(path)
             except Exception as e:

@@ -43,7 +43,7 @@ def kitti_checks(out, min_pts):
     n = {sub: len(os.listdir(os.path.join(tr, sub))) for sub in ("image_2", "velodyne", "calib", "label_2")}
     check("kitti files", len(set(n.values())) == 1 and list(n.values())[0] == 6, n)
     bad, total, center_in_2d, untrunc, outside = [], 0, 0, 0, []
-    for lab in sorted(glob.glob(os.path.join(tr, "label_2", "*.txt"))):
+    for lab in sorted(glob.glob(os.path.join(glob.escape(tr), "label_2", "*.txt"))):
         idx = os.path.basename(lab)[:-4]
         calib = {}
         for line in open(os.path.join(tr, "calib", idx + ".txt")):
@@ -110,6 +110,8 @@ def nuscenes_checks(out, ses):
     # 2) camera: devkit projection of box centres vs our own CARLA-frame projection
     errs = []
     for sample, frame in zip(sorted(nusc.sample, key=lambda s: s["timestamp"]), ses.frames):
+        if "CAM_FRONT" not in sample["data"]:
+            continue  # the frame whose camera image was removed above
         sd = sample["data"]["CAM_FRONT"]
         _, boxes, K = nusc.get_sample_data(sd)
         inv = np.linalg.inv(ses.extrinsic["cam_front"])
@@ -137,17 +139,19 @@ def nuscenes_checks(out, ses):
 
 def main():
     carla_port = int(sys.argv[sys.argv.index("--port") + 1]) if "--port" in sys.argv else 2000
-    tmp = tempfile.mkdtemp(prefix="cc_ds_")
+    tmp = tempfile.mkdtemp(prefix="cc_ds_[x]_")  # glob metacharacters in the path must not matter
     env = dict(os.environ)
     env.pop("PYTHONPATH", None)  # the backend runs in the project environment, not the devkit's
     proc = subprocess.Popen([sys.executable, os.path.join(HERE, "..", "backend_server.py"), "--port", str(PORT)],
                             cwd=os.path.join(HERE, ".."), env=env)
+    parked = None
     try:
         time.sleep(2)
         c = Conn(PORT)
         c.call("connect", host="localhost", port=carla_port)
         check("tf_matrix == carla.Transform.get_matrix", _matrix_check())
         c.call("spawn_ego", blueprint="vehicle.tesla.model3", spawn_index=3)
+        parked = _park_car_ahead(carla_port)  # one object the KITTI camera always sees whole
         c.call("spawn_traffic", vehicles=30, walkers=10, seed=2, safe=True)
         sensors = [sensor("cam_front", "rgb", 1.5, 0.0, 1.6, image_size_x=800, image_size_y=450, fov=90.0),
                    sensor("cam_front_semantic", "semantic", 1.5, 0.0, 1.6, image_size_x=800, image_size_y=450, fov=90.0),
@@ -156,6 +160,7 @@ def main():
         cfg = c.call("default_config")
         cfg["drive"].update({"dynamics": "carla", "carla_driver": "autopilot", "tm_ignore_lights": True})
         cfg["sync"].update({"frame_dt": 0.1, "duration": 0.0})
+        cfg["carla"].update({"vehicle": "vehicle.tesla.model3", "spawn_index": 3})  # the ego the car was parked for
         cfg["rig"]["sensors"] = sensors
         cfg["collect"].update({"enabled": True, "out_dir": tmp, "session": "ds", "max_frames": 6, "max_gb": 0.2,
                                "capture_every": 3, "image_format": "jpg"})
@@ -188,7 +193,39 @@ def main():
         except RuntimeError as err:
             check("export refuses a non-empty output folder", "不是空的" in str(err))
 
+        # ---- a frame without camera image: contiguous KITTI indices, right frames
+        missing = ses.frames[2]
+        os.remove(ses.file("cam_front", missing))
+        kout2 = os.path.join(tmp, "export_kitti_gap")
+        c.call("dataset_export", root=root, format="kitti", out=kout2, camera="cam_front", lidar="lidar_top", min_lidar_pts=5)
+        e = wait_export(c)
+        pairs = [l.split() for l in open(os.path.join(kout2, "carla_frames.txt"), encoding="utf-8") if not l.startswith("#")]
+        imgs = sorted(os.listdir(os.path.join(kout2, "training", "image_2")))
+        expect = [f for f in ses.frames if f != missing]
+        check("kitti with a missing camera frame: indices contiguous, frames mapped right",
+              e["ok"] and [p[0] for p in pairs] == ["%06d" % i for i in range(5)] and [int(p[1]) for p in pairs] == expect
+              and imgs == ["%06d.png" % i for i in range(5)], pairs)
+        shutil.rmtree(kout2)
+
         # ---- nuScenes ----------------------------------------------------------
+        # Deleting a dataset while it is being exported is refused (on a copy,
+        # so the original stays for the checks below whatever the timing).
+        copy = root + "_copy"
+        shutil.copytree(root, copy)
+        c.call("dataset_export", root=copy, format="nuscenes", out=os.path.join(tmp, "export_copy"))
+        try:
+            c.call("dataset_delete", root=copy)
+            refused = None  # the export was already over: nothing to check
+        except RuntimeError as err:
+            refused = "正在导出" in str(err)
+        wait_export(c)
+        if refused is None:
+            print("INFO export finished before the delete request; delete-while-exporting not exercised")
+        else:
+            check("delete is refused while that dataset is exporting", refused and os.path.isdir(copy))
+        shutil.rmtree(copy, ignore_errors=True)
+        shutil.rmtree(os.path.join(tmp, "export_copy"), ignore_errors=True)
+
         nout = os.path.join(tmp, "export_nuscenes")
         c.call("dataset_export", root=root, format="nuscenes", out=nout)
         e = wait_export(c)
@@ -206,10 +243,36 @@ def main():
         check("dataset_delete", not os.path.exists(root), "%.1f MB" % r["size_mb"])
         c.call("destroy_ego")
     finally:
+        if parked is not None:
+            try:
+                parked.destroy()
+            except RuntimeError:
+                pass
         proc.terminate()
         proc.wait()
-        shutil.rmtree(tmp, ignore_errors=True)
+        if not os.environ.get("CC_KEEP_TMP"):
+            shutil.rmtree(tmp, ignore_errors=True)
     print("ALL DATASET TESTS PASSED")  # check() exits on the first failure
+
+
+def _park_car_ahead(port):
+    """A parked car in the ego's lane, 18-30 m ahead."""
+    import carla
+    w = carla.Client("localhost", port).get_world()
+    ego = [a for a in w.get_actors().filter("vehicle.*") if a.attributes.get("role_name") == "hero"][0]
+    bp = w.get_blueprint_library().find("vehicle.audi.tt")
+    bp.set_attribute("role_name", "parked")
+    wp = w.get_map().get_waypoint(ego.get_location())
+    for dist in (18.0, 22.0, 26.0, 30.0):
+        nxt = wp.next(dist)
+        if not nxt:
+            continue
+        tf = nxt[0].transform
+        tf.location.z += 0.3
+        a = w.try_spawn_actor(bp, tf)
+        if a is not None:
+            return a
+    check("a car can be parked ahead of the ego", False)
 
 
 def _semantic_lidar_check(port):
@@ -222,6 +285,20 @@ def _semantic_lidar_check(port):
     cl.set_timeout(20)
     w = cl.get_world()
     ego = [a for a in w.get_actors().filter("vehicle.*") if a.attributes.get("role_name") == "hero"][0]
+    # Two cars of our own, ahead-left and ahead-right, so the check never
+    # depends on where the background traffic happens to be.
+    placed = []
+    et = ego.get_transform()
+    fwd, right = et.get_forward_vector(), et.get_right_vector()
+    bpv = w.get_blueprint_library().find("vehicle.audi.tt")
+    for ahead, side in ((8.0, 3.5), (8.0, -3.5), (14.0, 3.5), (14.0, -3.5), (20.0, 3.5), (20.0, -3.5)):
+        if len(placed) == 2:
+            break
+        loc = et.location + fwd * ahead + right * side
+        loc.z += 0.3
+        a = w.try_spawn_actor(bpv, carla.Transform(loc, et.rotation))
+        if a is not None:
+            placed.append(a)
     orig = w.get_settings()
     s = w.get_settings()
     s.synchronous_mode, s.fixed_delta_seconds = True, 0.1
@@ -245,6 +322,14 @@ def _semantic_lidar_check(port):
         lid.stop()
         lid.destroy()
         w.apply_settings(orig)
+    try:
+        return _check_sweep(w, ego, snap, meas, mount)
+    finally:
+        for a in placed:
+            a.destroy()
+
+
+def _check_sweep(w, ego, snap, meas, mount):
     dt = np.dtype([("x", "f4"), ("y", "f4"), ("z", "f4"), ("cos", "f4"), ("idx", "u4"), ("tag", "u4")])
     pts = np.frombuffer(meas.raw_data, dtype=dt)
     E = dsmod.tf_matrix(mount)
@@ -252,6 +337,8 @@ def _semantic_lidar_check(port):
     inv = np.array(ego_tf.get_inverse_matrix())
     tested = ok_right = ok_wrong = 0
     for a in w.get_actors().filter("vehicle.*"):
+        if not a.is_alive:
+            continue
         sel = pts[pts["idx"] == a.id]
         if a.id == ego.id or len(sel) < 20 or snap.find(a.id) is None:
             continue

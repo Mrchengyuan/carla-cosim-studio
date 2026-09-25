@@ -7,6 +7,7 @@ over the same TCP/JSON protocol the C++ GUI uses.
 """
 import json
 import os
+import shutil
 import socket
 import subprocess
 import sys
@@ -220,6 +221,7 @@ def main():
     finally:
         proc.terminate()
         proc.wait(10)
+        shutil.rmtree("/tmp/cc_gen", ignore_errors=True)  # saved frames, recording, log
 
 
 if __name__ == "__main__":

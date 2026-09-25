@@ -178,7 +178,7 @@ cmake --build build --config Release
    - 点 **保存设置**，再点 **连接 CARLA**。
 4. 用完：关闭界面，再关闭 CARLA 窗口。
 
-命令行参数（写在快捷方式的“目标”后面）：`--python <路径>`、`--backend-dir <目录>`、`--carla-port 2000`、`--auto-connect`、`--config <json>`、`--light`、`--font <字体文件>`。
+命令行参数（写在快捷方式的“目标”后面）：`--python <路径>`、`--backend-dir <目录>`、`--carla-port 2000`、`--auto-connect`、`--config <json>`、`--light`、`--font <字体文件>`、`--size 2560x1440`（窗口大小）、`--scale 1.5`（界面缩放，高分屏用）。
 
 ---
 

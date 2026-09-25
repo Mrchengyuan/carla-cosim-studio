@@ -1,6 +1,7 @@
 // CARLA CoSim Studio entry point: GLFW window + OpenGL3 + Dear ImGui + ImPlot.
 #include <csignal>
 #include <cstdio>
+#include <cstdlib>
 #include <memory>
 #include <string>
 #include <vector>
@@ -148,7 +149,14 @@ int main(int argc, char** argv) {
 #ifdef GLFW_SCALE_TO_MONITOR
   glfwWindowHint(GLFW_SCALE_TO_MONITOR, GLFW_TRUE);
 #endif
-  GLFWwindow* window = glfwCreateWindow(1680, 1000, "CARLA CoSim Studio", nullptr, nullptr);
+  // --size WxH / --scale S: window size and UI scale (e.g. for high-resolution screenshots).
+  int win_w = 1680, win_h = 1000;
+  float scale_override = 0.0f;
+  for (int i = 1; i + 1 < argc; ++i) {
+    if (std::string(argv[i]) == "--size") std::sscanf(argv[i + 1], "%dx%d", &win_w, &win_h);
+    if (std::string(argv[i]) == "--scale") scale_override = static_cast<float>(std::atof(argv[i + 1]));
+  }
+  GLFWwindow* window = glfwCreateWindow(win_w, win_h, "CARLA CoSim Studio", nullptr, nullptr);
   if (!window) {
     glfwTerminate();
     return 1;
@@ -158,7 +166,7 @@ int main(int argc, char** argv) {
 
   float xs = 1.0f, ys = 1.0f;
   glfwGetWindowContentScale(window, &xs, &ys);
-  const float scale = xs > 0.5f ? xs : 1.0f;
+  const float scale = scale_override > 0.3f ? scale_override : (xs > 0.5f ? xs : 1.0f);
 
   IMGUI_CHECKVERSION();
   ImGui::CreateContext();

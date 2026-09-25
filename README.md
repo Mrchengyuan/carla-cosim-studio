@@ -1,17 +1,40 @@
+<p align="center"><img src="docs/images/hero.jpg" alt="CARLA CoSim Studio" width="100%"></p>
+
 # CARLA CoSim Studio
+
+> **作者：Claude Opus 5.5**（Anthropic）。本仓库的代码、图形界面、CARLA 补丁、脚本、测试和文档均由 Claude Opus 5.5 编写。
+>
+> **CarSim 接口基于 [python_carsim_env](https://github.com/Mrchengyuan/python_carsim_env)**，这是本项目能与 CarSim 联合仿真的基础，见下方说明。
 
 **CarSim ⇄ CARLA 联合仿真平台** —— 像 CarSim 一样，全部通过图形界面操作 CARLA。
 
-**你的控制算法控制 CarSim 里的车，CarSim 计算车辆动力学，CARLA 负责场景、渲染和传感器。** 每一帧 CarSim 算出的车身位姿、四轮转向角、车轮转速、悬架行程都同步到 CARLA 车辆上，CARLA 自己不算动力学，只照 CarSim 的结果摆放车辆，**转向机构一致**。再配上传感器套件编辑、数据采集、场景和交通等功能，不写代码也能完成仿真和数据集生产。
+**你的控制算法控制 CarSim 里的车，CarSim 计算车辆动力学，CARLA 负责场景、渲染和传感器。** 每一帧 CarSim 算出的车身位姿、四轮转向角、车轮转速、悬架行程都同步到 CARLA 车辆上，CARLA 自己不算动力学，只照 CarSim 的结果摆放车辆，**转向机构一致**。再配上多视图、传感器套件编辑、数据采集与导出、场景和交通等功能，不写代码也能完成仿真和数据集生产。
 
 ```
-你的控制算法 (Python) ──油门 / 制动 / 方向盘──▶ CarSim（车辆动力学）
+你的控制算法 (Python) ──油门 / 制动 / 方向盘──▶ CarSim（车辆动力学，经 python_carsim_env 调用）
                                                     │ 位姿 · 车轮 · 悬架（每帧）
                                                     ▼
                           CARLA（场景 · 交通 · 相机 / 激光雷达 / 毫米波雷达 · 画面 · 数据采集）
 ```
 
-![运行中](docs/images/running.jpg)
+## 🔗 基础：python_carsim_env
+
+[**python_carsim_env**](https://github.com/Mrchengyuan/python_carsim_env) 用 Python（ctypes）直接调用 CarSim 的 VS Solver API（`vs_read_configuration` → `vs_integrate_io` → `vs_terminate_run`），把一次 CarSim 运行封装成 gym 风格的环境：`CarSimEnv.reset()` 读入 `.sim` 并初始化，`CarSimEnv.control_step(action, inner_steps)` 写入导入变量（油门、制动、方向盘）、积分若干步并返回全部导出变量。
+
+本平台和 CarSim 有关的部分都建立在它之上：
+
+| 本平台的功能 | 用到 python_carsim_env 的地方 |
+|---|---|
+| 联合仿真 | 每一帧调用 `control_step`，CarSim 积分 `帧周期 / t_step` 步，导出变量再同步到 CARLA |
+| 你的控制算法 | 算法返回的油门 / 制动 / 方向盘就是 `control_step` 的 action，按 `.sim` 里的导入变量顺序写入 |
+| 示例算法 | `controllers/simple_path_follower.py` 直接使用其中的 `SimplePathFollower` |
+| 强化学习 | 同一套 `CarSimEnv` 接口（仓库中已有 SAC 示例），可以在训练代码里接上 CARLA 的画面与传感器 |
+
+使用时把它 clone 到本仓库根目录（界面“CarSim 动力学”页的“python_carsim_env 目录”默认就是 `../python_carsim_env`）：
+```bash
+git clone https://github.com/Mrchengyuan/python_carsim_env
+```
+没有 CarSim 许可证时，界面里勾选“模拟 CarSim”，用内置的简化车辆模型代替，先把整条链路跑通。
 
 ## 📖 使用文档
 
@@ -166,4 +189,4 @@ python carsim_carla_bridge/run_cosim.py --mock --duration 20                    
 
 ## 致谢
 
-[CARLA](https://github.com/carla-simulator/carla) · [Dear ImGui](https://github.com/ocornut/imgui) · [ImPlot](https://github.com/epezent/implot) · [GLFW](https://github.com/glfw/glfw) · [nlohmann/json](https://github.com/nlohmann/json) · [Font Awesome](https://fontawesome.com) · [python_carsim_env](https://github.com/Mrchengyuan/python_carsim_env)
+[python_carsim_env](https://github.com/Mrchengyuan/python_carsim_env)（CarSim 接口）· [CARLA](https://github.com/carla-simulator/carla) · [Dear ImGui](https://github.com/ocornut/imgui) · [ImPlot](https://github.com/epezent/implot) · [GLFW](https://github.com/glfw/glfw) · [nlohmann/json](https://github.com/nlohmann/json) · [Font Awesome](https://fontawesome.com)

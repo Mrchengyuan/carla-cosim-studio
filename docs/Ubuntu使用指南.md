@@ -208,6 +208,8 @@ until ss -ltn | grep -q ":2000 "; do sleep 2; done; echo "CARLA 已就绪"
 | `--auto-connect` | 启动后自动连接 CARLA |
 | `--config <json>` | 启动时载入配置文件 |
 | `--light` | 浅色主题 |
+| `--size 2560x1440` | 窗口大小（默认 1680x1000） |
+| `--scale 1.5` | 界面缩放（字体和控件一起放大，高分屏或截图用） |
 | `--font <ttf/ttc>` | 指定中文字体 |
 
 ### 6.3 修改默认路径

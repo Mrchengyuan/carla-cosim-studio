@@ -187,6 +187,7 @@ void App::Init(int argc, char** argv) {
     else if (a == "--config") { next(v); prefs_["last_config"] = v; }
     else if (a == "--light") prefs_["dark_theme"] = false;
     else if (a == "--auto-connect") auto_connect_ = true;
+    else if (a == "--size" || a == "--scale") next(v);  // handled in main.cpp
   }
   dark_ = prefs_.value("dark_theme", true);
 
@@ -765,7 +766,15 @@ void App::BuildTour() {
          cfg_["collect"]["enabled"] = false;
          cfg_["collect"]["out_dir"] = ds;
        }, idle, "09_collect_config"},
-      {kPanelView, [this] { view_mode_ = "chase"; view_res_ = 1; StartView(); }, idle, ""},
+      {kPanelView, [this] {
+         view_mode_ = "chase";
+         view_res_ = 2;
+         view_layout_ = 1;
+         panes_[1].source = "semantic";
+         panes_[2].source = "lidar";
+         panes_[3].source = "depth";
+         StartView();
+       }, idle, ""},
       // From here the toolbar and viewport are driven by real mouse clicks.
       {kPanelView, [this] { click_target_ = "运行"; },
        [this] { return run_state_ == "running" && last_tel_.value("t", 0.0) > 5.0; }, "10_running_view"},

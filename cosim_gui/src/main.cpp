@@ -39,8 +39,8 @@ static void MergeIcons(float size, const std::string& icon_path) {
   ImGui::GetIO().Fonts->AddFontFromFileTTF(icon_path.c_str(), size * 0.9f, &cfg, kIconRange);
 }
 
-// CJK text font + Font Awesome icons merged in; a bold variant for titles
-// and a large one for KPI numbers.
+// CJK text font + Font Awesome icons merged in; bold variants for section
+// and page titles; a monospace font for instrument readouts.
 static void LoadFonts(float scale, const std::string& override_path) {
   ImGuiIO& io = ImGui::GetIO();
   const std::string exe = plat::ExecutableDir();
@@ -53,14 +53,18 @@ static void LoadFonts(float scale, const std::string& override_path) {
   const std::string regular = FirstExisting({override_path, "C:/Windows/Fonts/msyh.ttc", "C:/Windows/Fonts/msyh.ttf",
                                              "C:/Windows/Fonts/simhei.ttf", "C:/Windows/Fonts/simsun.ttc"});
   const std::string bold = FirstExisting({"C:/Windows/Fonts/msyhbd.ttc", "C:/Windows/Fonts/msyhbd.ttf", regular});
+  const std::string mono = FirstExisting({"C:/Windows/Fonts/consola.ttf", "C:/Windows/Fonts/cour.ttf"});
 #else
   const std::string regular = FirstExisting({override_path, "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
                                              "/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc",
                                              "/usr/share/fonts/truetype/wqy/wqy-microhei.ttc"});
   const std::string bold = FirstExisting({"/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc",
                                           "/usr/share/fonts/noto-cjk/NotoSansCJK-Bold.ttc", regular});
+  const std::string mono = FirstExisting({"/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf",
+                                          "/usr/share/fonts/truetype/noto/NotoSansMono-Regular.ttf",
+                                          "/usr/share/fonts/truetype/liberation2/LiberationMono-Regular.ttf"});
 #endif
-  const float size = 16.0f * scale;
+  const float size = 15.0f * scale;
   ui::Fonts& f = ui::GetFonts();
   // CJK plus the symbols the UI uses (→ ↑ ↓ ← × ≈ ● ° …), which the stock
   // Chinese range leaves out.
@@ -81,8 +85,14 @@ static void LoadFonts(float scale, const std::string& override_path) {
     // Titles only use common characters: a smaller range keeps the atlas small.
     f.bold = io.Fonts->AddFontFromFileTTF(bold.c_str(), size, &cfg, io.Fonts->GetGlyphRangesChineseSimplifiedCommon());
     MergeIcons(size, icons);
-    f.big = io.Fonts->AddFontFromFileTTF(bold.c_str(), size * 1.55f, &cfg, io.Fonts->GetGlyphRangesDefault());
-    std::printf("fonts: %s | %s | icons %s\n", regular.c_str(), bold.c_str(), icons.empty() ? "(missing)" : icons.c_str());
+    f.title = io.Fonts->AddFontFromFileTTF(bold.c_str(), size * 1.3f, &cfg, io.Fonts->GetGlyphRangesChineseSimplifiedCommon());
+    MergeIcons(size * 1.3f, icons);
+    // Readouts only show digits and a few symbols.
+    const std::string digits = mono.empty() ? bold : mono;
+    f.mono = io.Fonts->AddFontFromFileTTF(digits.c_str(), size * 0.93f, &cfg, io.Fonts->GetGlyphRangesDefault());
+    f.mono_big = io.Fonts->AddFontFromFileTTF(digits.c_str(), size * 1.6f, &cfg, io.Fonts->GetGlyphRangesDefault());
+    std::printf("fonts: %s | %s | mono %s | icons %s\n", regular.c_str(), bold.c_str(), digits.c_str(),
+                icons.empty() ? "(missing)" : icons.c_str());
   } else {
     std::fprintf(stderr, "warning: no CJK font found, Chinese text will not render\n");
     ImFontConfig d;
@@ -101,8 +111,21 @@ static void ApplyAllThemes(bool dark, float scale) {
   ps.Colors[ImPlotCol_PlotBg] = p.plot_bg;
   ps.Colors[ImPlotCol_FrameBg] = ImVec4(0, 0, 0, 0);
   ps.Colors[ImPlotCol_PlotBorder] = p.card_border;
-  ps.Colors[ImPlotCol_LegendBg] = ImVec4(p.card.x, p.card.y, p.card.z, 0.85f);
+  ps.Colors[ImPlotCol_LegendBg] = ImVec4(p.panel.x, p.panel.y, p.panel.z, 0.9f);
+  ps.Colors[ImPlotCol_LegendBorder] = p.card_border;
+  ps.Colors[ImPlotCol_AxisGrid] = ui::WithAlpha(p.text_dim, dark ? 0.16f : 0.22f);
+  ps.Colors[ImPlotCol_AxisText] = p.text_dim;
+  ps.Colors[ImPlotCol_TitleText] = p.text_dim;
+  // Channel colours used by every chart: blue, orange, green, violet.
+  static int colormap = -1;
+  if (colormap < 0) {
+    static const ImVec4 kSeries[] = {ImVec4(0.29f, 0.56f, 0.96f, 1), ImVec4(0.93f, 0.55f, 0.24f, 1),
+                                     ImVec4(0.39f, 0.72f, 0.42f, 1), ImVec4(0.66f, 0.49f, 0.90f, 1)};
+    colormap = ImPlot::AddColormap("Studio", kSeries, 4, false);
+  }
+  ps.Colormap = colormap;
   ps.PlotPadding = ImVec2(6, 6);
+  ps.LegendPadding = ImVec2(6, 4);
   ps.PlotDefaultSize = ImVec2(400, 150);
 }
 

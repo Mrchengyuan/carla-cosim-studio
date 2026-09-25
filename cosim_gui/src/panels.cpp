@@ -31,26 +31,31 @@ bool EditString(json& obj, const char* key) {
   return false;
 }
 
-// Big selectable card used for mode choices (dynamics / driver).
+// Radio option row used for mode choices (dynamics / driver): radio mark,
+// icon, bold title and a one-line description.
 bool ChoiceCard(const char* id, const char* icon, const char* title, const char* desc, bool selected, float w) {
   const ui::Palette& p = ui::Colors();
   const float fs = ImGui::GetFontSize();
   ImGui::PushID(id);
   ImVec2 pos = ImGui::GetCursorScreenPos();
-  const float h = fs * 4.4f;
+  const float h = fs * 2.75f;
   const bool clicked = ImGui::InvisibleButton("##c", ImVec2(w, h));
   const bool hov = ImGui::IsItemHovered();
   ImDrawList* dl = ImGui::GetWindowDrawList();
-  ImVec4 bg = selected ? p.accent : p.card;
-  bg.w = selected ? 0.14f : 1.0f;
-  dl->AddRectFilled(pos, ImVec2(pos.x + w, pos.y + h), ImGui::GetColorU32(bg), fs * 0.45f);
-  dl->AddRect(pos, ImVec2(pos.x + w, pos.y + h), ImGui::GetColorU32(selected ? p.accent : (hov ? p.text_dim : p.card_border)),
-              fs * 0.45f, 0, selected ? 2.0f : 1.0f);
-  dl->AddText(ImVec2(pos.x + fs * 0.8f, pos.y + fs * 0.7f), ImGui::GetColorU32(selected ? p.accent : p.text_dim), icon);
+  const ImVec4 bg = selected ? ui::WithAlpha(p.accent, ui::IsDark() ? 0.14f : 0.08f)
+                  : hov ? ui::WithAlpha(p.text, 0.04f) : p.field;
+  dl->AddRectFilled(pos, ImVec2(pos.x + w, pos.y + h), ImGui::GetColorU32(bg), 2.0f);
+  dl->AddRect(pos, ImVec2(pos.x + w, pos.y + h), ImGui::GetColorU32(selected ? p.accent : p.card_border), 2.0f);
+  const ImVec2 rc(pos.x + fs * 1.0f, pos.y + h * 0.5f);
+  dl->AddCircle(rc, fs * 0.42f, ImGui::GetColorU32(selected ? p.accent : p.text_dim), 24, 1.3f);
+  if (selected) dl->AddCircleFilled(rc, fs * 0.22f, ImGui::GetColorU32(p.accent), 24);
+  dl->AddText(ImVec2(pos.x + fs * 2.0f, pos.y + fs * 0.42f), ImGui::GetColorU32(selected ? p.accent : p.text_dim), icon);
   ImFont* bold = ui::GetFonts().bold ? ui::GetFonts().bold : ImGui::GetFont();
-  dl->AddText(bold, fs, ImVec2(pos.x + fs * 2.4f, pos.y + fs * 0.62f), ImGui::GetColorU32(p.text), title);
-  dl->AddText(ImGui::GetFont(), fs * 0.9f, ImVec2(pos.x + fs * 0.8f, pos.y + fs * 2.1f), ImGui::GetColorU32(p.text_dim),
-              desc, nullptr, w - fs * 1.6f);
+  dl->AddText(bold, fs, ImVec2(pos.x + fs * 3.5f, pos.y + fs * 0.42f), ImGui::GetColorU32(p.text), title);
+  const ImVec4 clip(pos.x, pos.y, pos.x + w - fs * 0.6f, pos.y + h);
+  dl->AddText(ImGui::GetFont(), fs * 0.88f, ImVec2(pos.x + fs * 3.5f, pos.y + fs * 1.5f), ImGui::GetColorU32(p.text_dim),
+              desc, nullptr, 0.0f, &clip);
+  if (hov && ImGui::CalcTextSize(desc).x * 0.88f > w - fs * 4.1f) ImGui::SetTooltip("%s", desc);
   ImGui::PopID();
   return clicked;
 }
@@ -442,11 +447,10 @@ void App::DrawPanelDrive() {
   const bool cosim = dr.value("dynamics", std::string("cosim")) == "cosim";
 
   ui::BeginCard(ICON_FA_GEARS, "车辆动力学由谁计算");
-  const float w2 = (ImGui::GetContentRegionAvail().x - ImGui::GetStyle().ItemSpacing.x) / 2;
+  const float w2 = ImGui::GetContentRegionAvail().x;
   ImGui::BeginDisabled(Running());
   if (ChoiceCard("dyn_cosim", ICON_FA_GEARS, "CarSim 联合仿真", "你的控制算法控制 CarSim 的车，CarSim 计算动力学；CARLA 照 CarSim 的结果摆放车辆，负责场景、传感器和画面。", cosim, w2))
     dr["dynamics"] = "cosim";
-  ImGui::SameLine();
   if (ChoiceCard("dyn_carla", ICON_FA_CAR, "CARLA 物理", "CARLA 自带 PhysX 车辆物理，不需要 CarSim。适合大规模数据采集、感知算法。", !cosim, w2))
     dr["dynamics"] = "carla";
   ImGui::EndDisabled();
@@ -455,11 +459,10 @@ void App::DrawPanelDrive() {
   struct D { const char* id; const char* icon; const char* title; const char* desc; };
   const std::string key = cosim ? "cosim_driver" : "carla_driver";
   std::string cur = dr.value(key, std::string(cosim ? "custom" : "route"));
-  const float w3 = (ImGui::GetContentRegionAvail().x - ImGui::GetStyle().ItemSpacing.x * 2) / 3;
+  const float w3 = ImGui::GetContentRegionAvail().x;
   auto cards = [&](const D* list, int n) {
     ImGui::BeginDisabled(Running());
     for (int i = 0; i < n; ++i) {
-      if (i) ImGui::SameLine();
       if (ChoiceCard(list[i].id, list[i].icon, list[i].title, list[i].desc, cur == list[i].id, w3)) dr[key] = cur = list[i].id;
     }
     ImGui::EndDisabled();
@@ -483,8 +486,7 @@ void App::DrawPanelDrive() {
       ImGui::TextColored(p.text_dim, "示例：controllers/example_controller.py（定速 + 蛇形），controllers/simple_path_follower.py（SimplePathFollower）");
     }
     ImGui::Dummy(ImVec2(0, fs * 0.3f));
-    if (cur != "custom") ImGui::SetNextItemOpen(true, ImGuiCond_Always);
-    if (ImGui::CollapsingHeader("测试用驾驶方式（还没有算法时，用来检查联合仿真链路）")) {
+    if (ui::FoldHeader(ICON_FA_FLASK, "测试用驾驶方式（还没有算法时，用来检查联合仿真链路）", false, cur != "custom")) {
       static const D kTest[] = {
           {"demo", ICON_FA_WAVE_SQUARE, "演示（开环）", "固定的加速 + 蛇形 + 制动，看 CARLA 的车是否跟着 CarSim 动。"},
           {"route", ICON_FA_ROUTE, "路线跟随", "程序在 CARLA 路网上规划路线，算出油门、方向盘送给 CarSim。"},

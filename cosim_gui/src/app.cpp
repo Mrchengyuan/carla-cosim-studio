@@ -200,7 +200,7 @@ void App::SavePrefs() {
 }
 
 void App::Log(const std::string& msg, const std::string& level) {
-  log_.push_back({level, NowStr() + "  " + msg});
+  log_.push_back({level, NowStr(), msg});
   while (log_.size() > 800) log_.pop_front();
   log_scroll_ = true;
   if (level == "error") ++log_errors_;

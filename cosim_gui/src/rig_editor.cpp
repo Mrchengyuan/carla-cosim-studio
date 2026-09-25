@@ -242,7 +242,8 @@ void App::DrawRigTopView(float w, float h) {
   const ImVec2 o = ImGui::GetCursorScreenPos();
   ImGui::InvisibleButton("topview", ImVec2(w, h));
   const bool canvas_hovered = ImGui::IsItemHovered();
-  dl->AddRectFilled(o, ImVec2(o.x + w, o.y + h), ImGui::GetColorU32(p.plot_bg), 6.0f);
+  dl->AddRectFilled(o, ImVec2(o.x + w, o.y + h), ImGui::GetColorU32(p.plot_bg), 2.0f);
+  dl->AddRect(o, ImVec2(o.x + w, o.y + h), ImGui::GetColorU32(p.card_border), 2.0f);
   const float scale = std::min(w / (d.W + 5.0f), h / (d.L + 3.0f));  // px per meter
   const ImVec2 c(o.x + w * 0.5f, o.y + h * 0.5f);
   auto to_px = [&](float x, float y) { return ImVec2(c.x + y * scale, c.y - x * scale); };
@@ -327,7 +328,8 @@ void App::DrawRigSideView(float w, float h) {
   ImDrawList* dl = ImGui::GetWindowDrawList();
   const ImVec2 o = ImGui::GetCursorScreenPos();
   ImGui::InvisibleButton("sideview", ImVec2(w, h));
-  dl->AddRectFilled(o, ImVec2(o.x + w, o.y + h), ImGui::GetColorU32(p.plot_bg), 6.0f);
+  dl->AddRectFilled(o, ImVec2(o.x + w, o.y + h), ImGui::GetColorU32(p.plot_bg), 2.0f);
+  dl->AddRect(o, ImVec2(o.x + w, o.y + h), ImGui::GetColorU32(p.card_border), 2.0f);
   const float scale = std::min(w / (d.L + 3.0f), h / (d.H + 1.6f));
   const ImVec2 g(o.x + w * 0.5f, o.y + h - scale * 0.45f);   // ground under the car centre
   auto to_px = [&](float x, float z) { return ImVec2(g.x + x * scale, g.y - z * scale); };

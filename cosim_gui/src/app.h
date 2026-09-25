@@ -42,6 +42,9 @@ class App {
 
  private:
   // ---------------------------------------------------------- layout (ui_layout.cpp)
+  void DrawMenuBar();
+  void DrawAbout();
+  void HandleShortcuts();
   void DrawToolbar();
   void DrawNav();
   void DrawMonitor();
@@ -169,10 +172,16 @@ class App {
   float kb_throttle_ = 0, kb_brake_ = 0, kb_steer_ = 0;
   double kb_last_send_ = 0;
 
-  struct LogLine { std::string level, text; };
+  struct LogLine { std::string level, time, text; };
   std::deque<LogLine> log_;
   bool log_open_ = false, log_scroll_ = false;
   int log_errors_ = 0;
+  int log_filter_ = 0;  // 0 all, 1 warnings + errors, 2 errors
+
+  // window layout (sizes in pixels, set from the font size on the first frame)
+  float nav_w_ = 0, mon_w_ = 0, console_h_ = 0;
+  bool monitor_open_ = true, about_open_ = false;
+  bool nav_collapsed_[8] = {};
 
   // live view
   bool view_on_ = false;

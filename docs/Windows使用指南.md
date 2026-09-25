@@ -254,7 +254,7 @@ Import（输入）保持你原来的三个，REPLACE 模式：油门、制动、
 1. 编译 CARLA 定制版 UE4（`Setup.bat`、`GenerateProjectFiles.bat`，VS 2022 编译 `UE4.sln`），设置环境变量 `UE4_ROOT`。
 2. 克隆 CARLA 0.9.16：`git clone --depth 1 -b 0.9.16 https://github.com/carla-simulator/carla.git C:\carla`
 3. 打补丁：`cd /d C:\carla` → `git apply C:\carla-cosim-studio\carla_patches\carla_0.9.16_external_dynamics.patch`
-   （`linux_libpng_url_fix.patch` 只在 Linux 需要）。
+   （`linux_libpng_url_fix.patch` 只在 Linux 需要）。以前按旧版补丁编译过的，只需打新增的部分，见编译指南第 2 节末尾。
 4. 在 “x64 Native Tools Command Prompt for VS 2022” 里：`Update.bat` → `make PythonAPI` → `make package`。
 5. 打包结果在 `C:\carla\Build\UE4Carla\0.9.16\WindowsNoEditor\`，这正是 `env.bat` 里 `CARLA_MOD_ROOT` 的默认值。
 6. 安装改版 Python 包：`pip install C:\carla\PythonAPI\carla\dist\carla-0.9.16-cp310-cp310-win_amd64.whl --force-reinstall`，
@@ -292,6 +292,9 @@ world.tick()
 | 界面上图标显示成方框 | `fonts` 文件夹没有和 exe 放在一起 |
 | 中文显示异常 | 程序使用系统自带的微软雅黑（`C:\Windows\Fonts\msyh.ttc`）；精简版系统可用 `--font` 指定其他中文字体 |
 | 状态栏“后端 未运行” | Python 路径不对或缺包。看 `carsim_carla_bridge\backend.log`；在“连接”页填 `venv\Scripts\python.exe` 的完整路径 |
+| 画面不动，视口上方红色提示“后端卡住了” | 后端里的 CARLA 调用没有返回（常见原因：原版 Python 包里 CARLA 0.9.16 交通管理器的死循环，一辆交通车被撞飞时触发）。点提示条上的“重启后端”，界面会重启后端、重新连接并清理旧后端留下的主车和交通。用自己编译的改版 CARLA 的 Python 包则没有这个问题 |
+| 视口上方红色提示“后端进程意外退出” | 点“重启后端”即可继续；出错记录在 `carsim_carla_bridge\backend.log`，重启后保存为 `backend.prev.log` |
+| 提示“主车已不在 CARLA 里” | 主车开出地图边界掉出了世界（CARLA 会删除掉出世界的车）或被别的程序删除；重新生成主车，并让 CarSim 的路线落在 CARLA 地图的道路范围内 |
 | 连接 CARLA 超时 | CARLA 没启动好，或被防火墙拦截：控制面板 → Windows Defender 防火墙 → 允许应用 → 勾选 CarlaUE4 |
 | 提示 57100 端口被占用 | 上次的后端还在：任务管理器结束 `python.exe`，或 `netstat -ano \| findstr 57100` 找到进程号后 `taskkill /PID <号> /F` |
 | `No module named agents` | 找不到 CARLA 路径规划模块：在 `env.bat` 设置 `CARLA_PYTHONAPI` |

@@ -18,6 +18,7 @@ void CloseSocket(Socket s);
 
 struct Process {
   std::intptr_t handle = 0;  // HANDLE on Windows, pid on POSIX
+  mutable int status = -1;   // how it ended (POSIX wait status / Windows exit code), once it has
   bool valid() const { return handle != 0; }
 };
 
@@ -25,7 +26,14 @@ struct Process {
 bool Spawn(const std::vector<std::string>& argv, const std::string& cwd,
            const std::string& log_path, Process& out, std::string& err);
 bool IsAlive(const Process& p);
-void Kill(Process& p);
+// Asks it to exit and waits up to 5 s for its cleanup, then kills it; hard:
+// kill at once (a process that hangs cannot clean up anyway).
+void Kill(Process& p, bool hard = false);
+// How a process that is no longer alive ended, e.g. "信号 11（段错误）".
+std::string ExitDescription(const Process& p);
+// POSIX: SIGUSR1, which makes the Python backend print every thread's stack
+// into its log (faulthandler). No-op on Windows.
+void DumpStacks(const Process& p);
 
 std::string ExecutableDir();
 // Command-line arguments as UTF-8 (on Windows argv is in the ANSI code page,

@@ -14,6 +14,7 @@ requests and writes replies, so a slow map load never blocks the connection.
 import argparse
 import atexit
 import base64
+import faulthandler
 import json
 import math
 import os
@@ -22,7 +23,6 @@ import random
 import re
 import shutil
 import signal
-import sys
 import socket
 import threading
 import time
@@ -49,6 +49,9 @@ SENSOR_TYPES = {
     "radar": "sensor.other.radar", "imu": "sensor.other.imu", "gnss": "sensor.other.gnss",
     "collision": "sensor.other.collision", "lane_invasion": "sensor.other.lane_invasion",
 }
+# No car of the background traffic drives this fast (180 km/h): one that does
+# was thrown by a collision or is falling out of the world.
+RUNAWAY_SPEED = 50.0
 
 
 class Backend:
@@ -68,6 +71,8 @@ class Backend:
         self.views = ViewStreamer(lambda msg: self.emit(msg))  # live views of the GUI viewport
         self.collector = None
         self._unsent_tel = None    # last telemetry frame not sent to the GUI yet
+        self._ego_missing = (0, set())  # (ego id, world frames whose snapshot lacks it)
+        self.task = None           # (what the worker is doing, since when), for the "busy" heartbeat
         self._ds = None            # dataset.Session being browsed
         self.exporter = dsmod.Exporter(lambda msg: self.emit(msg))
         self.emit = lambda msg: None
@@ -91,6 +96,82 @@ class Backend:
             return actor is not None and actor.is_alive
         except RuntimeError:
             return False
+
+    def _check_ego(self):
+        """is_alive only knows about actors this client destroyed. CARLA removes
+        a car that fell out of the world (driven off the map) by itself, and
+        another client can destroy it too; is_alive then stays True and runs,
+        views and sensors carry on with a car that is gone. The world snapshot
+        does know: the ego counts as lost once 3 different frames lack it."""
+        if self.ego is None or self.world is None:
+            return
+        try:
+            snap = self.world.get_snapshot()
+        except RuntimeError:
+            return
+        if self._ego_missing[0] != self.ego.id:
+            self._ego_missing = (self.ego.id, set())
+        if snap.find(self.ego.id) is not None:
+            self._ego_missing[1].clear()
+            return
+        self._ego_missing[1].add(snap.frame)
+        if len(self._ego_missing[1]) >= 3:
+            self._lose_ego()
+
+    def _ego_gone(self, err=None):
+        """The ego is not in the latest world snapshot (see _check_ego), or the
+        error of a call says so: the modified CARLA refuses the pose of a car
+        that is gone before a new snapshot shows it."""
+        if self.ego is None:
+            return False
+        if err is not None and "could not be found" in str(err) and "Actor Id: %d" % self.ego.id in str(err):
+            return True
+        try:
+            return self.world.get_snapshot().find(self.ego.id) is None
+        except RuntimeError:
+            return False
+
+    def _lose_ego(self):
+        why = "主车已不在 CARLA 里：可能开出了地图边界、掉出了世界（CARLA 会删除掉出世界的车），或被其他程序删除"
+        running = self.cosim_state in ("running", "paused")
+        # Tell the GUI first (it would otherwise reopen the views of the old
+        # ego once they close), then forget the car, so everything below sees
+        # "no ego".
+        self.emit({"event": "ego_lost", "reason": why})
+        self._try(self._drop_ego_refs)
+        if running:
+            self._stop_cosim_if_running("error", why)
+        else:
+            self._log(why + "。请重新生成主车", "warn")
+
+    def _check_traffic(self):
+        """A traffic car thrown by a collision or falling out of the world gets an
+        absurd speed, and the traffic manager of CARLA 0.9.16 then loops forever
+        (its path horizon grows with speed, beyond the size of the map); in
+        synchronous mode world.tick() never returns. Our CARLA patch bounds that
+        loop; with an unpatched carla package, take such a car out early."""
+        if not self.traffic["vehicles"] or self.world is None:
+            return
+        try:
+            snap = self.world.get_snapshot()
+        except RuntimeError:
+            return
+        bad = []
+        for a in self.traffic["vehicles"]:
+            sa = snap.find(a.id)
+            if sa is not None:
+                v = sa.get_velocity()
+                if v.x * v.x + v.y * v.y + v.z * v.z > RUNAWAY_SPEED ** 2:
+                    bad.append(a)
+        if not bad:
+            return
+        port = self.tm.get_port() if self.tm is not None else 8000
+        self._try(lambda: self.client.apply_batch(
+            [carla.command.SetAutopilot(a.id, False, port) for a in bad] +
+            [carla.command.DestroyActor(a.id) for a in bad]))
+        ids = {a.id for a in bad}
+        self.traffic["vehicles"] = [a for a in self.traffic["vehicles"] if a.id not in ids]
+        self._log("移除了 %d 辆被撞飞或掉出世界的交通车（速度超过 %.0f km/h）" % (len(bad), RUNAWAY_SPEED * 3.6), "warn")
 
     @staticmethod
     def _try(fn):
@@ -123,7 +204,7 @@ class Backend:
     def cmd_ping(self):
         return "pong"
 
-    def cmd_connect(self, host="localhost", port=2000, timeout=20.0):
+    def cmd_connect(self, host="localhost", port=2000, timeout=20.0, recover=False):
         if self.world is not None:
             # Reconnecting: take our ego, sensors, views and traffic out of the
             # old world first, or they stay behind as orphans.
@@ -131,6 +212,19 @@ class Backend:
         self.client = carla.Client(host, int(port))
         self.client.set_timeout(float(timeout))
         self.world = self.client.get_world()
+        s = self.world.get_settings()
+        if s.synchronous_mode:
+            # A backend killed during a run leaves the world in synchronous mode
+            # with nobody ticking it: frozen. Give a client that does tick it a
+            # moment; if none does, go back to asynchronous.
+            try:
+                self.world.wait_for_tick(2.0)
+            except RuntimeError:
+                s.synchronous_mode, s.fixed_delta_seconds = False, None
+                self.world.apply_settings(s)
+                self._log("CARLA 停在同步模式、没有程序在推进（上一次后端没有正常退出），已切回异步模式", "warn")
+        if recover:
+            self._remove_leftovers()
         self.tm = self.client.get_trafficmanager(8000)
         self.ego = None
         sv, cv = self.client.get_server_version(), self.client.get_client_version()
@@ -148,6 +242,22 @@ class Backend:
         })
         self._log("已连接 %s:%s，地图 %s" % (host, port, info["map"]))
         return info
+
+    def _remove_leftovers(self):
+        """After the GUI restarted a hung or crashed backend, which could not clean
+        up: remove what it left in the world (the CARLA server started for this
+        program is used by it alone): the ego (role hero), the traffic (role
+        autopilot), pedestrians with their AI controllers, and sensors."""
+        self.world.wait_for_tick(5.0)
+        acts = [a for a in self.world.get_actors()
+                if (a.type_id.startswith("vehicle.") and a.attributes.get("role_name") in ("hero", "autopilot"))
+                or a.type_id.startswith(("walker.pedestrian.", "controller.ai.walker", "sensor."))]
+        for a in acts:
+            if a.type_id.startswith("controller."):
+                self._try(a.stop)
+        if acts:
+            self.client.apply_batch_sync([carla.command.DestroyActor(a.id) for a in acts], False)
+            self._log("已清理上一次后端留在 CARLA 里的 %d 个对象（主车、交通、行人、传感器）" % len(acts), "warn")
 
     def cmd_world_info(self):
         w = self._need_world()
@@ -858,6 +968,11 @@ class Backend:
                     tel["done"] = True
         except (Exception, SystemExit) as e:  # SystemExit: e.g. argparse in a user controller
             traceback.print_exc()
+            if self._ego_gone(e):
+                # The modified CARLA refuses the pose of a car that is gone right
+                # away: report that, not the RPC error it causes.
+                self._lose_ego()
+                return
             self._log("仿真出错：%s" % (e or e.__class__.__name__), "error")
             self._stop_cosim_if_running("error", str(e))
             return
@@ -889,9 +1004,19 @@ class Backend:
         self._teardown()
 
     def cmd_shutdown(self):
+        threading.Timer(5.0, lambda: os._exit(0)).start()  # even if the cleanup hangs
         self.cleanup()
         threading.Timer(0.2, lambda: os._exit(0)).start()
         return True
+
+    def exit_now(self, limit=5.0):
+        """Clean the world up and exit, but never hang on the way out: a stuck
+        CARLA call (e.g. a looping traffic manager) would keep the process, and
+        the GUI waiting for it, alive forever."""
+        t = threading.Thread(target=self.cleanup, daemon=True)
+        t.start()
+        t.join(limit)
+        os._exit(0)
 
     # ----------------------------------------------------------- dispatcher
     def handle(self, req):
@@ -908,12 +1033,17 @@ class Backend:
                 self._worker_iteration()
             except BaseException:
                 traceback.print_exc()
+                self.task = None
                 self._try(lambda: self._stop_cosim_if_running("error", "后端内部错误"))
                 time.sleep(0.1)
 
     def _worker_iteration(self):
+        self._check_ego()
+        self._check_traffic()
         if self.cosim_state == "running":
+            self.task = ("仿真步进", time.time())
             self._cosim_frame()
+            self.task = None
             timeout = 0.0
         else:
             timeout = 0.05
@@ -924,15 +1054,22 @@ class Backend:
             except queue.Empty:
                 break
             timeout = 0.0
+            self.task = (str(req.get("cmd")), time.time())
             try:
                 reply({"id": req.get("id"), "ok": True, "result": self.handle(req)})
             except BaseException as e:  # report every failure to the GUI (SystemExit too)
                 traceback.print_exc()
                 reply({"id": req.get("id"), "ok": False, "error": str(e) or e.__class__.__name__})
+            finally:
+                self.task = None
         if self.cosim_state != "running" and self.world is not None:
             try:
                 if self.idle_tick and self.world.get_settings().synchronous_mode:
-                    self.world.tick()
+                    self.task = ("空闲时推进世界", time.time())
+                    try:
+                        self.world.tick()
+                    finally:
+                        self.task = None
                     time.sleep(self.frame_dt)
                 self._update_spectator()
             except RuntimeError:
@@ -956,10 +1093,26 @@ def _json_safe(o):
 
 
 def serve(port, exit_with_client=False):
+    # A crash inside the carla library (a C++ thread) leaves no Python error:
+    # print every thread's stack into the log instead. SIGUSR1 prints them for
+    # a backend that hangs (the GUI sends it before restarting one).
+    faulthandler.enable(all_threads=True)
+    if hasattr(signal, "SIGUSR1"):
+        faulthandler.register(signal.SIGUSR1, all_threads=True)
     backend = Backend()
     atexit.register(backend.cleanup)
-    signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
+    signal.signal(signal.SIGTERM, lambda *_: backend.exit_now())
     threading.Thread(target=backend.run_worker, daemon=True).start()
+
+    def heartbeat():
+        # Tell the GUI what the worker is busy with, so a CARLA call that never
+        # returns shows up as such instead of as a silently frozen GUI.
+        while True:
+            time.sleep(1.0)
+            task = backend.task
+            if task is not None and time.time() - task[1] >= 2.0:
+                backend.emit({"event": "busy", "task": task[0], "seconds": round(time.time() - task[1], 1)})
+    threading.Thread(target=heartbeat, daemon=True).start()
     srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     srv.bind(("127.0.0.1", port))
@@ -1010,8 +1163,7 @@ def serve(port, exit_with_client=False):
             # Started by the GUI: when it disconnects (closed, crashed, killed),
             # clean CARLA up and quit instead of lingering as an orphan.
             print("GUI disconnected, cleaning up and exiting", flush=True)
-            backend.cleanup()
-            os._exit(0)
+            backend.exit_now()
 
 
 if __name__ == "__main__":

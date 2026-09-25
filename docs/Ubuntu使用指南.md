@@ -280,6 +280,12 @@ pip install carla_src/PythonAPI/carla/dist/carla-0.9.16-cp310-cp310-linux_x86_64
 python -c "import carla; print(hasattr(carla.Vehicle, 'apply_external_state'))"    # 应输出 True
 ```
 
+**以前编译过、现在更新了本仓库**：补丁有更新时（例如新加了交通管理器死循环的修复），`patch` 步骤只打新增的文件，已打过的跳过；然后重新编译并重装 Python 包：
+```bash
+./scripts/build_carla.sh patch pythonapi editor
+venv_build/bin/pip install --force-reinstall --no-deps carla_src/PythonAPI/carla/dist/carla-0.9.16-cp310-cp310-linux_x86_64.whl
+```
+
 ### 8.4 启动改版 CARLA
 - 桌面双击绿色图标 **CARLA CoSim Studio（改版）**，或者
 - 手动：`tmux new -d -s carla_mod "./scripts/carla_mod_server.sh"`（端口 3000）。
@@ -326,7 +332,7 @@ CARLA 启动后，在 `carsim_carla_bridge` 目录执行（测改版 CARLA 时�
 python tests/test_coords.py                          # 坐标换算（不需要 CARLA）
 python tests/test_backend.py                         # 界面后端全部命令，约 2 分钟
 python tests/test_features.py                        # 驾驶模式 + 3 帧采集（测完自动删除）
-python tests/test_robustness.py                      # 控制算法出错、NaN、错误请求、重新连接时的清理
+python tests/test_robustness.py                      # 控制算法出错、NaN、错误请求、主车被删、交通车被撞飞、重新连接时的清理
 python tests/test_dataset.py                         # 6 帧采集 → 浏览 → KITTI / nuScenes 导出（测完自动删除）
 python tests/test_all_vehicles.py                    # 每种车型都当一次主车联合仿真，服务器不能崩
 python tests/test_modified_carla.py --port 3000      # 改版 CARLA 接口（需要改版 CARLA 和 venv_build）
@@ -342,6 +348,9 @@ python tests/test_modified_carla.py --port 3000      # 改版 CARLA 接口（需
 | 界面中文显示成方块 | 缺中文字体：`sudo apt install fonts-noto-cjk`，或用 `--font` 指定字体 |
 | 界面打不开，报 `GLFW ... Failed to open display` | 没有图形桌面（例如纯 SSH 登录）。请在机器的桌面环境里启动 |
 | 状态栏“后端 未运行” | Python 路径不对或缺包。看 `carsim_carla_bridge/backend.log`；在“连接”页改 Python 解释器 |
+| 画面不动，视口上方红色提示“后端卡住了：……已经 N 秒没有完成” | 后端里的 CARLA 调用没有返回（常见原因：用原版 Python 包时，一辆交通车被撞飞，CARLA 0.9.16 的交通管理器陷入死循环）。点提示条上的“重启后端”：界面会结束旧后端、启动新后端并重新连接，同时把 CARLA 恢复成异步模式、清掉旧后端留下的主车和交通。卡住时各线程在做什么记在 `carsim_carla_bridge/backend.prev.log`，遇到请发给我们 |
+| 视口上方红色提示“后端进程意外退出（信号 11，段错误）” | 后端进程崩溃了。点“重启后端”（或视口中间的“启动后端”）即可继续；崩溃时的调用栈记在 `backend.log`，重启后保存为 `backend.prev.log` |
+| 提示“主车已不在 CARLA 里” | 主车开出了地图边界、掉出了世界（CARLA 会自动删除掉出世界的车），或被别的程序删除了。运行会带着这个原因停止；重新生成主车即可。CarSim 的路线要落在 CARLA 地图的道路范围内 |
 | 连接 CARLA 超时 | CARLA 还没启动好（`ss -ltn \| grep 2000` 看端口），或端口填错（原版 2000，改版 3000） |
 | 日志提示 `57100` 端口被占用 | 上次的后端还在：`pkill -f backend_server.py` |
 | 路线跟随报 `No module named agents` | 找不到 CARLA 的路径规划模块：设置 `CARLA_PYTHONAPI`（见第 4 步） |

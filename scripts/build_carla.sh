@@ -21,10 +21,14 @@ for step in $STEPS; do
       git ${PROXY:+-c http.proxy=$PROXY} clone --depth 1 -b 0.9.16 https://github.com/carla-simulator/carla.git "$CARLA_SRC"
     else echo ">>> 源码已存在：$CARLA_SRC"; fi ;;
   patch)
+    # File by file: a tree patched with an older version of a patch gets just
+    # the files that are new in it.
     cd "$CARLA_SRC"
     for p in "$COSIM_ROOT"/carla_patches/*.patch; do
-      if git apply --reverse --check "$p" 2>/dev/null; then echo ">>> 已打过：$(basename "$p")"
-      else git apply "$p" && echo ">>> 已应用：$(basename "$p")"; fi
+      for f in $(grep "^+++ b/" "$p" | cut -c7- | tr -d "\r"); do
+        if git apply --reverse --check --include="$f" "$p" 2>/dev/null; then echo ">>> 已打过：$f"
+        else git apply --include="$f" "$p" && echo ">>> 已应用：$f"; fi
+      done
     done ;;
   content)
     D="$CARLA_SRC/Unreal/CarlaUE4/Content/Carla"

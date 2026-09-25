@@ -88,8 +88,9 @@ class App {
   // ---------------------------------------------------------- actions (app.cpp)
   void StartBackend();
   void StopBackend();
-  void ConnectBackend();
-  void ConnectCarla();
+  void RestartBackend();
+  void ConnectBackend(bool quiet = false);  // quiet: a retry while it starts, no error
+  void ConnectCarla(bool recover = false);
   void RefreshWorld();
   void RefreshAfterMapChange();
   void LoadMap(const std::string& name);
@@ -145,6 +146,10 @@ class App {
   std::string cfg_path_;
   bool quit_ = false;
   bool auto_connect_ = false;  // --auto-connect: connect to CARLA once the backend is up
+  bool recover_connect_ = false;  // after RestartBackend: reconnect and clear what the old one left
+  std::string busy_task_;         // what the backend worker has been busy with ("busy" heartbeat)
+  double busy_secs_ = 0, busy_seen_ = 0;
+  std::string backend_problem_;   // backend hung or died: viewport banner with a restart button
   bool dark_ = true, theme_changed_ = false;
   int panel_ = kPanelConnect;
   std::string busy_;
@@ -212,6 +217,7 @@ class App {
   int view_auto_ego_ = 0;
   std::vector<float> trail_x_, trail_y_;           // ego path of the current run (minimap)
   std::string run_note_, run_note_level_;          // why the last run ended (viewport banner)
+  int run_note_ego_ = 0;                           // the ego that banner is about
   bool nav_collapsed_[8] = {};
 
   // live view

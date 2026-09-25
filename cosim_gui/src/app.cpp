@@ -247,6 +247,9 @@ void App::StartBackend() {
     return;
   }
   std::string log_path = (fs::u8path(dir) / "backend.log").u8string();
+  // Keep the log of the previous backend: after a crash it holds the reason.
+  std::error_code ec;
+  if (fs::exists(fs::u8path(log_path), ec)) fs::rename(fs::u8path(log_path), fs::u8path(dir) / "backend.prev.log", ec);
   std::string err;
   if (!plat::Spawn({prefs_.value("python", std::string("python")), "-u", "backend_server.py", "--port",
                     std::to_string(prefs_.value("backend_port", 57100)), "--exit-with-client"},
@@ -268,10 +271,27 @@ void App::StopBackend() {
   Log("后端已停止，CARLA 中的主车、传感器和交通已清理");
 }
 
-void App::ConnectBackend() {
+void App::RestartBackend() {
+  // A hung backend cannot clean up: have it print every thread's stack into
+  // its log (kept as backend.prev.log), stop it hard, start a fresh one and
+  // reconnect, removing what the old one left in CARLA.
+  if (plat::IsAlive(backend_proc_)) {
+    plat::DumpStacks(backend_proc_);
+    for (int i = 0; i < 5; ++i) glfwWaitEventsTimeout(0.1);
+  }
+  be_.Disconnect();
+  plat::Kill(backend_proc_, true);
+  OnEvent({{"event", "disconnected"}, {"quiet", true}});  // same reset as a lost connection
+  backend_problem_.clear();
+  Log("正在重启后端 ...", "warn");
+  StartBackend();
+  recover_connect_ = true;
+}
+
+void App::ConnectBackend(bool quiet) {
   std::string err;
   if (!be_.Connect("127.0.0.1", prefs_.value("backend_port", 57100), err)) {
-    Log(err, "error");
+    if (!quiet) Log(err, "error");
     return;
   }
   Log("已连接后端");
@@ -288,10 +308,10 @@ void App::ConnectBackend() {
   Call("rig_presets", json::object(), [this](const json& r) { rig_presets_ = r; });
 }
 
-void App::ConnectCarla() {
+void App::ConnectCarla(bool recover) {
   if (!be_.Connected()) ConnectBackend();
   json args = {{"host", prefs_.value("carla_host", std::string("localhost"))},
-               {"port", prefs_.value("carla_port", 2000)}};
+               {"port", prefs_.value("carla_port", 2000)}, {"recover", recover}};
   Call("connect", args, [this](const json& r) {
     carla_connected_ = true;
     server_info_ = r;
@@ -309,7 +329,7 @@ void App::ConnectCarla() {
 void App::SetWorld(const json& r) {
   // The "run ended, ego parked" banner is about that ego: drop it once the
   // ego is gone or replaced (map switched, ego deleted or respawned).
-  if (!Running() && r.is_object() && r.value("ego_id", 0) != world_.value("ego_id", 0)) run_note_.clear();
+  if (!Running() && r.is_object() && r.value("ego_id", 0) != run_note_ego_) run_note_.clear();
   world_ = r.is_object() ? r : json::object();
 }
 
@@ -675,6 +695,7 @@ void App::OnEvent(const json& ev) {
         run_note_level_ = "warn";
         run_note_ = "运行已结束（CarSim 到达结束时间或采集达到上限），主车已停车。";
       }
+      run_note_ego_ = world_.value("ego_id", 0);
       Log(run_note_, run_note_level_);
     } else {
       run_note_.clear();
@@ -737,6 +758,19 @@ void App::OnEvent(const json& ev) {
   } else if (type == "progress") {
     const int done = ev.value("done", 0), total = ev.value("total", 1);
     if (done < total) busy_ = Fmt("正在测量车型尺寸 %d/%d", done + 1, total);
+  } else if (type == "busy") {
+    busy_task_ = ev.value("task", std::string());
+    busy_secs_ = ev.value("seconds", 0.0);
+    busy_seen_ = ImGui::GetTime();
+  } else if (type == "ego_lost") {
+    // CARLA removed the ego by itself (e.g. it fell off the map): say so, and
+    // keep saying it until there is a new ego.
+    world_["ego_id"] = 0;
+    run_note_ego_ = 0;
+    if (run_note_.empty()) {
+      run_note_level_ = "warn";
+      run_note_ = ev.value("reason", std::string()) + "。请重新生成主车。";
+    }
   } else if (type == "views_active") {
     // The backend says which live views exist (e.g. none after a failed respawn).
     view_on_ = !ev.value("ids", json::array()).empty();
@@ -762,7 +796,8 @@ void App::OnEvent(const json& ev) {
     ds_dirty_ = false;
     ds_exporting_ = false;
     last_tel_ = json::object();
-    Log("与后端的连接断开了", "error");
+    busy_task_.clear();
+    if (!ev.contains("quiet")) Log("与后端的连接断开了", "error");
   }
 }
 

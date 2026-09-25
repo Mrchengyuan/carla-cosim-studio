@@ -147,6 +147,55 @@ def main():
               len(specs) == n_bp and len(hgv.get("wheel_radius_m", [])) == 6 and c.call("ping") == "pong",
               "%d / %d vehicles, european_hgv wheels %d" % (len(specs), n_bp, len(hgv.get("wheel_radius_m", []))))
 
+        # ---- CARLA removes the ego by itself (a car that fell off the map) -----
+        # is_alive stays True for an actor someone else destroyed: the backend
+        # must notice anyway, end the run with the reason and forget the car.
+        other = carla.Client("localhost", carla_port)
+        other.set_timeout(60)
+        ow = other.get_world()
+        c.events.clear()
+        c.call("cosim_start", config=json.loads(json.dumps(base)))
+        time.sleep(1.0)
+        ow.get_actor(c.call("world_info")["ego_id"]).destroy()
+        st = run_until(c, ("error", "finished", "stopped"), 30)
+        lost = c.wait_event(lambda e: e.get("event") == "ego_lost", 10)
+        check("ego removed by CARLA during a run: the run ends with the reason, the ego is forgotten",
+              st["state"] == "error" and "主车已不在" in st.get("detail", "") and bool(lost)
+              and c.call("world_info")["ego_id"] == 0, st.get("detail", "")[:60])
+        c.call("spawn_ego", blueprint="vehicle.tesla.model3", spawn_index=3)
+        c.call("views_set", views=[{"id": "p0", "kind": "rgb", "mode": "chase", "width": 160, "height": 90, "fps": 5}])
+        c.events.clear()
+        ow.get_actor(c.call("world_info")["ego_id"]).destroy()
+        lost = c.wait_event(lambda e: e.get("event") == "ego_lost", 15)
+        c.call("ping")
+        va = [e["ids"] for e in c.events if e.get("event") == "views_active"]
+        ok, msg = expect_error(c, "views_set", "请先生成主车",
+                               views=[{"id": "p0", "kind": "rgb", "mode": "chase", "width": 160, "height": 90, "fps": 5}])
+        check("ego removed while idle: the GUI is told, views are gone, a new view asks for an ego",
+              bool(lost) and va == [[]] and ok and c.call("world_info")["ego_id"] == 0, (va, msg))
+        c.call("spawn_ego", blueprint="vehicle.tesla.model3", spawn_index=3)
+        c.call("views_set", views=[{"id": "p0", "kind": "rgb", "mode": "chase", "width": 160, "height": 90, "fps": 5}])
+
+        # ---- a traffic car thrown by a collision must not freeze the run -------
+        # CARLA 0.9.16's traffic manager (inside this process) then loops forever
+        # and world.tick() never returns; our patched carla package bounds that
+        # loop. The original package cannot be helped (the GUI offers a restart).
+        if hasattr(carla.Vehicle, "apply_external_state"):
+            c.call("spawn_traffic", vehicles=8, walkers=0, seed=5)
+            c.events.clear()
+            c.call("cosim_start", config=json.loads(json.dumps(base)))
+            ow.wait_for_tick(10)
+            car = [a for a in ow.get_actors().filter("vehicle.*") if a.attributes.get("role_name") == "autopilot"][0]
+            t1 = c.wait_event(lambda e: e.get("event") == "telemetry", 20)["data"]["t"]
+            car.add_impulse(carla.Vector3D(0, 0, 3e5))
+            try:
+                t2 = c.wait_event(lambda e: e.get("event") == "telemetry" and e["data"]["t"] > t1 + 4.0, 40)["data"]["t"]
+            except (TimeoutError, OSError):
+                t2 = None
+            check("a traffic car thrown into the air does not freeze the run", t2 is not None, "t %.1f -> %s" % (t1, t2))
+            c.call("cosim_stop")
+            c.call("clear_traffic")
+
         # ---- reconnect cleans up what this backend put into the world ----------
         n_traffic = c.call("spawn_traffic", vehicles=5, walkers=0, seed=3)["vehicles"]
         n_before = len(w.get_actors().filter("vehicle.*"))

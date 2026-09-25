@@ -74,7 +74,7 @@ git clone https://github.com/Mrchengyuan/python_carsim_env
 
 | 有 | 没有 |
 |---|---|
-| 对 CARLA 的全部改动：`carla_patches/carla_0.9.16_external_dynamics.patch`（外部动力学接口；另外修复了 CARLA 0.9.16 读取卡车、巴士等多轮车辆物理参数时会让服务器崩溃的越界错误） | **编译好的改版 CARLA**（也没有原版 CARLA，原版请从官方下载） |
+| 对 CARLA 的全部改动：`carla_patches/carla_0.9.16_external_dynamics.patch`（外部动力学接口；另外修复了 CARLA 0.9.16 的两个错误：读取卡车、巴士等多轮车辆物理参数时让服务器崩溃的越界；交通车被撞飞或掉出世界时交通管理器死循环、让仿真卡死） | **编译好的改版 CARLA**（也没有原版 CARLA，原版请从官方下载） |
 | Linux 编译用的修复补丁：`carla_patches/carla_0.9.16_linux_libpng_url_fix.patch` | |
 | 一键编译脚本：`scripts/build_ue4.sh`、`scripts/build_carla.sh` | |
 | 启动脚本：`scripts/carla_mod_server.sh`、`scripts/start_studio.sh mod` | |
@@ -110,6 +110,8 @@ git clone https://github.com/Mrchengyuan/python_carsim_env
 |---|---|---|
 | 原版包 | `pip install carla==0.9.16`（Ubuntu 上装在 `venv`） | 原版和改版 CARLA 都能连，但**都只能用兼容模式** |
 | 改版包 | 编译改版 CARLA 时生成的 `.whl`（Ubuntu 上装在 `venv_build`） | 连改版 CARLA 用外部动力学接口；连原版 CARLA **自动改用兼容模式** |
+
+交通管理器（控制背景交通车的 CARLA 模块）运行在 Python 包里，不在服务器里。CARLA 0.9.16 的交通管理器有个错误：一辆交通车被撞飞或掉出世界时它会陷入死循环，整个仿真卡住。**改版包修好了这个错误，连原版 CARLA 时也有效**；用原版包时界面会提示“后端卡住了”并提供“重启后端”按钮。
 
 - 要用改版的功能，**CARLA 服务器和 Python 包都必须是改版**。
 - Ubuntu 桌面图标和 `start_studio.sh`：有 `venv_build` 就用它，否则用 `venv`，不用手动切换。
@@ -245,7 +247,7 @@ python carsim_carla_bridge/run_cosim.py --mock --duration 20                    
 | `tests/test_backend.py` | 界面后端全部命令（地图、天气、交通、传感器、多视图、录制、联合仿真、暂停 / 单步、出生点被占时启动失败不丢主车） | 35/35 |
 | `tests/test_features.py` | 传感器套件、磁盘保护、各驾驶模式、自定义控制算法、停止后停车、3 帧多传感器采集 | 18/18 |
 | `tests/test_dataset.py` | 小规模采集 → 浏览渲染 → KITTI / nuScenes 导出；用语义激光雷达验证坐标约定，用 KITTI 文件本身复算框内点数，装了 nuscenes-devkit 时用官方工具交叉验证；缺帧时 KITTI 编号连续、导出中拒绝删除、路径含 `[ ]` 等特殊字符 | 22/22 |
-| `tests/test_robustness.py` | 后端抗异常：控制算法在导入或运行时调用 `sys.exit`、输出 NaN，格式错误的请求，不存在的车型（主车和传感器保留），视图建不起来时通知界面，改版客户端连原版服务器时自动用兼容模式，测量全部车型（含 6 轮卡车），重新连接时清理主车 / 交通 / 视图，非有限数值安全发送 | 19/19（改版客户端 20/20；改版 CARLA 上 19/19） |
+| `tests/test_robustness.py` | 后端抗异常：控制算法在导入或运行时调用 `sys.exit`、输出 NaN，格式错误的请求，不存在的车型（主车和传感器保留），视图建不起来时通知界面，改版客户端连原版服务器时自动用兼容模式，测量全部车型（含 6 轮卡车），主车被 CARLA 删除（开出地图掉出世界）时运行带原因结束、界面得知，交通车被撞飞时运行不卡死（改版包），重新连接时清理主车 / 交通 / 视图，非有限数值安全发送 | 原版包 21/21，改版包 23/23；改版 CARLA 上 22/22 |
 | `tests/test_all_vehicles.py` | 41 种车型（含自行车、摩托车、6 轮卡车、巴士）逐一当主车做联合仿真，CARLA 服务器不能崩 | 41/41 |
 | `tests/test_modified_carla.py` | 改版 CARLA：位姿、速度、角速度、IMU、四轮转向、悬架、物理交接 | 10/10 |
 | 界面 `--tour` | 自动操作全部页面并截图；用**真实鼠标点击**测试运行 / 暂停 / 单步 / 继续 / 停止、视口按钮、多视图布局与视图内容切换、页签和工程树、数据浏览（打开 / 逐帧 / 播放）与导出 | 42/42 |
@@ -256,6 +258,7 @@ python carsim_carla_bridge/run_cosim.py --mock --duration 20                    
 - 车辆由外部动力学驱动时为运动学刚体，不产生碰撞响应；CARLA 地图路面高低起伏而 CarSim 用平路时，把“高度模式”设为“贴合 CARLA 路面”。
 - “路线跟随”只做路径和车速跟踪，不看红绿灯；要遵守红绿灯请用“CARLA 自动驾驶”（仅 CARLA 物理）。
 - Windows 版界面和 `.bat` 脚本由 Linux 交叉编译 / 编写，尚未在 Windows 实机上完整运行过。
+- 用原版 Python carla 包时，交通车被撞飞仍可能让后端卡住（CARLA 0.9.16 自身的错误，见上文）：界面会提示，点“重启后端”即可继续。Ubuntu 桌面图标默认用改版包，没有这个问题。
 - 改版 CARLA 以编辑器模式运行时首次切换地图较慢；打包版（`make package`）无此问题。
 
 ## 致谢

@@ -44,7 +44,7 @@ git apply --check carla_0.9.16_external_dynamics.patch
 git apply carla_0.9.16_external_dynamics.patch
 git status
 ```
-`git status` 应显示 14 个修改文件和 3 个新文件：
+`git status` 应显示 17 个修改文件和 3 个新文件：
 ```
 LibCarla/source/carla/rpc/VehicleExternalState.h                                   (新)
 Unreal/.../Vehicle/MovementComponents/ExternalDynamicsMovementComponent.h/.cpp     (新)
@@ -53,6 +53,25 @@ Unreal/.../Vehicle/MovementComponents/ExternalDynamicsMovementComponent.h/.cpp  
 
 > 注意：一定要用 **0.9.16 标签**，不要用 `ue4-dev` 分支。补丁基于 0.9.16，
 > 而且 `Update.bat` 会按这个版本下载对应的资源包。
+
+### 已经按旧版补丁编译过：只打新增的部分
+
+补丁后来加了两处对 CARLA 0.9.16 自身错误的修复，都在旧补丁没有碰过的文件里，所以可以单独打：
+
+| 修复 | 文件 | 打完后需要 |
+|---|---|---|
+| 读取多轮车辆（卡车、巴士）物理参数时服务器崩溃 | `Unreal/.../Vehicle/CarlaWheeledVehicle.cpp` | 重新 `make package` |
+| 交通车被撞飞或掉出世界时交通管理器死循环、仿真卡住 | `LibCarla/source/carla/trafficmanager/` 下 2 个文件 | 重新 `make PythonAPI` 并重装 `.whl`（见第 3 节） |
+
+```bat
+cd C:\carla
+set P=C:\carla-cosim-studio\carla_patches\carla_0.9.16_external_dynamics.patch
+git apply --check --include=LibCarla/source/carla/trafficmanager/* %P%
+git apply --include=LibCarla/source/carla/trafficmanager/* %P%
+git apply --check --include=Unreal/CarlaUE4/Plugins/Carla/Source/Carla/Vehicle/CarlaWheeledVehicle.cpp %P%
+git apply --include=Unreal/CarlaUE4/Plugins/Carla/Source/Carla/Vehicle/CarlaWheeledVehicle.cpp %P%
+```
+`--check` 报错说明这一处已经打过，跳过对应的 `git apply` 即可。
 
 ## 3. 下载资源并编译
 

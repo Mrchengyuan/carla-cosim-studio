@@ -129,13 +129,33 @@ bool ToolTab(const char* label, bool active, float height) {
 void App::Frame() {
   ++frame_;
   be_.Poll([this](const json& ev) { OnEvent(ev); });
-  if (!be_.Connected() && plat::IsAlive(backend_proc_) && tour_dir_.empty() && frame_ % 30 == 0) ConnectBackend();
+  if (!be_.Connected() && plat::IsAlive(backend_proc_) && tour_dir_.empty() && frame_ % 30 == 0) ConnectBackend(true);
   if (tour_) TourTick();
   // Desktop launcher: connect to CARLA as soon as the backend answers.
   if (auto_connect_ && be_.Connected() && busy_.empty() && be_.PendingCount() == 0) {
     auto_connect_ = false;
     ConnectCarla();
   }
+  if (recover_connect_ && be_.Connected() && busy_.empty() && be_.PendingCount() == 0) {
+    recover_connect_ = false;
+    ConnectCarla(true);
+  }
+  // A backend that hangs (a CARLA call that never returns) or died: say so,
+  // with a way out, instead of a GUI that silently stops updating.
+  if (!busy_task_.empty() && ImGui::GetTime() - busy_seen_ > 3.0) busy_task_.clear();  // finished since
+  if (!busy_task_.empty()) {
+    const bool frame_task = busy_task_ == "仿真步进" || busy_task_ == "空闲时推进世界";
+    const double limit = frame_task ? 15 : (busy_task_ == "load_map" || busy_task_ == "reload_world") ? 300
+                       : busy_task_ == "vehicle_specs" ? 900 : 90;
+    if (busy_secs_ > limit)
+      backend_problem_ = Fmt("后端卡住了：“%s”已经 %.0f 秒没有完成，多半是 CARLA 的客户端库卡死了。",
+                             busy_task_.c_str(), busy_secs_);
+  } else if (backend_problem_.rfind("后端卡住了", 0) == 0) {
+    backend_problem_.clear();  // it went on after all
+  }
+  if (backend_proc_.valid() && !be_.Connected() && !plat::IsAlive(backend_proc_) && backend_problem_.empty())
+    backend_problem_ = "后端进程意外退出（" + plat::ExitDescription(backend_proc_) +
+                       "）。出错记录在桥接目录的 backend.log，重启后保存为 backend.prev.log。";
   // The centre viewport shows the ego camera as soon as there is an ego.
   const int ego = world_.value("ego_id", 0);
   if (view_auto_ && carla_connected_ && ego && ego != view_auto_ego_ && !view_on_ && busy_.empty() && tour_dir_.empty()) {
@@ -606,7 +626,8 @@ void App::DrawViewport(float w, float h) {
     const char* icon = ICON_FA_VIDEO_SLASH;
     std::string msg, sub;
     int action = 0;
-    if (!carla_connected_) { msg = "未连接 CARLA"; sub = "启动 CARLA 服务器后点“连接”"; action = 1; }
+    if (!be_.Connected() && !plat::IsAlive(backend_proc_)) { msg = "后端没有运行"; sub = "界面靠 Python 后端和 CARLA 通信"; action = 4; }
+    else if (!carla_connected_) { msg = "未连接 CARLA"; sub = "启动 CARLA 服务器后点“连接”"; action = 1; }
     else if (!ego) { msg = "还没有主车"; sub = "在“车辆与视角”里选择车型和出生点"; action = 2; }
     else if (view_on_) { msg = "正在等待画面 ..."; icon = ICON_FA_SPINNER; }
     else { msg = "实时画面已关闭"; action = 3; }
@@ -621,7 +642,7 @@ void App::DrawViewport(float w, float h) {
       dl->AddText(ImVec2(c.x - ss.x * 0.5f, c.y + ms.y + fs * 0.4f), ImGui::GetColorU32(kHudDim), sub.c_str());
     }
     const char* label = action == 1 ? ICON_FA_PLUG "  连接 CARLA" : action == 2 ? ICON_FA_PLUS "  生成主车"
-                      : action == 3 ? ICON_FA_PLAY "  打开画面" : nullptr;
+                      : action == 3 ? ICON_FA_PLAY "  打开画面" : action == 4 ? ICON_FA_POWER_OFF "  启动后端" : nullptr;
     if (label) {
       const float bw = ImGui::CalcTextSize(label).x + fs * 2.0f;
       ImGui::SetCursorScreenPos(ImVec2(c.x - bw * 0.5f, c.y + ms.y + fs * 2.0f));
@@ -630,6 +651,10 @@ void App::DrawViewport(float w, float h) {
       ui::RecordTarget("viewport:action");
       if (pressed) {
         if (action == 1) ConnectCarla();
+        else if (action == 4) {
+          if (backend_problem_.empty()) StartBackend();  // never started: nothing to recover
+          else RestartBackend();
+        }
         else if (action == 2) { panel_ = kPanelVehicle; monitor_open_ = true; SpawnEgo(); }
         else { view_auto_ = true; StartView(); }
       }
@@ -717,11 +742,33 @@ void App::DrawViewport(float w, float h) {
     const float mm = std::min(fs * 13.0f, std::min(mh * 0.4f, mw * 0.3f));
     if (mw > fs * 40) DrawMinimap(ImVec2(me.x - fs * 0.6f - mm, me.y - fs * 0.6f - mm), mm);
   }
+  float note_y = o.y + fs * 3.0f;
+  if (!backend_problem_.empty()) {
+    // The backend hung or died: the way out is a fresh one.
+    const char* label = ICON_FA_POWER_OFF "  重启后端";
+    const float lw = ImGui::CalcTextSize(label).x + fs * 1.6f;
+    const float bw = std::min(w - fs * 2.0f, ImGui::CalcTextSize(backend_problem_.c_str()).x + lw + fs * 3.4f);
+    const ImVec2 a(o.x + (w - bw) * 0.5f, note_y), b2(a.x + bw, a.y + fs * 2.2f);
+    dl->AddRectFilled(a, b2, ImGui::GetColorU32(ImVec4(0.08f, 0.08f, 0.09f, 0.92f)), 4.0f);
+    dl->AddRect(a, b2, ImGui::GetColorU32(p.danger), 4.0f, 0, 1.5f);
+    dl->AddText(ImVec2(a.x + fs * 0.7f, a.y + fs * 0.6f), ImGui::GetColorU32(p.danger), ICON_FA_TRIANGLE_EXCLAMATION);
+    dl->PushClipRect(a, ImVec2(b2.x - lw - fs * 0.8f, b2.y), true);
+    dl->AddText(ImVec2(a.x + fs * 2.0f, a.y + fs * 0.6f), ImGui::GetColorU32(kHudText), backend_problem_.c_str());
+    dl->PopClipRect();
+    ImGui::SetCursorScreenPos(ImVec2(b2.x - lw - fs * 0.4f, a.y + fs * 0.3f));
+    const bool pressed = ui::Button("", label, ui::Kind::Primary, ImVec2(lw, 0));
+    ui::RecordTarget("viewport:restart_backend");
+    if (ImGui::IsItemHovered())
+      ImGui::SetTooltip("结束当前后端（它的线程调用栈会记到 backend.prev.log），启动新的后端并重新连接 CARLA，\n"
+                        "同时清理上一个后端留在 CARLA 里的主车、交通和传感器");
+    if (pressed) RestartBackend();
+    note_y += fs * 2.6f;
+  }
   if (!run_note_.empty()) {
     // Banner under the camera bar: why the last run ended, dismissable.
     const ImVec4 col = run_note_level_ == "error" ? p.danger : p.warning;
     const float bw = std::min(w - fs * 2.0f, ImGui::CalcTextSize(run_note_.c_str()).x + fs * 4.0f);
-    const ImVec2 a(o.x + (w - bw) * 0.5f, o.y + fs * 3.0f), b2(a.x + bw, a.y + fs * 2.2f);
+    const ImVec2 a(o.x + (w - bw) * 0.5f, note_y), b2(a.x + bw, a.y + fs * 2.2f);
     dl->AddRectFilled(a, b2, ImGui::GetColorU32(ImVec4(0.08f, 0.08f, 0.09f, 0.9f)), 4.0f);
     dl->AddRect(a, b2, ImGui::GetColorU32(col), 4.0f, 0, 1.5f);
     dl->AddText(ImVec2(a.x + fs * 0.7f, a.y + fs * 0.6f), ImGui::GetColorU32(col),

@@ -130,6 +130,7 @@ bool Spawn(const std::vector<std::string>& argv, const std::string& cwd,
   }
   CloseHandle(pi.hThread);
   out.handle = reinterpret_cast<std::intptr_t>(pi.hProcess);
+  out.status = -1;
   return true;
 #else
   pid_t pid = fork();
@@ -152,6 +153,7 @@ bool Spawn(const std::vector<std::string>& argv, const std::string& cwd,
     _exit(127);
   }
   out.handle = pid;
+  out.status = -1;
   return true;
 #endif
 }
@@ -160,24 +162,68 @@ bool IsAlive(const Process& p) {
   if (!p.valid()) return false;
 #ifdef _WIN32
   DWORD code = 0;
-  return GetExitCodeProcess(reinterpret_cast<HANDLE>(p.handle), &code) && code == STILL_ACTIVE;
+  if (!GetExitCodeProcess(reinterpret_cast<HANDLE>(p.handle), &code)) return false;
+  if (code == STILL_ACTIVE) return true;
+  p.status = static_cast<int>(code);
+  return false;
 #else
+  if (p.status != -1) return false;  // already reaped
   int status = 0;
-  return waitpid(static_cast<pid_t>(p.handle), &status, WNOHANG) == 0;
+  const pid_t r = waitpid(static_cast<pid_t>(p.handle), &status, WNOHANG);
+  if (r == 0) return true;
+  if (r > 0) p.status = status;
+  return false;
 #endif
 }
 
-void Kill(Process& p) {
+void Kill(Process& p, bool hard) {
   if (!p.valid()) return;
 #ifdef _WIN32
+  (void)hard;
   TerminateProcess(reinterpret_cast<HANDLE>(p.handle), 0);
   CloseHandle(reinterpret_cast<HANDLE>(p.handle));
 #else
-  kill(static_cast<pid_t>(p.handle), SIGTERM);
-  int status = 0;
-  waitpid(static_cast<pid_t>(p.handle), &status, 0);
+  const pid_t pid = static_cast<pid_t>(p.handle);
+  if (IsAlive(p)) {
+    if (!hard) {
+      kill(pid, SIGTERM);
+      for (int i = 0; i < 50 && IsAlive(p); ++i) usleep(100000);
+    }
+    if (IsAlive(p)) {
+      kill(pid, SIGKILL);
+      int status = 0;
+      if (waitpid(pid, &status, 0) > 0) p.status = status;
+    }
+  }
 #endif
   p.handle = 0;
+  p.status = -1;
+}
+
+std::string ExitDescription(const Process& p) {
+#ifdef _WIN32
+  return p.status == -1 ? std::string("原因未知") : "退出码 " + std::to_string(static_cast<unsigned>(p.status));
+#else
+  if (p.status == -1) return "原因未知";
+  if (WIFEXITED(p.status))
+    return WEXITSTATUS(p.status) == 127 ? std::string("退出码 127，找不到 Python 解释器，请在“连接”页设置")
+                                        : "退出码 " + std::to_string(WEXITSTATUS(p.status));
+  if (WIFSIGNALED(p.status)) {
+    const int sig = WTERMSIG(p.status);
+    const char* what = sig == SIGSEGV ? "段错误" : sig == SIGABRT ? "程序中止" : sig == SIGKILL ? "被强制结束"
+                     : sig == SIGTERM ? "被终止" : sig == SIGBUS ? "总线错误" : sig == SIGFPE ? "算术错误" : "";
+    return "信号 " + std::to_string(sig) + (*what ? std::string("，") + what : std::string());
+  }
+  return "原因未知";
+#endif
+}
+
+void DumpStacks(const Process& p) {
+#ifndef _WIN32
+  if (IsAlive(p)) kill(static_cast<pid_t>(p.handle), SIGUSR1);
+#else
+  (void)p;
+#endif
 }
 
 std::vector<std::string> Utf8Args(int argc, char** argv) {

@@ -862,3 +862,44 @@ index 5b56fdc..d9ff407 100644
  
        Wheels.Add(PhysicsWheel);
      }
+diff --git a/LibCarla/source/carla/trafficmanager/Constants.h b/LibCarla/source/carla/trafficmanager/Constants.h
+index 0ed288a..1492727 100644
+--- a/LibCarla/source/carla/trafficmanager/Constants.h
++++ b/LibCarla/source/carla/trafficmanager/Constants.h
+@@ -48,6 +48,8 @@ static const float MAX_START_DISTANCE = 20.0f;
+ static const float MINIMUM_HORIZON_LENGTH = 15.0f;
+ static const float HORIZON_RATE = 2.0f;
+ static const float HIGH_SPEED_HORIZON_RATE = 4.0f;
++static const float MAXIMUM_HORIZON_LENGTH = 200.0f;  // CoSim: see LocalizationStage::Update
++static const uint64_t MAX_BUFFER_ADDITIONS = 1000u;   // CoSim: see LocalizationStage::Update
+ } // namespace PathBufferUpdate
+ 
+ namespace WaypointSelection {
+diff --git a/LibCarla/source/carla/trafficmanager/LocalizationStage.cpp b/LibCarla/source/carla/trafficmanager/LocalizationStage.cpp
+index 33e1833..1e21b4b 100644
+--- a/LibCarla/source/carla/trafficmanager/LocalizationStage.cpp
++++ b/LibCarla/source/carla/trafficmanager/LocalizationStage.cpp
+@@ -46,6 +46,12 @@ void LocalizationStage::Update(const unsigned long index) {
+   if (vehicle_speed > HIGHWAY_SPEED) {
+     horizon_length = std::max(vehicle_speed * HIGH_SPEED_HORIZON_RATE, MINIMUM_HORIZON_LENGTH);
+   }
++  // CoSim: a vehicle thrown by a collision (or falling out of the world) can
++  // have any speed. The buffer below is filled until it spans the horizon,
++  // which never happens once the horizon is longer than the map: the traffic
++  // manager then loops forever and, in synchronous mode, world.tick() never
++  // returns. Cap the horizon and the number of waypoints added per update.
++  horizon_length = std::min(horizon_length, MAXIMUM_HORIZON_LENGTH);
+   const float horizon_square = SQUARE(horizon_length);
+ 
+   if (buffer_map.find(actor_id) == buffer_map.end()) {
+@@ -191,7 +197,9 @@ void LocalizationStage::Update(const unsigned long index) {
+ 
+   // Populating the buffer through randomly chosen waypoints.
+   else {
+-    while (waypoint_buffer.back()->DistanceSquared(waypoint_buffer.front()) <= horizon_square) {
++    uint64_t added = 0u;
++    while (waypoint_buffer.back()->DistanceSquared(waypoint_buffer.front()) <= horizon_square
++           && added++ < MAX_BUFFER_ADDITIONS) {
+       SimpleWaypointPtr furthest_waypoint = waypoint_buffer.back();
+       std::vector<SimpleWaypointPtr> next_waypoints = furthest_waypoint->GetNextWaypoint();
+       uint64_t selection_index = 0u;

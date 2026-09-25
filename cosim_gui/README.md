@@ -75,6 +75,7 @@ cmake --build build -j
 - `--font <ttf>`：指定中文字体。
 - `--tour <目录>`：自动演示并截图，用于测试（包括用真实鼠标点击的步骤）。
 - `--size WxH`、`--scale S`：窗口大小、界面缩放（高分屏或高分辨率截图）。
+- `--hero <目录> --hero-spawns 0,20,40`：README 封面截图用。晴天 + 背景交通 + CarSim 联合仿真（模拟 CarSim，沿道路行驶）+ 1+3 多视图，从每个出生点各跑一次，每次在第 7 / 10 / 13 / 16 秒各截一张，再从中挑选。例如 `--size 2560x1440 --scale 1.5 --hero /tmp/hero --hero-spawns 0,20`。
 
 ## 测试情况（Ubuntu 22.04，CARLA 0.9.16 原版服务器）
 

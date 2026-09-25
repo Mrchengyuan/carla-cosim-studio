@@ -87,7 +87,7 @@ class ViewStreamer:
     def specs(self):
         return [dict(v["spec"]) for v in self.views.values()]
 
-    def stop(self):
+    def stop(self, notify=True):
         with self.lock:
             views, self.views = self.views, {}
         for v in views.values():
@@ -96,10 +96,13 @@ class ViewStreamer:
                 v["actor"].destroy()
             except RuntimeError:
                 pass
+        if views and notify:
+            # The GUI must not keep showing the last frame of views that are gone.
+            self.emit({"event": "views_active", "ids": []})
 
     def set(self, world, vehicle, specs):
         """Replace all views. spec: {id, kind, mode?, mount?, attrs?, width, height, fps}."""
-        self.stop()
+        self.stop(notify=False)
         bl = world.get_blueprint_library()
         out = []
         for spec in specs:
@@ -140,6 +143,7 @@ class ViewStreamer:
                 self.views[vid] = v
             actor.listen(lambda data, vid=vid: self._on_data(vid, data))
             out.append({"id": vid, "kind": kind, "actor": actor.id})
+        self.emit({"event": "views_active", "ids": [o["id"] for o in out]})
         return out
 
     # ------------------------------------------------------------ rendering

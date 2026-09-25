@@ -130,6 +130,29 @@ def main():
         check("view sizes", got.get("p1", (0, 0))[:2] == (320, 180) and got.get("p3", (0, 0))[:2] == (240, 240),
               {k: v[:2] for k, v in got.items()})
         check("lidar view has points", got.get("p3", (0, 0, 0))[2] > 20, "distinct byte values %s" % (got.get("p3"),))
+        # A run whose spawn point is occupied must fail clearly and tell the GUI
+        # the live views are gone (it used to keep showing the last frame).
+        import carla
+        w = carla.Client("localhost", 2000).get_world()
+        blocker = w.try_spawn_actor(w.get_blueprint_library().find("vehicle.audi.tt"), w.get_map().get_spawn_points()[7])
+        try:
+            bad = c.call("default_config")
+            bad["carsim"]["mock"] = True
+            bad["carla"]["spawn_index"] = 7
+            c.events.clear()
+            try:
+                c.call("cosim_start", config=bad)
+                check("occupied spawn point is reported", False)
+            except RuntimeError as err:
+                check("occupied spawn point is reported", "被其他车辆" in str(err), str(err)[-60:])
+            c.call("ping")
+            va = [e["ids"] for e in c.events if e.get("event") == "views_active"]
+            kinds = sorted(s["type"] for s in c.call("list_sensors"))
+            check("failed start keeps the ego, its sensors and views", c.call("world_info")["ego_id"] > 0
+                  and kinds == ["imu", "rgb"] and bool(va) and len(va[-1]) == 5, (kinds, va[-1:] if va else va))
+        finally:
+            if blocker is not None:
+                blocker.destroy()
         c.call("views_set", views=views[:2])   # kept across the run below (ego is respawned)
 
         rec = c.call("start_recorder", filename="/tmp/cc_gen/test_rec.log")

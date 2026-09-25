@@ -252,6 +252,8 @@ class App {
   int frame_ = 0;
   void TourTick();
   void BuildTour();
+  void BuildHeroTour();           // --hero: candidate screenshots for the README cover
+  std::string hero_spawns_;       // --hero-spawns 0,10,20
   void TourClick();                 // feeds a pending tour click to ImGui as real mouse events
   std::string click_target_;
   int click_phase_ = 0;

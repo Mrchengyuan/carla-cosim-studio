@@ -180,6 +180,8 @@ void App::Init(int argc, char** argv) {
     auto next = [&](std::string& dst) { if (i + 1 < argc) dst = argv[++i]; };
     std::string v;
     if (a == "--tour") next(tour_dir_);
+    else if (a == "--hero") { next(tour_dir_); hero_spawns_ = hero_spawns_.empty() ? "3" : hero_spawns_; }
+    else if (a == "--hero-spawns") next(hero_spawns_);
     else if (a == "--python") { next(v); prefs_["python"] = v; }
     else if (a == "--backend-dir") { next(v); prefs_["backend_dir"] = v; }
     else if (a == "--carla-port") { next(v); prefs_["carla_port"] = std::atoi(v.c_str()); }
@@ -194,7 +196,9 @@ void App::Init(int argc, char** argv) {
   std::string last = prefs_.value("last_config", std::string());
   if (!last.empty() && plat::FileExists(last)) LoadConfig(last);
   if (prefs_.value("auto_start_backend", true)) StartBackend();
-  if (!tour_dir_.empty()) BuildTour();
+  if (!tour_dir_.empty()) {
+    if (hero_spawns_.empty()) BuildTour(); else BuildHeroTour();
+  }
 }
 
 void App::SavePrefs() {
@@ -702,6 +706,10 @@ void App::OnEvent(const json& ev) {
   } else if (type == "progress") {
     const int done = ev.value("done", 0), total = ev.value("total", 1);
     if (done < total) busy_ = Fmt("正在测量车型尺寸 %d/%d", done + 1, total);
+  } else if (type == "views_active") {
+    // The backend says which live views exist (e.g. none after a failed respawn).
+    view_on_ = !ev.value("ids", json::array()).empty();
+    if (!view_on_) view_frames_ = 0;
   } else if (type == "export_progress") {
     ds_export_done_ = ev.value("done", 0);
     ds_export_total_ = ev.value("total", 0);
@@ -828,6 +836,55 @@ void App::BuildTour() {
       {kPanelWorld, [this] { dark_ = true; theme_changed_ = true; LoadMap("Town10HD_Opt"); },
        [this, idle] { return idle() && world_.value("map", "") == "Town10HD_Opt"; }, ""},
   };
+}
+
+// A CarSim co-simulation (mock CarSim, route following on the road) with
+// traffic and the 1+3 multi-view, run from several spawn points; screenshots
+// at a few moments of each run to pick a README cover from.
+void App::BuildHeroTour() {
+  fs::create_directories(fs::u8path(tour_dir_));
+  auto idle = [this] { return busy_.empty() && be_.PendingCount() == 0; };
+  tour_ = new std::vector<TourStep>{
+      {kPanelConnect, [this] { ConnectBackend(); }, [this] { return be_.Connected(); }, ""},
+      {kPanelConnect, [this] { ConnectCarla(); }, [this, idle] { return carla_connected_ && idle(); }, ""},
+      {kPanelWorld, [this] { ApplyWeatherPreset("ClearNoon"); }, idle, ""},
+      {kPanelVehicle, [this] {
+         for (size_t i = 0; i < vehicles_.size(); ++i)
+           if (vehicles_[i]["id"] == "vehicle.tesla.model3") vehicle_sel_ = static_cast<int>(i);
+         SpawnEgo();
+       }, [this, idle] { return idle() && world_.value("ego_id", 0) != 0; }, ""},
+      {kPanelTraffic, [this] { traffic_vehicles_ = 40; traffic_walkers_ = 20; SpawnTraffic(); }, idle, ""},
+      {kPanelView, [this] {
+         cfg_["drive"]["dynamics"] = "cosim";
+         cfg_["drive"]["cosim_driver"] = "route";
+         cfg_["drive"]["target_speed_kmh"] = 35.0;
+         cfg_["carsim"]["mock"] = true;
+         cfg_["sync"]["duration"] = 0.0;
+         cfg_["sync"]["frame_dt"] = 0.05;
+         cfg_["run"]["log_path"] = "";
+         cfg_["collect"]["enabled"] = false;
+         view_mode_ = "chase";
+         view_res_ = 3;
+         view_layout_ = 1;
+         panes_[1].source = "semantic";
+         panes_[2].source = "lidar";
+         panes_[3].source = "depth";
+         StartView();
+       }, [this, idle] { return idle() && view_frames_ > 5; }, ""},
+  };
+  std::string list = hero_spawns_;
+  for (size_t pos = 0; pos <= list.size();) {
+    const size_t comma = std::min(list.find(',', pos), list.size());
+    const int sp = std::atoi(list.substr(pos, comma - pos).c_str());
+    pos = comma + 1;
+    tour_->push_back({kPanelView, [this, sp] { cfg_["carla"]["spawn_index"] = sp; StartRun(); },
+                      [this] { return run_state_ == "running" && last_tel_.value("t", 0.0) > 4.0; }, ""});
+    for (int t : {7, 10, 13, 16})
+      tour_->push_back({kPanelView, [] {},
+                        [this, t] { return run_state_ == "running" && last_tel_.value("t", 0.0) > t && panes_[1].frames > 3; },
+                        Fmt("hero_s%03d_t%02d", sp, t)});
+    tour_->push_back({kPanelView, [this] { RunCommand("cosim_stop"); }, [this] { return !Running(); }, ""});
+  }
 }
 
 void App::TourTick() {

@@ -282,7 +282,10 @@ class Backend:
         pts = w.get_map().get_spawn_points()
         spawn_index = int(spawn_index) % len(pts)
         self.anchor = pts[spawn_index]
-        self.ego = w.spawn_actor(bp, self.anchor)
+        self.ego = w.try_spawn_actor(bp, self.anchor)
+        if self.ego is None:
+            self.anchor = None
+            raise RuntimeError("出生点 %d 被其他车辆或物体占用，无法生成主车：换一个出生点，或先在“交通流”页清除交通" % spawn_index)
         self._tick_or_wait(1)
         self._log("已生成主车 %s (id %d) 于 spawn point %d" % (blueprint, self.ego.id, spawn_index))
         return {"id": self.ego.id, "spawn_index": spawn_index}
@@ -615,7 +618,33 @@ class Backend:
         sensor_specs = [dict(r["spec"]) for r in self.sensors.values()]
         view_specs = self.views.specs()
         color = self.ego.attributes.get("color", "") if self._alive(self.ego) else ""
-        self.cmd_spawn_ego(c["vehicle"], c["spawn_index"], color)
+        old = (self.ego.type_id, self.ego.get_transform(), self.anchor) if self._alive(self.ego) else None
+        try:
+            self.cmd_spawn_ego(c["vehicle"], c["spawn_index"], color)
+        except RuntimeError:
+            # The run did not start: put the previous ego back where it was, with
+            # its sensors and views, so a failed start costs the user nothing.
+            if old is not None:
+                bp = w.get_blueprint_library().find(old[0])
+                bp.set_attribute("role_name", "hero")
+                if color and bp.has_attribute("color"):
+                    bp.set_attribute("color", color)
+                tf = old[1]
+                for attempt in range(5):
+                    # The destroyed ego only leaves the physics scene on the next frame.
+                    self._tick_or_wait(1)
+                    tf.location.z += 0.1
+                    self.ego = w.try_spawn_actor(bp, tf)
+                    if self.ego is not None:
+                        break
+                if self.ego is not None:  # is_alive can lag one frame behind the spawn
+                    self.anchor = old[2]
+                    self._tick_or_wait(1)
+                    for spec in sensor_specs:
+                        self.cmd_add_sensor(**spec)
+                    if view_specs:
+                        self.cmd_views_set(view_specs)
+            raise
         for spec in sensor_specs:
             self.cmd_add_sensor(**spec)
         if view_specs:

@@ -5,6 +5,7 @@ both run exactly the same code path.
 """
 
 import csv
+import importlib.util
 import math
 import os
 import sys
@@ -35,47 +36,51 @@ def make_env(d):
         raise ValueError("CarSim .sim file not set (carsim.sim_path)")
     sys.path.insert(0, os.path.abspath(c["repo_path"]))
     from carsim_env import CarSimEnv
-    env = CarSimEnv(c["sim_path"])
-    if d["run"]["driver"] == "carsim":
-        self_driven(env)
-    return env
-
-
-def self_driven(env):
-    """Let CarSim's own driver model (speed / path control set up in the
-    CarSim GUI) drive: the run may have no imports at all, and Python never
-    writes the import array. Wraps the instance, python_carsim_env is untouched."""
-    read = env.solver.read_configuration
-
-    def read_configuration(path):
-        cfg = read(path)
-        if cfg is not None:
-            env.declared_imports = int(cfg.get("n_import", 0))
-            if env.declared_imports <= 0:
-                cfg["n_import"] = 1   # spare slot for CarSimEnv's buffers; VS reads no imports
-        return cfg
-
-    write = env._write_action
-    env.solver.read_configuration = read_configuration
-    env._write_action = lambda action: None if action is None else write(action)
-    return env
+    return CarSimEnv(c["sim_path"])
 
 
 def make_driver(d, ex):
-    r = d["run"]
-    if r["driver"] == "demo":
+    drv = d["run"]["driver"]
+    if drv == "demo":
         return lambda obs, t: demo_driver(t)
-    sys.path.insert(0, os.path.abspath(d["carsim"]["repo_path"]))
-    from simple_controller import SimplePathFollower
-    pid = r["pid"]
-    for name in (pid["lateral_error"], pid["speed"]):
-        if not ex.has(name):
-            raise ValueError("driver 'pid' needs '%s' in carsim.export_names" % name)
-    ctrl = SimplePathFollower()
-    ctrl.reset()
+    if drv == "custom":
+        return load_controller(d, ex)
+    raise ValueError("unknown CarSim driver '%s'" % drv)
+
+
+def load_controller(d, ex):
+    """The user's control algorithm, loaded fresh from its file at every run
+    start (edits apply on the next run). The entry is a class (instantiated,
+    reset() called if present, then control() every frame) or a function:
+
+        control(exports, t, dt) -> values for the CarSim imports, .sim order
+
+    exports is {name: value} of every CarSim export, in CarSim units.
+    See controllers/example_controller.py.
+    """
+    c = d["run"]["controller"]
+    path = os.path.abspath(c["path"])
+    if not os.path.isfile(path):
+        raise ValueError("控制算法文件不存在：%s" % path)
+    # Let the algorithm import its neighbours and python_carsim_env modules.
+    for p in (os.path.abspath(d["carsim"]["repo_path"]), os.path.dirname(path)):
+        if p not in sys.path:
+            sys.path.insert(0, p)
+    spec = importlib.util.spec_from_file_location("user_controller", path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    entry = c.get("entry") or "Controller"
+    obj = getattr(mod, entry, None)
+    if obj is None:
+        raise ValueError("%s 里没有找到 %s" % (os.path.basename(path), entry))
+    if isinstance(obj, type):
+        obj = obj()
+        if hasattr(obj, "reset"):
+            obj.reset()
+        obj = obj.control
     dt = d["sync"]["frame_dt"]
-    return lambda obs, t: list(ctrl.control(
-        ex.raw(obs, pid["speed"]), pid["target_speed"], ex.raw(obs, pid["lateral_error"]), dt=dt))
+    names = list(ex.index)
+    return lambda obs, t: [float(v) for v in obj({n: ex.raw(obs, n) for n in names}, t, dt)]
 
 
 def spawn_chase_camera(world, vehicle, out_dir):
@@ -119,9 +124,7 @@ class CoSimSession:
         drv = d["run"]["driver"]
         self.command_driver = None
         self._speed = 0.0
-        if drv == "carsim":
-            self.driver = lambda obs, t: None     # CarSim drives itself
-        elif drv in ("route", "manual"):
+        if drv in ("route", "manual"):
             dr = d["drive"]
             if drv == "route":
                 dest = int(dr.get("destination_index", -1))
@@ -155,7 +158,6 @@ class CoSimSession:
                                 "carla_x", "carla_y", "carla_yaw", "steer_fl", "steer_fr", "speed_carla"])
         self._wall0 = time.perf_counter()
         return {"external_api": self.sync.external_api,
-                "declared_imports": getattr(self.env, "declared_imports", None),
                 "reference_point": [round(float(x), 3) for x in self.sync.ref_local],
                 "t_step": t_step, "inner_steps": self.inner, "clock_warning": self.clock_warning}
 
@@ -181,8 +183,6 @@ class CoSimSession:
         env, frame_dt = self.env, self.d["sync"]["frame_dt"]
         action = self.driver(self.obs, env.t_current)
         self.obs, _, done, info = env.control_step(action, self.inner)
-        if action is None:
-            action = self._carsim_inputs()
         if info.get("error"):
             raise RuntimeError("CarSim error: %s" % info["error"])
         state = self.sync.sync(self.obs, env.t_current, frame_dt)
@@ -221,14 +221,6 @@ class CoSimSession:
             "dynamics": "CarSim",
             "done": self.done,
         }
-
-    def _carsim_inputs(self):
-        """Driver inputs CarSim chose itself, read back from the exports."""
-        ex = self.sync.ex
-        scale = float(self.d["drive"].get("brake_scale", 1.0)) or 1.0
-        return [float(ex.raw(self.obs, "Throttle")) if ex.has("Throttle") else 0.0,
-                float(ex.raw(self.obs, "Pbk_Con")) / scale if ex.has("Pbk_Con") else 0.0,
-                float(ex.angle(self.obs, "Steer_SW")) if ex.has("Steer_SW") else 0.0]
 
     def carsim_state(self):
         """CarSim exports of the current step, for the data collector."""

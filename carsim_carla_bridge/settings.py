@@ -12,8 +12,8 @@ JSON layout (all keys optional, missing ones fall back to config.py):
   "sync":   {"frame_dt": 0.02, "duration": 20.0, "reference_point": "front_axle",
              "z_mode": "carsim", "wheel_spin_sign": -1.0,
              "steering_wheel_max_deg": 540.0, "use_external_api": "auto"},
-  "run":    {"driver": "demo", "record_dir": "", "log_path": "cosim_log.csv",
-             "pid": {"lateral_error": "LatErr", "speed": "Vx", "target_speed": 50.0}},
+  "run":    {"driver": "custom", "record_dir": "", "log_path": "cosim_log.csv",
+             "controller": {"path": "controllers/example_controller.py", "entry": "Controller"}},
   "drive":  {"dynamics": "cosim", "carla_driver": "route", "target_speed_kmh": 40.0, ...},
   "rig":    {"preset": "front_camera", "sensors": [...]},
   "collect":{"enabled": false, "out_dir": "datasets", "max_frames": 100, "max_gb": 2.0, ...}
@@ -40,12 +40,12 @@ def default_dict():
                  "wheel_spin_sign": _defaults.WHEEL_SPIN_SIGN,
                  "steering_wheel_max_deg": _defaults.STEERING_WHEEL_MAX_DEG,
                  "use_external_api": "auto"},
-        "run": {"driver": "demo", "record_dir": "", "log_path": "cosim_log.csv",
-                "pid": {"lateral_error": _defaults.PID_LATERAL_ERROR,
-                        "speed": _defaults.PID_SPEED,
-                        "target_speed": _defaults.PID_TARGET_SPEED}},
+        # driver: custom = the user's control algorithm (controller.path,
+        # relative to carsim_carla_bridge/) | demo. Both drive CarSim.
+        "run": {"driver": "custom", "record_dir": "", "log_path": "cosim_log.csv",
+                "controller": {"path": "controllers/example_controller.py", "entry": "Controller"}},
         # dynamics: "cosim" = CarSim drives the car, "carla" = CARLA PhysX.
-        # driver: carsim (CarSim's own driver) | demo | pid (CarSim only) | route | manual | autopilot (CARLA only)
+        # drive.cosim_driver (GUI) = custom | demo | route | manual; carla_driver = route | autopilot | manual
         "drive": {"dynamics": "cosim", "carla_driver": "route", "target_speed_kmh": 40.0,
                   "destination_index": -1, "brake_scale": 1.0,
                   "tm_speed_diff_pct": 0.0, "tm_ignore_lights": False},

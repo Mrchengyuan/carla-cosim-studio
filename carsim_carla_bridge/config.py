@@ -53,8 +53,3 @@ WHEEL_SPIN_SIGN = -1.0
 # Steering wheel angle that maps to steer = +-1.0 in get_control().
 STEERING_WHEEL_MAX_DEG = 540.0
 
-# --driver pid: reuse SimplePathFollower from python_carsim_env. Name the
-# export variables it reads (your .sim must export a lateral path error).
-PID_LATERAL_ERROR = "LatErr"   # rename to your lateral-error export
-PID_SPEED = "Vx"               # km/h
-PID_TARGET_SPEED = 50.0        # km/h

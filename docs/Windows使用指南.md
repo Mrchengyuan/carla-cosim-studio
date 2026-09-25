@@ -205,9 +205,7 @@ python carsim_env.py                              rem carsim_env.py 默认读取
 - **推荐**：`Vx Vy AVx AVy AVz`（真实速度 / IMU）、`AVy_L1 AVy_R1 AVy_L2 AVy_R2`（车轮转速，能看到打滑）、`Jnc_L1 Jnc_R1 Jnc_L2 Jnc_R2`（悬架行程）、`Steer_SW Throttle GearStat`、`Steer_L2 Steer_R2`（后轮转向）
 
 **记下变量的顺序**，界面里要按同样的顺序填。
-Import（输入）要看你打算用哪种驾驶方式：
-- **CarSim 驾驶员**（CarSim 自己开车，CARLA 跟随）：在 CarSim 里设置好驾驶员模型（车速控制、转向 / 路径跟随），油门、制动、方向盘**不要**作为 REPLACE 导入变量（删掉，或改成 ADD），否则会覆盖 CarSim 驾驶员。可以再导出 `Pbk_Con`，界面能显示制动。
-- **路线跟随 / 键盘驾驶 / 演示 / PID**（Python 算控制量送给 CarSim）：保持你原来的三个导入：油门、制动、方向盘转角（度），和 python_carsim_env 一致。
+Import（输入）保持你原来的三个，REPLACE 模式：油门、制动、方向盘转角（度），和 python_carsim_env 一致。你的控制算法算出的值就是写进这三个变量。
 
 ### 8.3 在界面里配置
 1. **车辆与视角**：点“测量全部车型尺寸”，挑一款轴距、轮胎半径和你的 CarSim 车型接近的车；选出生点（CarSim 原点放在这里）。
@@ -217,13 +215,27 @@ Import（输入）要看你打算用哪种驾驶方式：
    - `python_carsim_env 目录`：`C:\carla-cosim-studio\python_carsim_env`。
    - 导出变量：按 8.2 的顺序填（可以从 CarSim 复制后“用粘贴内容替换”），看到绿色“必需变量齐全”。
    - 单位：CarSim 默认用户单位（deg、km/h、deg/s、rpm、mm），一般不用改。
-3. **驾驶模式**：CarSim 动力学 +
-   - **CarSim 驾驶员**（想让 CarSim 操控 CARLA 里的车就选这个）：CarSim 用它自己的驾驶员模型开车，CARLA 的车完全跟着 CarSim 走，Python 不发任何控制。CarSim 路径的原点就是第 1 步选的出生点，车头朝出生点方向；CarSim 里的路径要按 CARLA 地图的道路来建，否则车会开出路面；
-   - **路线跟随**：程序在 CARLA 路网上规划路线，算出油门、制动、方向盘角送给 CarSim；
-   - **键盘驾驶**：用 WASD 开 CarSim 的车；
-   - **PID 路径跟踪**：用你项目里的 SimplePathFollower。选中后在同一页填“横向误差变量”“车速变量”“目标车速”，这两个变量也必须在导出变量列表里。
-   - 仿真步长用 CarSim `t_step` 的整数倍，例如 `t_step = 0.001` 时用 `0.02`。
-   - 制动输入比例：CarSim 的制动输入如果是主缸压力（MPa），把比例设成 10 左右。
+3. **驾驶模式**：选 **CarSim 联合仿真**，下面的“控制算法”里：
+   - **算法文件 .py**：填你的控制算法文件，例如 `controllers\my_controller.py`（相对 `carsim_carla_bridge` 目录）或绝对路径 `D:\my_algo\my_controller.py`。
+   - **入口**：类名，默认 `Controller`。
+   - 算法文件的写法（复制 `controllers\example_controller.py` 改最方便）：
+
+     ```python
+     # 例：C:\carla-cosim-studio\carsim_carla_bridge\controllers\my_controller.py
+     class Controller:
+         def reset(self):                       # 可选，每次运行开始调用一次
+             self.integral = 0.0
+
+         def control(self, exports, t, dt):     # 每帧调用一次
+             vx = exports["Vx"]                 # 按变量名取 CarSim 导出变量（CarSim 单位）
+             ...                                # 你的算法
+             return [throttle, brake, steer_sw] # 按 .sim 里导入变量的顺序
+     ```
+
+     `exports` 按变量名取 CarSim 导出变量；返回值按 .sim 里导入变量的顺序。每次点“运行”都会重新加载文件，改完代码直接再运行。
+     想用原来的 SimplePathFollower，就填 `controllers\simple_path_follower.py`（需要导出 `LatErr`）。
+   - 仿真步长 = 控制周期，用 CarSim `t_step` 的整数倍，例如 `t_step = 0.001` 时用 `0.02`。
+   - “测试用驾驶方式”折叠栏里的演示 / 路线跟随 / 键盘驾驶，只在还没有算法、想先检查链路时用。
 4. 把 **日志 CSV** 填上（例如 `cosim_log.csv`），点顶部 **运行**。
 5. 检查同步：打开“实时画面”的“前轮特写”，看转向和车轮转动；运行结束后打开日志 CSV，`carsim_x/y/yaw` 和 `carla_x/y/yaw` 应该一一对应。
 
@@ -259,7 +271,7 @@ cd /d C:\carla-cosim-studio\carsim_carla_bridge
 ..\venv\Scripts\activate
 python run_cosim.py --mock --duration 20                                       rem 模拟 CarSim
 python run_cosim.py --config ..\cosim_config.json                              rem 界面保存的配置
-python run_cosim.py --sim C:\carla-cosim-studio\python_carsim_env\simfile.sim --carsim-repo ..\python_carsim_env --driver pid
+python run_cosim.py --sim C:\carla-cosim-studio\python_carsim_env\simfile.sim --carsim-repo ..\python_carsim_env --controller controllers\my_controller.py
 ```
 在训练代码里使用（每个 `env.control_step()` 后加两行）：
 ```python

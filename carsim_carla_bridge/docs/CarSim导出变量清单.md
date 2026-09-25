@@ -38,7 +38,6 @@
 | `Steer_SW` | 方向盘转角 | deg | `get_control().steer` 报 0 |
 | `Throttle` | 油门开度 | 0–1 | `get_control().throttle` 报 0 |
 | `GearStat` | 当前挡位 | – | `get_control().gear` 报 0 |
-| `Pbk_Con` | 制动主缸压力 | MPa | “CarSim 驾驶员”模式下界面制动条为 0（导出后按“制动输入比例”换算显示） |
 
 有了 `Vx Vy AVx AVy AVz`，改版 CARLA 里 `vehicle.get_velocity()`、`get_angular_velocity()`、
 IMU 陀螺仪读数就是 CarSim 的真实值（原版 CARLA 里物理关闭后这些读数都是 0）。

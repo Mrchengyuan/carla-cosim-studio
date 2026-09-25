@@ -98,11 +98,12 @@ def main():
         check("CarSim route follower drives", moved > 25 and tels[-1]["speed_kmh"] > 15,
               "moved %.0f m, %.1f km/h, max wheel steer %.1f°" % (moved, tels[-1]["speed_kmh"], steer_used))
 
-        # ---- CarSim's own driver model drives, CARLA follows -------------------
+        # ---- the user's control algorithm drives CarSim, CARLA follows --------
         r = json.loads(json.dumps(cfg))
         r["carsim"]["mock"] = True
         r["drive"].update({"dynamics": "cosim"})
-        r["run"]["driver"] = "carsim"
+        r["run"]["driver"] = "custom"
+        r["run"]["controller"] = {"path": "controllers/example_controller.py", "entry": "Controller"}
         r["sync"]["duration"] = 8.0
         r["sync"]["frame_dt"] = 0.02
         c.events.clear()
@@ -116,9 +117,16 @@ def main():
             if e["event"] == "telemetry":
                 tels.append(e["data"])
         moved = math.dist(tels[0]["location"][:2], tels[-1]["location"][:2])
-        check("CarSim driver mode: CARLA car follows CarSim", moved > 20 and max(t["action"][0] for t in tels) > 0.1
+        check("custom controller drives CarSim", moved > 20 and abs(tels[-1]["speed_kmh"] - 40) < 8
               and max(abs(t["action"][2]) for t in tels) > 10,
-              "moved %.0f m, %.1f km/h, inputs read back from CarSim exports" % (moved, tels[-1]["speed_kmh"]))
+              "moved %.0f m, %.1f km/h (target 40), max steering wheel %.0f°" % (
+                  moved, tels[-1]["speed_kmh"], max(abs(t["action"][2]) for t in tels)))
+        r["run"]["controller"] = {"path": "controllers/no_such_file.py"}
+        try:
+            c.call("cosim_start", config=r)
+            check("missing controller file is reported", False)
+        except RuntimeError as e:
+            check("missing controller file is reported", "不存在" in str(e), str(e)[-50:])
 
         # ---- manual keyboard control in CARLA physics --------------------------
         r = json.loads(json.dumps(cfg))

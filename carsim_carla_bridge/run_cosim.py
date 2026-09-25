@@ -14,7 +14,7 @@ Examples
   python run_cosim.py --mock --duration 20 --record out/        # no CarSim needed
   python run_cosim.py --config cosim.json                        # GUI-saved settings
   python run_cosim.py --sim C:/CarSim/simfile.sim --carsim-repo ../python_carsim_env
-  python run_cosim.py --sim C:/CarSim/simfile.sim --driver pid   # your SimplePathFollower
+  python run_cosim.py --sim C:/CarSim/simfile.sim --controller my_ctrl.py   # your control algorithm
 """
 
 import argparse
@@ -37,7 +37,8 @@ def main():
     ap.add_argument("--duration", type=float, help="simulated seconds")
     ap.add_argument("--spawn-index", type=int, help="CARLA spawn point used as CarSim origin")
     ap.add_argument("--vehicle")
-    ap.add_argument("--driver", choices=("carsim", "demo", "pid"))
+    ap.add_argument("--driver", choices=("custom", "demo"))
+    ap.add_argument("--controller", help="your control algorithm (.py), see controllers/example_controller.py")
     ap.add_argument("--record", help="save chase-camera frames here")
     ap.add_argument("--log")
     ap.add_argument("--no-external-api", action="store_true", help="force the stock-CARLA fallback")
@@ -52,6 +53,9 @@ def main():
                             ("log", "run", "log_path")):
         if getattr(args, key) is not None:
             o[sect][name] = getattr(args, key)
+    if args.controller:
+        o["run"]["controller"] = {"path": args.controller}
+        o["run"]["driver"] = "custom"
     if args.mock:
         o["carsim"]["mock"] = True
     if args.no_external_api:

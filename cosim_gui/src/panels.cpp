@@ -438,13 +438,13 @@ void App::DrawPanelDrive() {
   const ui::Palette& p = ui::Colors();
   const float fs = ImGui::GetFontSize();
   json& dr = cfg_["drive"];
-  if (!dr.contains("cosim_driver")) dr["cosim_driver"] = cfg_["run"].value("driver", std::string("demo"));
+  if (!dr.contains("cosim_driver")) dr["cosim_driver"] = cfg_["run"].value("driver", std::string("custom"));
   const bool cosim = dr.value("dynamics", std::string("cosim")) == "cosim";
 
   ui::BeginCard(ICON_FA_GEARS, "车辆动力学由谁计算");
   const float w2 = (ImGui::GetContentRegionAvail().x - ImGui::GetStyle().ItemSpacing.x) / 2;
   ImGui::BeginDisabled(Running());
-  if (ChoiceCard("dyn_cosim", ICON_FA_GEARS, "CarSim 动力学", "CarSim 计算车辆运动，CARLA 同步显示、渲染传感器。适合动力学研究、强化学习。", cosim, w2))
+  if (ChoiceCard("dyn_cosim", ICON_FA_GEARS, "CarSim 联合仿真", "你的控制算法控制 CarSim 的车，CarSim 计算动力学；CARLA 照 CarSim 的结果摆放车辆，负责场景、传感器和画面。", cosim, w2))
     dr["dynamics"] = "cosim";
   ImGui::SameLine();
   if (ChoiceCard("dyn_carla", ICON_FA_CAR, "CARLA 物理", "CARLA 自带 PhysX 车辆物理，不需要 CarSim。适合大规模数据采集、感知算法。", !cosim, w2))
@@ -452,63 +452,70 @@ void App::DrawPanelDrive() {
   ImGui::EndDisabled();
   ui::EndCard();
 
-  ui::BeginCard(ICON_FA_ROBOT, "驾驶方式");
-  struct D { const char* id; const char* icon; const char* title; const char* desc; bool cosim, carla; };
-  static const D kD[] = {
-      {"carsim", ICON_FA_CAR_SIDE, "CarSim 驾驶员", "CarSim 用它自己的驾驶员模型（车速、路径控制）开车，CARLA 里的车完全跟随，Python 不发控制。", true, false},
-      {"route", ICON_FA_ROUTE, "路线跟随", "在路网上规划路线，自动转向、控速，走完一段自动换下一个目的地。", true, true},
-      {"autopilot", ICON_FA_TRAFFIC_LIGHT, "CARLA 自动驾驶", "交通管理器驾驶：遵守信号灯、跟车、变道。", false, true},
-      {"manual", ICON_FA_KEYBOARD, "键盘驾驶", "W/S 油门刹车，A/D 转向，在界面里直接开。", true, true},
-      {"demo", ICON_FA_WAVE_SQUARE, "演示（开环）", "加速 + 蛇形 + 制动，用来检查联合仿真链路。", true, false},
-      {"pid", ICON_FA_CROSSHAIRS, "PID 路径跟踪", "你项目里的 SimplePathFollower，需要 CarSim 导出横向误差。", true, false}};
+  struct D { const char* id; const char* icon; const char* title; const char* desc; };
   const std::string key = cosim ? "cosim_driver" : "carla_driver";
-  std::string cur = dr.value(key, std::string("route"));
+  std::string cur = dr.value(key, std::string(cosim ? "custom" : "route"));
   const float w3 = (ImGui::GetContentRegionAvail().x - ImGui::GetStyle().ItemSpacing.x * 2) / 3;
-  int col = 0;
-  ImGui::BeginDisabled(Running());
-  for (const auto& d : kD) {
-    if (!(cosim ? d.cosim : d.carla)) continue;
-    if (col % 3) ImGui::SameLine();
-    if (ChoiceCard(d.id, d.icon, d.title, d.desc, cur == d.id, w3)) dr[key] = d.id;
-    ++col;
-  }
-  ImGui::EndDisabled();
-  cur = dr.value(key, std::string("route"));
-  ImGui::Dummy(ImVec2(0, fs * 0.3f));
-  if (cur == "route" || cur == "autopilot") {
-    if (cur == "route") {
-      float v = dr.value("target_speed_kmh", 40.0f);
-      ui::Row("目标车速 km/h");
-      if (ImGui::SliderFloat("##tspeed", &v, 5, 120, "%.0f")) dr["target_speed_kmh"] = v;
-      int dest = dr.value("destination_index", -1);
-      ui::Row("目的地出生点", "-1 = 随机选择远处目的地，走完自动换下一个", fs * 8);
-      if (ImGui::InputInt("##dest", &dest)) dr["destination_index"] = std::max(-1, dest);
-    } else {
-      float d = dr.value("tm_speed_diff_pct", 0.0f);
-      ui::Row("相对限速 %", "负数 = 比限速快，正数 = 比限速慢");
-      if (ImGui::SliderFloat("##tmsd", &d, -50, 80, "%.0f %%")) dr["tm_speed_diff_pct"] = d;
-      bool ign = dr.value("tm_ignore_lights", false);
-      ui::Row("忽略红绿灯");
-      if (ImGui::Checkbox("##ign", &ign)) dr["tm_ignore_lights"] = ign;
+  auto cards = [&](const D* list, int n) {
+    ImGui::BeginDisabled(Running());
+    for (int i = 0; i < n; ++i) {
+      if (i) ImGui::SameLine();
+      if (ChoiceCard(list[i].id, list[i].icon, list[i].title, list[i].desc, cur == list[i].id, w3)) dr[key] = cur = list[i].id;
     }
+    ImGui::EndDisabled();
+  };
+
+  if (cosim) {
+    ui::BeginCard(ICON_FA_CODE, "控制算法");
+    ImGui::BeginDisabled(Running());
+    if (ChoiceCard("custom", ICON_FA_CODE, "我的控制算法", "每帧把 CarSim 的导出变量交给你的 Python 算法，算出的油门、制动、方向盘送回 CarSim（REPLACE 导入）。",
+                   cur == "custom", ImGui::GetContentRegionAvail().x))
+      dr[key] = cur = "custom";
+    ImGui::EndDisabled();
+    if (cur == "custom") {
+      json& ctl = cfg_["run"]["controller"];
+      ImGui::Dummy(ImVec2(0, fs * 0.2f));
+      ui::Row("算法文件 .py", "相对路径以 carsim_carla_bridge 目录为准。每次点“运行”都会重新加载，改完代码直接再点运行", fs * 30);
+      EditString(ctl, "path");
+      ui::Row("入口", "文件里的类名（带 control 方法）或函数名", fs * 8);
+      EditString(ctl, "entry");
+      ImGui::TextColored(p.text_dim, "接口：control(exports, t, dt) -> [油门, 制动, 方向盘角]，exports 是按变量名取值的 CarSim 导出变量");
+      ImGui::TextColored(p.text_dim, "示例：controllers/example_controller.py（定速 + 蛇形），controllers/simple_path_follower.py（SimplePathFollower）");
+    }
+    ImGui::Dummy(ImVec2(0, fs * 0.3f));
+    if (cur != "custom") ImGui::SetNextItemOpen(true, ImGuiCond_Always);
+    if (ImGui::CollapsingHeader("测试用驾驶方式（还没有算法时，用来检查联合仿真链路）")) {
+      static const D kTest[] = {
+          {"demo", ICON_FA_WAVE_SQUARE, "演示（开环）", "固定的加速 + 蛇形 + 制动，看 CARLA 的车是否跟着 CarSim 动。"},
+          {"route", ICON_FA_ROUTE, "路线跟随", "程序在 CARLA 路网上规划路线，算出油门、方向盘送给 CarSim。"},
+          {"manual", ICON_FA_KEYBOARD, "键盘驾驶", "W/S 油门刹车，A/D 转向，手动开 CarSim 的车。"}};
+      cards(kTest, 3);
+    }
+  } else {
+    ui::BeginCard(ICON_FA_ROBOT, "驾驶方式");
+    static const D kCarla[] = {
+        {"route", ICON_FA_ROUTE, "路线跟随", "在路网上规划路线，自动转向、控速，走完一段自动换下一个目的地。"},
+        {"autopilot", ICON_FA_TRAFFIC_LIGHT, "CARLA 自动驾驶", "交通管理器驾驶：遵守信号灯、跟车、变道。"},
+        {"manual", ICON_FA_KEYBOARD, "键盘驾驶", "W/S 油门刹车，A/D 转向，在界面里直接开。"}};
+    cards(kCarla, 3);
   }
-  if (cosim && cur == "pid") {
-    // SimplePathFollower reads a lateral path error and the speed from the
-    // CarSim exports; name them here (must be in the export list).
-    json& pid = cfg_["run"]["pid"];
-    ui::Row("横向误差变量", "CarSim 导出的横向路径误差变量名，必须在“CarSim 动力学”页的导出变量列表里", fs * 10);
-    EditString(pid, "lateral_error");
-    ui::Row("车速变量", "CarSim 导出的车速变量名（km/h），一般是 Vx", fs * 10);
-    EditString(pid, "speed");
-    ui::Row("目标车速 km/h", nullptr, fs * 8);
-    EditDouble(pid, "target_speed", 5, "%.0f", 0, 300);
+  ImGui::Dummy(ImVec2(0, fs * 0.3f));
+  if (cur == "route") {
+    float v = dr.value("target_speed_kmh", 40.0f);
+    ui::Row("目标车速 km/h");
+    if (ImGui::SliderFloat("##tspeed", &v, 5, 120, "%.0f")) dr["target_speed_kmh"] = v;
+    int dest = dr.value("destination_index", -1);
+    ui::Row("目的地出生点", "-1 = 随机选择远处目的地，走完自动换下一个", fs * 8);
+    if (ImGui::InputInt("##dest", &dest)) dr["destination_index"] = std::max(-1, dest);
+  } else if (cur == "autopilot") {
+    float d = dr.value("tm_speed_diff_pct", 0.0f);
+    ui::Row("相对限速 %", "负数 = 比限速快，正数 = 比限速慢");
+    if (ImGui::SliderFloat("##tmsd", &d, -50, 80, "%.0f %%")) dr["tm_speed_diff_pct"] = d;
+    bool ign = dr.value("tm_ignore_lights", false);
+    ui::Row("忽略红绿灯");
+    if (ImGui::Checkbox("##ign", &ign)) dr["tm_ignore_lights"] = ign;
   }
-  if (cosim && cur == "carsim") {
-    ImGui::TextColored(p.text_dim, "在 CarSim 里设置好驾驶员（车速控制、转向/路径跟随），界面只负责让 CARLA 的车跟着 CarSim 走。");
-    ImGui::TextColored(p.warning, ICON_FA_TRIANGLE_EXCLAMATION "  CarSim 模型里不要把油门、制动、方向盘设成 REPLACE 导入变量，否则会覆盖 CarSim 驾驶员。");
-    ImGui::TextColored(p.text_dim, "CarSim 路径的原点 = “车辆与视角”页选的出生点，车头朝向该出生点方向。");
-  }
-  if (cosim && cur != "demo" && cur != "pid" && cur != "carsim") {
+  if (cosim && (cur == "route" || cur == "manual")) {
     float b = dr.value("brake_scale", 1.0f);
     ui::Row("制动输入比例", "0..1 的制动指令乘以这个系数再送给 CarSim（例如 CarSim 用制动压力 MPa 时设为 10）", fs * 8);
     if (ImGui::InputFloat("##bscale", &b, 0.5f, 1.0f, "%.2f")) dr["brake_scale"] = std::max(0.0f, b);
@@ -563,7 +570,7 @@ void App::DrawPanelCoSim() {
       "AVy_L2", "AVy_R2", "Throttle", "GearStat", "Jnc_L1", "Jnc_R1", "Jnc_L2", "Jnc_R2"};
 
   if (!(cfg_.contains("drive") && cfg_["drive"].value("dynamics", std::string("cosim")) == "cosim")) {
-    ImGui::TextColored(p.warning, ICON_FA_CIRCLE_INFO "  当前在“驾驶模式”页选择的是 CARLA 物理，这里的设置只在 CarSim 动力学下生效。");
+    ImGui::TextColored(p.warning, ICON_FA_CIRCLE_INFO "  当前在“驾驶模式”页选择的是 CARLA 物理，这里的设置只在 CarSim 联合仿真下生效。");
     ImGui::Dummy(ImVec2(0, 4));
   }
 

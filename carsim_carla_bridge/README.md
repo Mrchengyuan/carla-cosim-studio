@@ -37,7 +37,7 @@ CarSim 负责全部车辆动力学计算，CARLA 负责场景、渲染和传感�
 python run_cosim.py --mock --duration 20 --record out/      # 不需要 CarSim，先验证链路
 # 2) 接入真实 CarSim（Windows）
 python run_cosim.py --sim C:\CarSim\simfile.sim --carsim-repo ..\python_carsim_env
-python run_cosim.py --sim C:\CarSim\simfile.sim --driver pid # 用你的 SimplePathFollower
+python run_cosim.py --sim C:\CarSim\simfile.sim --controller controllers\my_controller.py # 你的控制算法（写法见 controllers\example_controller.py）
 ```
 常用参数：`--frame-dt 0.02`（CARLA 帧周期，最好是 CarSim `t_step` 的整数倍）、
 `--spawn-index`（把 CarSim 原点放在哪个 spawn point）、`--vehicle`（CARLA 车型）。

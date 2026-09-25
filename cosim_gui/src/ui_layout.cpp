@@ -38,10 +38,9 @@ const char* DriverName(const json& cfg) {
   if (!cfg.contains("drive")) return "-";
   const json& d = cfg["drive"];
   const bool cosim = d.value("dynamics", std::string("cosim")) == "cosim";
-  const std::string v = cosim ? d.value("cosim_driver", std::string("demo")) : d.value("carla_driver", std::string("route"));
-  if (v == "carsim") return "CarSim 驾驶员";
+  const std::string v = cosim ? d.value("cosim_driver", std::string("custom")) : d.value("carla_driver", std::string("route"));
+  if (v == "custom") return "我的控制算法";
   if (v == "demo") return "演示";
-  if (v == "pid") return "PID 跟踪";
   if (v == "route") return "路线跟随";
   if (v == "manual") return "键盘驾驶";
   if (v == "autopilot") return "CARLA 自动驾驶";
@@ -206,7 +205,7 @@ void App::DrawToolbar() {
   ImGui::BeginGroup();
   const bool cosim = cfg_.contains("drive") && cfg_["drive"].value("dynamics", std::string("cosim")) == "cosim";
   const bool collect = cfg_.contains("collect") && cfg_["collect"].value("enabled", false);
-  ImGui::TextColored(p.text_dim, "%s %s   %s %s   %s %s", ICON_FA_GEARS, cosim ? "CarSim 动力学" : "CARLA 物理",
+  ImGui::TextColored(p.text_dim, "%s %s   %s %s   %s %s", ICON_FA_GEARS, cosim ? "CarSim 联合仿真" : "CARLA 物理",
                      ICON_FA_ROBOT, DriverName(cfg_), ICON_FA_DATABASE, collect ? "采集开启" : "不采集");
   if (!last_tel_.empty()) {
     const int nf = last_tel_.value("n_frames", 0);

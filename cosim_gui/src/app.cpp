@@ -272,7 +272,7 @@ void App::ConnectBackend() {
       json carla = cfg_["carla"];
       cfg_ = r;
       cfg_["carla"].update(carla);
-      if (!cfg_["drive"].contains("cosim_driver")) cfg_["drive"]["cosim_driver"] = cfg_["run"].value("driver", std::string("demo"));
+      if (!cfg_["drive"].contains("cosim_driver")) cfg_["drive"]["cosim_driver"] = cfg_["run"].value("driver", std::string("custom"));
       RefreshDisk();
     });
   }
@@ -610,7 +610,7 @@ void App::BuildTour() {
       {kPanelTraffic, [this] { traffic_vehicles_ = 12; traffic_walkers_ = 8; SpawnTraffic(); }, idle, "06_traffic"},
       {kPanelDrive, [this] {
          cfg_["drive"]["dynamics"] = "cosim";
-         cfg_["drive"]["cosim_driver"] = "carsim";
+         cfg_["drive"]["cosim_driver"] = "custom";
          cfg_["drive"]["target_speed_kmh"] = 35.0;
        }, idle, "07_drive"},
       {kPanelCoSim, [this] {

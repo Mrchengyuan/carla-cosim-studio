@@ -72,13 +72,15 @@ def check(name, cond, detail=""):
 
 
 def main():
+    carla_port = int(sys.argv[sys.argv.index("--port") + 1]) if "--port" in sys.argv else 2000
     proc = subprocess.Popen([sys.executable, os.path.join(HERE, "..", "backend_server.py"), "--port", str(PORT)],
                             cwd=os.path.join(HERE, ".."))
     try:
         c = Conn(PORT)
         check("ping", c.call("ping") == "pong")
-        info = c.call("connect", host="localhost", port=2000)
-        check("connect", info["server_version"].startswith("0.9.16"), info["map"])
+        info = c.call("connect", host="localhost", port=carla_port)
+        # "0.9.16" for the release, the source commit (e.g. "294096e-dirty") for the modified build
+        check("connect", bool(info["server_version"]) and bool(info["map"]), (info["server_version"], info["map"]))
         maps = c.call("list_maps")
         check("list_maps", len(maps) >= 8, maps[:5])
 
@@ -134,7 +136,9 @@ def main():
         # A run whose spawn point is occupied must fail clearly and tell the GUI
         # the live views are gone (it used to keep showing the last frame).
         import carla
-        w = carla.Client("localhost", 2000).get_world()
+        cl = carla.Client("localhost", carla_port)
+        cl.set_timeout(60)
+        w = cl.get_world()
         blocker = w.try_spawn_actor(w.get_blueprint_library().find("vehicle.audi.tt"), w.get_map().get_spawn_points()[7])
         try:
             bad = c.call("default_config")
@@ -188,7 +192,8 @@ def main():
         f = c.wait_event(lambda e: e.get("event") == "frame" and e.get("view") == "p1", 20)
         check("views restored on the new ego after run start", f["w"] == 320, f.get("view"))
         done = c.wait_event(lambda e: e.get("event") == "cosim_state" and e["state"] in ("finished", "error"), 120)
-        check("cosim finished", done["state"] == "finished", done)
+        check("cosim finished, with the reason", done["state"] == "finished" and done.get("detail", "").startswith("达到设定的运行时长"),
+              (done["state"], done.get("detail")))
         winfo = c.call("world_info")
         check("world restored to async after cosim", winfo["synchronous"] is False, winfo["synchronous"])
 

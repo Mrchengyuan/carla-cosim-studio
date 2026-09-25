@@ -869,8 +869,16 @@ class Backend:
         else:
             self._unsent_tel = tel
         if tel["done"]:
-            self._log("联合仿真完成：%.1f s，%.2f 倍实时" % (tel["t"], tel["rt_factor"]))
-            self._stop_cosim_if_running("finished")
+            # Tell the GUI exactly why the run ended.
+            ses = self.session
+            if self.collector is not None and self.collector.done:
+                reason = "数据采集%s" % self.collector.stop_reason
+            elif ses.n_frames > 0 and ses.frame >= ses.n_frames:
+                reason = "达到设定的运行时长 %.0f s" % tel["t"]
+            else:
+                reason = "CarSim 到达 .sim 里设定的结束时间"
+            self._log("运行结束（%s）：%.1f s，%.2f 倍实时" % (reason, tel["t"], tel["rt_factor"]))
+            self._stop_cosim_if_running("finished", reason)
 
     # ------------------------------------------------------------ shutdown
     def cleanup(self):

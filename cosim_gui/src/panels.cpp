@@ -163,7 +163,7 @@ void App::DrawPanelWorld() {
   if (ui::Button(ICON_FA_FOLDER_OPEN, "加载地图", ui::Kind::Primary)) LoadMap(map_choice_);
   ImGui::SameLine();
   if (ui::Button(ICON_FA_ROTATE, "重载当前地图"))
-    Call("reload_world", json::object(), [this](const json& r) { world_ = r; RefreshAfterMapChange(); }, "正在重载地图 ...");
+    Call("reload_world", json::object(), [this](const json& r) { SetWorld(r); RefreshAfterMapChange(); }, "正在重载地图 ...");
   ImGui::EndDisabled();
   ui::EndCard();
 

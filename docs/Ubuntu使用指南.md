@@ -321,13 +321,14 @@ world.tick()
 
 ## 10. 测试
 
-CARLA 启动后，在 `carsim_carla_bridge` 目录执行：
+CARLA 启动后，在 `carsim_carla_bridge` 目录执行（测改版 CARLA 时每条命令后面加 `--port 3000`）：
 ```bash
 python tests/test_coords.py                          # 坐标换算（不需要 CARLA）
 python tests/test_backend.py                         # 界面后端全部命令，约 2 分钟
 python tests/test_features.py                        # 驾驶模式 + 3 帧采集（测完自动删除）
 python tests/test_robustness.py                      # 控制算法出错、NaN、错误请求、重新连接时的清理
 python tests/test_dataset.py                         # 6 帧采集 → 浏览 → KITTI / nuScenes 导出（测完自动删除）
+python tests/test_all_vehicles.py                    # 每种车型都当一次主车联合仿真，服务器不能崩
 python tests/test_modified_carla.py --port 3000      # 改版 CARLA 接口（需要改版 CARLA 和 venv_build）
 ```
 界面自动演示：`./cosim_gui/build/carla_cosim_studio --tour /tmp/tour --auto-connect`（会依次操作每个页面并截图到 `/tmp/tour`）。

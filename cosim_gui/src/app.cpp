@@ -295,7 +295,7 @@ void App::ConnectCarla() {
   Call("connect", args, [this](const json& r) {
     carla_connected_ = true;
     server_info_ = r;
-    world_ = r;
+    SetWorld(r);
     if (r.contains("cosim_state") && r["cosim_state"].is_string()) run_state_ = r["cosim_state"].get<std::string>();
     map_choice_ = r.value("map", std::string());
     SavePrefs();
@@ -306,9 +306,16 @@ void App::ConnectCarla() {
   }, "正在连接 CARLA ...");
 }
 
+void App::SetWorld(const json& r) {
+  // The "run ended, ego parked" banner is about that ego: drop it once the
+  // ego is gone or replaced (map switched, ego deleted or respawned).
+  if (!Running() && r.is_object() && r.value("ego_id", 0) != world_.value("ego_id", 0)) run_note_.clear();
+  world_ = r.is_object() ? r : json::object();
+}
+
 void App::RefreshWorld() {
   Call("world_info", json::object(), [this](const json& r) {
-    world_ = r;
+    SetWorld(r);
     // The backend's run state is authoritative (e.g. after a reconnect).
     if (r.contains("cosim_state") && r["cosim_state"].is_string()) run_state_ = r["cosim_state"].get<std::string>();
     weather_edit_ = r.value("weather", json::object());
@@ -330,7 +337,7 @@ void App::RefreshDisk() {
 
 void App::LoadMap(const std::string& name) {
   Call("load_map", {{"name", name}}, [this](const json& r) {
-    world_ = r;
+    SetWorld(r);
     map_choice_ = r.value("map", std::string());
     Log("地图已切换为 " + r.value("map", std::string()));
     RefreshAfterMapChange();
@@ -357,7 +364,7 @@ void App::ApplyWorldSettings() {
             {"no_rendering", world_.value("no_rendering", false)},
             {"idle_tick", world_.value("idle_tick", false)}};
   Call("world_settings", a, [this](const json& r) {
-    world_ = r;
+    SetWorld(r);
     Log("仿真设置已应用");
   });
 }
@@ -656,6 +663,11 @@ void App::OnEvent(const json& ev) {
       if (run_state_ == "error") {
         run_note_level_ = "error";
         run_note_ = "运行出错已停止：" + ev.value("detail", std::string()) + "（详情见底部“输出”）";
+      } else if (!ev.value("detail", std::string()).empty()) {
+        const std::string why = ev.value("detail", std::string());
+        run_note_level_ = "warn";
+        run_note_ = "运行已结束：" + why + "，主车已停车。";
+        if (why.rfind("达到设定的运行时长", 0) == 0) run_note_ += "要一直运行，把“驾驶模式 → 运行时长”设为 0。";
       } else if (dur > 0 && t >= dur - 0.25) {
         run_note_level_ = "warn";
         run_note_ = Fmt("运行已结束：达到设定的运行时长 %.0f s，主车已停车。要一直运行，把“驾驶模式 → 运行时长”设为 0。", dur);
@@ -845,7 +857,9 @@ void App::BuildTour() {
          cfg_["collect"]["max_frames"] = 3;
          cfg_["collect"]["max_gb"] = 0.1;
          StartRun();
-       }, [this] { return !Running() && collect_stats_.value("frames", 0) >= 3; }, "12_collect_done"},
+       }, [this] {
+         return !Running() && collect_stats_.value("frames", 0) >= 3 && run_note_.find("数据采集") != std::string::npos;
+       }, "12_collect_done"},
       // Dataset browser and export, by clicks.
       {kPanelDataset, [this] { cfg_["collect"]["enabled"] = false; click_target_ = "ds:refresh"; },
        [this, idle] { return idle() && ds_sessions_.is_array() && !ds_sessions_.empty(); }, ""},
@@ -859,8 +873,8 @@ void App::BuildTour() {
        [this, idle] { return idle() && !ds_exporting_ && ds_export_result_.value("ok", false); }, "12c_dataset_export"},
       {kPanelActors, [this] { ClearTraffic(); RefreshActors(); }, idle, "13_actors"},
       {kPanelRecorder, [] {}, idle, "14_recorder"},
-      {kPanelWorld, [this] { LoadMap("Town03"); }, [this, idle] { return idle() && world_.value("map", "") == "Town03"; },
-       "15_map_town03"},
+      {kPanelWorld, [this] { LoadMap("Town03"); }, [this, idle] { return idle() && world_.value("map", "") == "Town03" && run_note_.empty(); },
+       "15_map_town03"},  // the "ego parked" banner of the last run is gone with the ego
       {kPanelWorld, [this] { dark_ = false; theme_changed_ = true; }, idle, "16_light_theme"},
       {kPanelWorld, [this] { dark_ = true; theme_changed_ = true; LoadMap("Town10HD_Opt"); },
        [this, idle] { return idle() && world_.value("map", "") == "Town10HD_Opt"; }, ""},

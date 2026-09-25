@@ -134,6 +134,7 @@ class App {
             const std::string& busy_text = "");
   const json* SelectedVehicleSpec() const;
   bool Running() const { return run_state_ == "running" || run_state_ == "paused"; }
+  void SetWorld(const json& r);  // world_info reply
 
   // ---------------------------------------------------------- state
   BackendClient be_;
@@ -209,8 +210,8 @@ class App {
   int dock_tab_select_ = -1;                       // >= 0: select this dock tab next frame
   bool view_auto_ = true;                          // open the viewport camera when an ego appears
   int view_auto_ego_ = 0;
-  std::vector<float> trail_x_, trail_y_;
-  std::string run_note_, run_note_level_;          // why the last run ended (viewport banner)           // ego path of the current run (minimap)
+  std::vector<float> trail_x_, trail_y_;           // ego path of the current run (minimap)
+  std::string run_note_, run_note_level_;          // why the last run ended (viewport banner)
   bool nav_collapsed_[8] = {};
 
   // live view

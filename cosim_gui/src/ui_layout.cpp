@@ -46,7 +46,8 @@ const std::vector<NavGroup>& Nav() {
       {"数据", ICON_FA_DATABASE,
        {{kPanelCollect, ICON_FA_DATABASE, "数据采集", "同步采集传感器数据、真值标注和车辆状态。"},
         {kPanelRecorder, ICON_FA_FILM, "录制与回放", "用 CARLA 录制器记录整个场景并回放。"},
-        {kPanelView, ICON_FA_VIDEO, "实时画面", "中间视口的相机设置：视角、套件相机、分辨率。"}}},
+        {kPanelView, ICON_FA_VIDEO, "实时画面", "中间视口的相机设置：视角、套件相机、分辨率。"},
+        {kPanelDataset, ICON_FA_FOLDER_OPEN, "数据浏览", "逐帧查看已采集的数据和真值框，导出为 KITTI / nuScenes，删除不需要的数据集。"}}},
   };
   return g;
 }
@@ -147,6 +148,7 @@ void App::Frame() {
     last_panel = panel_;
   }
   TourClick();
+  DatasetTick();
   UploadViewTexture();
   UpdateKeyboardDriving();
   HandleShortcuts();
@@ -539,7 +541,12 @@ void App::DrawProperties() {
     case kPanelCollect: DrawPanelCollect(); break;
     case kPanelRecorder: DrawPanelRecorder(); break;
     case kPanelView: DrawPanelView(); break;
+    case kPanelDataset: DrawPanelDataset(); break;
     default: break;
+  }
+  if (props_scroll_end_) {
+    ImGui::SetScrollHereY(1.0f);
+    props_scroll_end_ = false;
   }
   ImGui::EndChild();
   ImGui::PopStyleVar(2);
@@ -549,6 +556,10 @@ void App::DrawProperties() {
 // Centre viewport: ego camera filling the area, with a camera bar, the
 // instrument cluster and a minimap drawn over it.
 void App::DrawViewport(float w, float h) {
+  if (panel_ == kPanelDataset) {  // the viewport shows the dataset being browsed
+    DrawDatasetViewport(w, h);
+    return;
+  }
   const ui::Palette& p = ui::Colors();
   const float fs = ImGui::GetFontSize();
   ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0.055f, 0.06f, 0.07f, 1));

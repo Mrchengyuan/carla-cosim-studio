@@ -121,6 +121,8 @@ void PushHist(std::vector<float>& h, float v, size_t max) {
 
 }  // namespace
 
+bool appui::Base64(const std::string& in, std::vector<unsigned char>& out) { return Base64Decode(in, out); }
+
 struct TourStep {
   int panel;
   std::function<void()> action;
@@ -559,6 +561,11 @@ void App::UploadViewTexture() {
     panes_[i].dirty = false;
     UploadRgb(panes_[i].tex, panes_[i].w, panes_[i].h, panes_[i].px);
   }
+  for (auto& p : ds_panes_) {
+    if (!p.dirty) continue;
+    p.dirty = false;
+    UploadRgb(p.tex, p.w, p.h, p.px);
+  }
 }
 
 // Keyboard driving: W/S or arrow keys = throttle / brake, A/D = steer. Inputs
@@ -694,6 +701,16 @@ void App::OnEvent(const json& ev) {
   } else if (type == "progress") {
     const int done = ev.value("done", 0), total = ev.value("total", 1);
     if (done < total) busy_ = Fmt("正在测量车型尺寸 %d/%d", done + 1, total);
+  } else if (type == "export_progress") {
+    ds_export_done_ = ev.value("done", 0);
+    ds_export_total_ = ev.value("total", 0);
+  } else if (type == "export_done") {
+    ds_exporting_ = false;
+    ds_export_result_ = ev;
+    if (ev.value("ok", false))
+      Log(Fmt("导出完成：%s", ev["result"].value("out", std::string()).c_str()));
+    else
+      Log("导出失败：" + ev.value("error", std::string()), "error");
   } else if (type == "disconnected") {
     carla_connected_ = false;
     Log("与后端的连接断开了", "error");
@@ -772,13 +789,28 @@ void App::BuildTour() {
          cfg_["drive"]["tm_ignore_lights"] = true;
          cfg_["sync"]["frame_dt"] = 0.1;
          cfg_["sync"]["duration"] = 0.0;
-         cfg_["rig"]["sensors"] = json::array();
-         cfg_["rig"]["preset"] = "front_camera";
+         cfg_["rig"]["sensors"] = json::array({
+             {{"name", "cam_front"}, {"type", "rgb"}, {"x", 1.5}, {"y", 0.0}, {"z", 1.6}, {"roll", 0.0}, {"pitch", 0.0}, {"yaw", 0.0},
+              {"attributes", {{"image_size_x", 640}, {"image_size_y", 360}, {"fov", 90.0}}}, {"enabled", true}},
+             {{"name", "lidar_top"}, {"type", "lidar"}, {"x", 0.0}, {"y", 0.0}, {"z", 1.9}, {"roll", 0.0}, {"pitch", 0.0}, {"yaw", 0.0},
+              {"attributes", {{"channels", 16}, {"range", 50.0}, {"points_per_second", 100000}}}, {"enabled", true}}});
+         cfg_["collect"]["session"] = "tour";
          cfg_["collect"]["enabled"] = true;
          cfg_["collect"]["max_frames"] = 3;
          cfg_["collect"]["max_gb"] = 0.1;
          StartRun();
        }, [this] { return !Running() && collect_stats_.value("frames", 0) >= 3; }, "12_collect_done"},
+      // Dataset browser and export, by clicks.
+      {kPanelDataset, [this] { cfg_["collect"]["enabled"] = false; click_target_ = "ds:refresh"; },
+       [this, idle] { return idle() && ds_sessions_.is_array() && !ds_sessions_.empty(); }, ""},
+      {kPanelDataset, [this] { click_target_ = "ds:session:tour"; },
+       [this, idle] { return idle() && !ds_root_.empty() && ds_pending_ == 0 && ds_panes_[0].frames > 0 && ds_panes_[1].frames > 0; }, ""},
+      {kPanelDataset, [this] { click_target_ = "ds:next"; }, [this, idle] { return idle() && ds_idx_ == 1 && ds_pending_ == 0; }, ""},
+      {kPanelDataset, [this] { click_target_ = "ds:play"; },
+       [this, idle] { return idle() && !ds_play_ && ds_idx_ == DatasetFrameCount() - 1 && ds_pending_ == 0; }, "12b_dataset_browser"},
+      {kPanelDataset, [this] { ds_fmt_ = 0; props_scroll_end_ = true; }, [] { return true; }, ""},
+      {kPanelDataset, [this] { click_target_ = "ds:export"; },
+       [this, idle] { return idle() && !ds_exporting_ && ds_export_result_.value("ok", false); }, "12c_dataset_export"},
       {kPanelActors, [this] { ClearTraffic(); RefreshActors(); }, idle, "13_actors"},
       {kPanelRecorder, [] {}, idle, "14_recorder"},
       {kPanelWorld, [this] { LoadMap("Town03"); }, [this, idle] { return idle() && world_.value("map", "") == "Town03"; },

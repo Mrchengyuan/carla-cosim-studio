@@ -19,6 +19,7 @@ import math
 import os
 import queue
 import random
+import shutil
 import signal
 import sys
 import socket
@@ -29,6 +30,7 @@ import traceback
 import carla
 
 import collector as coll
+import dataset as dsmod
 import rig as rigmod
 import settings as st
 from session import CarlaDriveSession, CoSimSession
@@ -65,6 +67,8 @@ class Backend:
         self.views = ViewStreamer(lambda msg: self.emit(msg))  # live views of the GUI viewport
         self.collector = None
         self._unsent_tel = None    # last telemetry frame not sent to the GUI yet
+        self._ds = None            # dataset.Session being browsed
+        self.exporter = dsmod.Exporter(lambda msg: self.emit(msg))
         self.emit = lambda msg: None
         self.requests = queue.Queue()
 
@@ -498,6 +502,45 @@ class Backend:
 
     def cmd_view_stop(self):
         return self.cmd_views_stop()
+
+    # ------------------------------------------------------------ datasets
+    def _session(self, root):
+        if self._ds is None or self._ds.root != os.path.abspath(root):
+            self._ds = dsmod.Session(root)
+        return self._ds
+
+    def cmd_dataset_list(self, out_dir="datasets"):
+        return dsmod.list_sessions(out_dir)
+
+    def cmd_dataset_info(self, root):
+        self._ds = None  # re-read: the session may have grown
+        return self._session(root).summary()
+
+    def cmd_dataset_frame(self, root, frame, sensor, max_w=960, boxes=True):
+        img, info = dsmod.render_frame(self._session(root), int(frame), sensor, int(max_w), bool(boxes))
+        import numpy as np
+        info.update({"w": int(img.shape[1]), "h": int(img.shape[0]), "sensor": sensor, "frame": int(frame),
+                     "rgb": base64.b64encode(np.ascontiguousarray(img).tobytes()).decode("ascii")})
+        return info
+
+    def cmd_dataset_export(self, root, format="kitti", out="", camera=None, lidar=None, min_lidar_pts=1):
+        if format not in ("kitti", "nuscenes"):
+            raise ValueError("未知格式 %s" % format)
+        out = out or os.path.abspath(root).rstrip("/") + "_" + format
+        return dict(self.exporter.start(root, format, out, camera=camera, lidar=lidar, min_lidar_pts=min_lidar_pts), out=out)
+
+    def cmd_dataset_delete(self, root):
+        root = os.path.abspath(root)
+        if not (os.path.isfile(os.path.join(root, "calib.json")) and os.path.isfile(os.path.join(root, "meta.json"))):
+            raise RuntimeError("不是采集生成的数据集目录，拒绝删除：%s" % root)
+        if self.collector is not None and os.path.abspath(getattr(self.collector, "root", "")) == root:
+            raise RuntimeError("这个数据集正在采集中")
+        size = dsmod.dir_size(root)
+        shutil.rmtree(root)
+        if self._ds is not None and self._ds.root == root:
+            self._ds = None
+        self._log("已删除数据集 %s（%.1f MB）" % (root, size / 1e6))
+        return {"deleted": root, "size_mb": size / 1e6}
 
     # ------------------------------------------------------------- recorder
     def cmd_start_recorder(self, filename="cosim_record.log", additional_data=True):

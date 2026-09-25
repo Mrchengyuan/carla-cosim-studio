@@ -12,6 +12,7 @@
 #include "implot.h"
 #include "platform.h"
 #include "ui_kit.h"
+#include "ui_glyphs.inc"
 
 #include <GLFW/glfw3.h>
 
@@ -82,10 +83,18 @@ static void LoadFonts(float scale, const std::string& override_path) {
   if (!regular.empty()) {
     f.regular = io.Fonts->AddFontFromFileTTF(regular.c_str(), size, &cfg, ranges.Data);
     MergeIcons(size, icons);
-    // Titles only use common characters: a smaller range keeps the atlas small.
-    f.bold = io.Fonts->AddFontFromFileTTF(bold.c_str(), size, &cfg, io.Fonts->GetGlyphRangesChineseSimplifiedCommon());
+    // Bold / title fonts: common Chinese plus every character the UI source
+    // uses (ui_glyphs.inc), instead of the full range, to keep the atlas small.
+    static ImVector<ImWchar> ui_ranges;
+    if (ui_ranges.empty()) {
+      ImFontGlyphRangesBuilder b;
+      b.AddRanges(io.Fonts->GetGlyphRangesChineseSimplifiedCommon());
+      b.AddText(kUiGlyphs);
+      b.BuildRanges(&ui_ranges);
+    }
+    f.bold = io.Fonts->AddFontFromFileTTF(bold.c_str(), size, &cfg, ui_ranges.Data);
     MergeIcons(size, icons);
-    f.title = io.Fonts->AddFontFromFileTTF(bold.c_str(), size * 1.3f, &cfg, io.Fonts->GetGlyphRangesChineseSimplifiedCommon());
+    f.title = io.Fonts->AddFontFromFileTTF(bold.c_str(), size * 1.3f, &cfg, ui_ranges.Data);
     MergeIcons(size * 1.3f, icons);
     // Readouts only show digits and a few symbols.
     const std::string digits = mono.empty() ? bold : mono;

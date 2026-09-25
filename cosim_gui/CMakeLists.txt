@@ -40,6 +40,7 @@ add_executable(carla_cosim_studio
   src/ui_layout.cpp
   src/panels.cpp
   src/rig_editor.cpp
+  src/dataset_browser.cpp
   src/backend_client.cpp
   src/platform.cpp)
 target_compile_definitions(carla_cosim_studio PRIVATE COSIM_FONT_DIR="${TP}/fonts")

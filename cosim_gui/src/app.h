@@ -25,6 +25,7 @@ enum Panel {
   kPanelCollect,
   kPanelRecorder,
   kPanelView,
+  kPanelDataset,
   kPanelCount
 };
 
@@ -109,6 +110,16 @@ class App {
   json PaneSpec(const std::string& source, int w, int h) const;
   std::vector<std::pair<std::string, std::string>> ViewSources();  // (source id, label) for pane pickers
   void DrawPane(int i, ImVec2 pos, ImVec2 size);
+
+  // ---------------------------------------------------------- dataset browser (dataset_browser.cpp)
+  void DrawPanelDataset();
+  void DrawDatasetViewport(float w, float h);
+  void DatasetRefresh();
+  void DatasetOpen(const std::string& root);
+  void DatasetRequestFrame();
+  void DatasetTick();
+  int DatasetFrameCount() const;
+  int DatasetFrameNumber() const;
   void UploadViewTexture();
   void UpdateKeyboardDriving();
   void LoadConfig(const std::string& path);
@@ -221,6 +232,17 @@ class App {
   ViewPane panes_[4] = {{}, {"semantic"}, {"lidar"}, {"depth"}};
   int view_layout_ = 0;          // 0 single, 1 one large + three small, 2 grid 2x2
 
+  // dataset browser
+  json ds_sessions_;             // null until first listed
+  json ds_info_ = json::object(), ds_objects_ = json::array(), ds_frame_info_ = json::object();
+  json ds_export_result_ = json::object();
+  std::string ds_root_, ds_left_, ds_right_, ds_export_cam_, ds_export_lidar_, ds_out_, ds_delete_;
+  int ds_idx_ = 0, ds_pending_ = 0, ds_fps_ = 5, ds_fmt_ = 0, ds_min_pts_ = 1, ds_export_done_ = 0, ds_export_total_ = 0;
+  bool ds_boxes_ = true, ds_play_ = false, ds_exporting_ = false;
+  bool props_scroll_end_ = false;  // tour: scroll the properties panel to its end next frame
+  double ds_last_step_ = 0;
+  ViewPane ds_panes_[2];
+
   // --tour automation (screenshots of every panel for testing)
   std::string tour_dir_;
   std::vector<TourStep>* tour_ = nullptr;
@@ -245,4 +267,5 @@ bool InputStrMultiline(const char* label, std::string& s, float w, float h);
 bool ComboStr(const char* label, std::string& value, const std::vector<std::string>& items,
               const std::vector<std::string>* shown = nullptr);
 std::string Fmt(const char* fmt, ...);
+bool Base64(const std::string& in, std::vector<unsigned char>& out);
 }  // namespace appui

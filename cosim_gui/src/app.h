@@ -104,7 +104,11 @@ class App {
   void RunCommand(const std::string& cmd);
   void RefreshActors();
   void RefreshDisk();
-  void StartView(const json& mount = json(), float fov = 90.0f);
+  void StartView(const json& mount = json(), float fov = 90.0f);  // main camera; mount = rig camera preview
+  void SendViews();                        // (re)start every visible viewport pane
+  json PaneSpec(const std::string& source, int w, int h) const;
+  std::vector<std::pair<std::string, std::string>> ViewSources();  // (source id, label) for pane pickers
+  void DrawPane(int i, ImVec2 pos, ImVec2 size);
   void UploadViewTexture();
   void UpdateKeyboardDriving();
   void LoadConfig(const std::string& path);
@@ -204,6 +208,18 @@ class App {
   int view_w_ = 0, view_h_ = 0, view_frames_ = 0;
   std::vector<unsigned char> view_pixels_;
   bool view_dirty_ = false;
+  json view_rig_mount_;          // mount of the rig camera shown in the main pane
+  float view_rig_fov_ = 90.0f;
+  // Extra viewport panes (index 1..3; the main pane is view_* above).
+  struct ViewPane {
+    std::string source;          // cam:chase … | semantic | depth | instance | lidar | radar | rig:<name>
+    unsigned int tex = 0;
+    int w = 0, h = 0, frames = 0;
+    std::vector<unsigned char> px;
+    bool dirty = false;
+  };
+  ViewPane panes_[4] = {{}, {"semantic"}, {"lidar"}, {"depth"}};
+  int view_layout_ = 0;          // 0 single, 1 one large + three small, 2 grid 2x2
 
   // --tour automation (screenshots of every panel for testing)
   std::string tour_dir_;

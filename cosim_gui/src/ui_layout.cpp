@@ -563,11 +563,33 @@ void App::DrawViewport(float w, float h) {
   for (float gx = o.x; gx < e.x; gx += fs * 3) dl->AddLine(ImVec2(gx, o.y), ImVec2(gx, e.y), grid);
   for (float gy = o.y; gy < e.y; gy += fs * 3) dl->AddLine(ImVec2(o.x, gy), ImVec2(e.x, gy), grid);
 
+  // Pane layout: the main camera pane (mo, mw x mh) plus up to three more.
+  const bool multi = view_on_ && carla_connected_ && ego && view_layout_ > 0;
+  const float gap = 3.0f;
+  ImVec2 mo = o;
+  float mw = w, mh = h;
+  if (multi && view_layout_ == 1) {
+    mw = std::floor(w * 0.68f);
+    const float sw = w - mw - gap, sh = (h - 2 * gap) / 3.0f;
+    for (int i = 1; i < 4; ++i) DrawPane(i, ImVec2(o.x + mw + gap, o.y + (i - 1) * (sh + gap)), ImVec2(sw, sh));
+  } else if (multi && view_layout_ == 2) {
+    mw = (w - gap) * 0.5f;
+    mh = (h - gap) * 0.5f;
+    DrawPane(1, ImVec2(o.x + mw + gap, o.y), ImVec2(mw, mh));
+    DrawPane(2, ImVec2(o.x, o.y + mh + gap), ImVec2(mw, mh));
+    DrawPane(3, ImVec2(o.x + mw + gap, o.y + mh + gap), ImVec2(mw, mh));
+  }
+  const ImVec2 me(mo.x + mw, mo.y + mh);
+  if (multi) {
+    dl->AddRectFilled(mo, me, ImGui::GetColorU32(ImVec4(0.03f, 0.035f, 0.04f, 1)));
+    dl->AddRect(mo, me, ImGui::GetColorU32(ImVec4(1, 1, 1, 0.12f)));
+  }
+
   const bool image = view_on_ && view_tex_ && view_w_ > 0 && view_h_ > 0;
   if (image) {
-    const float s = std::min(w / view_w_, h / view_h_);
+    const float s = std::min(mw / view_w_, mh / view_h_);
     const ImVec2 sz(view_w_ * s, view_h_ * s);
-    const ImVec2 a(o.x + (w - sz.x) * 0.5f, o.y + (h - sz.y) * 0.5f);
+    const ImVec2 a(mo.x + (mw - sz.x) * 0.5f, mo.y + (mh - sz.y) * 0.5f);
     dl->AddImage(static_cast<ImTextureID>(static_cast<intptr_t>(view_tex_)), a, ImVec2(a.x + sz.x, a.y + sz.y));
   } else {
     // Placeholder with the next step to take.
@@ -643,6 +665,27 @@ void App::DrawViewport(float w, float h) {
       }
       if (ImGui::IsItemHovered()) ImGui::SetTooltip("关闭画面（节省带宽）");
     }
+    // Layout: single view, one large + three small, 2 x 2.
+    ImGui::SameLine(0, fs * 0.8f);
+    static const char* kLayouts[] = {ICON_FA_SQUARE " 单画面", ICON_FA_TABLE_COLUMNS " 1+3", ICON_FA_TABLE_CELLS_LARGE " 2×2"};
+    static const char* kLayoutTips[] = {"只显示主相机", "主相机 + 三个小视图（语义、点云、深度等，可点标签更换）",
+                                        "四宫格：主相机 + 三个视图"};
+    for (int i = 0; i < 3; ++i) {
+      if (i) ImGui::SameLine();
+      const bool on = view_layout_ == i;
+      if (on) ImGui::PushStyleColor(ImGuiCol_Button, ui::WithAlpha(p.accent, 0.85f));
+      ImGui::BeginDisabled(!busy_.empty());
+      const bool pressed = ImGui::Button(kLayouts[i], ImVec2(0, bar_h));
+      ui::RecordTarget(Fmt("layout:%d", i));
+      if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", kLayoutTips[i]);
+      if (pressed && view_layout_ != i) {
+        view_layout_ = i;
+        view_auto_ = true;
+        SendViews();
+      }
+      ImGui::EndDisabled();
+      if (on) ImGui::PopStyleColor();
+    }
     ImGui::PopStyleVar();
     ImGui::PopStyleColor(5);
     // Camera caption (top-right)
@@ -650,17 +693,19 @@ void App::DrawViewport(float w, float h) {
       const std::string cap = Fmt("%s  %d×%d  ·  %d 帧", view_rig_sensor_.empty() ? "主车相机" : view_rig_sensor_.c_str(),
                                   view_w_, view_h_, view_frames_);
       const ImVec2 cs = ImGui::CalcTextSize(cap.c_str());
-      const ImVec2 a(e.x - cs.x - fs * 1.6f, o.y + fs * 0.6f);
-      HudPanel(dl, a, ImVec2(e.x - fs * 0.6f, a.y + bar_h));
+      const float top = multi ? mo.y + fs * 3.0f : mo.y + fs * 0.6f;  // below the camera bar when panes are narrow
+      const ImVec2 a(me.x - cs.x - fs * 1.6f, top);
+      HudPanel(dl, a, ImVec2(me.x - fs * 0.6f, a.y + bar_h));
       dl->AddText(ImVec2(a.x + fs * 0.5f, a.y + (bar_h - fs) * 0.5f), ImGui::GetColorU32(kHudDim), cap.c_str());
     }
   }
 
   // Instrument cluster (bottom-left) and minimap (bottom-right).
-  if (carla_connected_ && ego && h > fs * 16) {
-    DrawHud(ImVec2(o.x + fs * 0.6f, e.y - fs * 0.6f));
-    const float mm = std::min(fs * 13.0f, h * 0.4f);
-    DrawMinimap(ImVec2(e.x - fs * 0.6f - mm, e.y - fs * 0.6f - mm), mm);
+  // Instruments only where the main pane is large (not in the 2x2 grid).
+  if (carla_connected_ && ego && mh > fs * 16 && mw > fs * 20 && !(multi && view_layout_ == 2)) {
+    DrawHud(ImVec2(mo.x + fs * 0.6f, me.y - fs * 0.6f));
+    const float mm = std::min(fs * 13.0f, std::min(mh * 0.4f, mw * 0.3f));
+    if (mw > fs * 40) DrawMinimap(ImVec2(me.x - fs * 0.6f - mm, me.y - fs * 0.6f - mm), mm);
   }
   if (!run_note_.empty()) {
     // Banner under the camera bar: why the last run ended, dismissable.
@@ -691,6 +736,82 @@ void App::DrawViewport(float w, float h) {
   }
   ImGui::EndChild();
   ImGui::PopStyleColor();
+}
+
+// One extra viewport pane: image, source picker on its label, legend.
+void App::DrawPane(int i, ImVec2 pos, ImVec2 size) {
+  const ui::Palette& p = ui::Colors();
+  const float fs = ImGui::GetFontSize();
+  ImDrawList* dl = ImGui::GetWindowDrawList();
+  ViewPane& pane = panes_[i];
+  const ImVec2 end(pos.x + size.x, pos.y + size.y);
+  dl->AddRectFilled(pos, end, ImGui::GetColorU32(ImVec4(0.03f, 0.035f, 0.04f, 1)));
+  if (pane.tex && pane.w > 0 && pane.h > 0 && pane.frames > 0) {
+    const float s = std::min(size.x / pane.w, size.y / pane.h);
+    const ImVec2 sz(pane.w * s, pane.h * s);
+    const ImVec2 a(pos.x + (size.x - sz.x) * 0.5f, pos.y + (size.y - sz.y) * 0.5f);
+    dl->AddImage(static_cast<ImTextureID>(static_cast<intptr_t>(pane.tex)), a, ImVec2(a.x + sz.x, a.y + sz.y));
+  } else {
+    const char* t = "正在等待画面 ...";
+    const ImVec2 ts = ImGui::CalcTextSize(t);
+    dl->AddText(ImVec2(pos.x + (size.x - ts.x) * 0.5f, pos.y + (size.y - ts.y) * 0.5f), ImGui::GetColorU32(kHudDim), t);
+  }
+  dl->AddRect(pos, end, ImGui::GetColorU32(ImVec4(1, 1, 1, 0.12f)));
+
+  // Label = source picker.
+  std::string label = pane.source;
+  const auto sources = ViewSources();
+  for (const auto& src : sources)
+    if (src.first == pane.source) label = src.second;
+  const std::string chip = label + "  " ICON_FA_CARET_DOWN;
+  const ImVec2 cs = ImGui::CalcTextSize(chip.c_str());
+  const ImVec2 ca(pos.x + fs * 0.4f, pos.y + fs * 0.4f), cb(ca.x + cs.x + fs * 1.0f, ca.y + fs * 1.6f);
+  ImGui::SetCursorScreenPos(ca);
+  ImGui::PushID(i);
+  if (ImGui::InvisibleButton("##src", ImVec2(cb.x - ca.x, cb.y - ca.y))) ImGui::OpenPopup("srcpick");
+  ui::RecordTarget(Fmt("pane:%d", i));
+  const bool hov = ImGui::IsItemHovered();
+  dl->AddRectFilled(ca, cb, ImGui::GetColorU32(hov ? ImVec4(0.2f, 0.22f, 0.25f, 0.9f) : kHudBg), 3.0f);
+  dl->AddRect(ca, cb, ImGui::GetColorU32(kHudBorder), 3.0f);
+  dl->AddText(ImVec2(ca.x + fs * 0.5f, ca.y + fs * 0.3f), ImGui::GetColorU32(kHudText), chip.c_str());
+  if (hov) ImGui::SetTooltip("点击更换这个视图显示的内容");
+  if (ImGui::BeginPopup("srcpick")) {
+    for (const auto& src : sources) {
+      if (ImGui::MenuItem(src.second.c_str(), nullptr, src.first == pane.source)) {
+        pane.source = src.first;
+        SendViews();
+      }
+      ui::RecordTarget("src:" + src.first);
+    }
+    ImGui::EndPopup();
+  }
+  ImGui::PopID();
+
+  // Legends for the bird's-eye views.
+  std::string kind = pane.source;
+  if (kind.rfind("rig:", 0) == 0)
+    for (const json& s : RigSensors())
+      if ("rig:" + s.value("name", std::string()) == pane.source) kind = s.value("type", std::string());
+  const char* legend = kind == "lidar" ? "俯视 · 车头朝上 · 圆环间隔 10 m · 颜色 = 高度（蓝低 红高）"
+                     : kind == "radar" ? "俯视 · 车头朝上 · 圆环间隔 10 m · 红 = 接近  蓝 = 远离  白 = 静止"
+                     : kind == "semantic" ? "CityScapes 配色：路面紫 · 车辆蓝 · 行人红 · 植被绿"
+                     : kind == "depth" ? "对数深度：越亮越远" : nullptr;
+  if (legend && size.y > fs * 6) {
+    const float ls = fs * 0.78f;
+    const ImVec2 lsz = ImGui::GetFont()->CalcTextSizeA(ls, 1e9f, 0, legend);
+    const ImVec2 la(pos.x + fs * 0.4f, end.y - fs * 0.4f - ls - fs * 0.5f);
+    if (lsz.x + fs < size.x) {
+      HudPanel(dl, la, ImVec2(la.x + lsz.x + fs * 0.8f, la.y + ls + fs * 0.5f));
+      dl->AddText(ImGui::GetFont(), ls, ImVec2(la.x + fs * 0.4f, la.y + fs * 0.25f), ImGui::GetColorU32(kHudDim), legend);
+    }
+  }
+  if (pane.frames > 0) {
+    const std::string fr = Fmt("%d×%d", pane.w, pane.h);
+    const float ls = fs * 0.75f;
+    const float fw = ImGui::GetFont()->CalcTextSizeA(ls, 1e9f, 0, fr.c_str()).x;
+    dl->AddText(ImGui::GetFont(), ls, ImVec2(end.x - fw - fs * 0.5f, pos.y + fs * 0.5f), ImGui::GetColorU32(kHudDim), fr.c_str());
+  }
+  (void)p;
 }
 
 // Speed readout, steering wheel, pedal bars. anchor = bottom-left corner.

@@ -455,33 +455,110 @@ void App::StartRun() {
 void App::RunCommand(const std::string& cmd) { Call(cmd, json::object(), nullptr); }
 
 void App::StartView(const json& mount, float fov) {
-  static const int kRes[][2] = {{480, 270}, {640, 360}, {960, 540}, {1280, 720}};
-  json a = {{"mode", view_mode_}, {"width", kRes[view_res_][0]}, {"height", kRes[view_res_][1]}, {"fps", 15}};
   if (!mount.is_null()) {
-    a["mount"] = mount;
-    a["fov"] = fov;
+    view_rig_mount_ = mount;
+    view_rig_fov_ = fov;
   } else {
     view_rig_sensor_.clear();
+    view_rig_mount_ = json();
   }
-  Call("view_start", a, [this](const json&) { view_on_ = true; });
+  SendViews();
 }
 
-void App::UploadViewTexture() {
-  if (!view_dirty_) return;
-  view_dirty_ = false;
-  if (!view_tex_) {
+// Source id -> backend view spec ({kind, mode | mount, attrs}).
+json App::PaneSpec(const std::string& source, int w, int h) const {
+  const bool bev = source == "lidar" || source == "radar";
+  json v = {{"width", bev ? std::min(w, h) : w}, {"height", bev ? std::min(w, h) : h}, {"fps", 10}};
+  if (source.rfind("cam:", 0) == 0) {
+    v["kind"] = "rgb";
+    v["mode"] = source.substr(4);
+  } else if (source == "semantic" || source == "depth" || source == "instance") {
+    v["kind"] = source;
+    v["mode"] = "hood";
+  } else if (bev) {
+    v["kind"] = source;
+  } else if (source.rfind("rig:", 0) == 0) {
+    const std::string name = source.substr(4);
+    for (const json& s : const_cast<App*>(this)->RigSensors()) {
+      if (s.value("name", std::string()) != name) continue;
+      const std::string t = s.value("type", std::string());
+      v["kind"] = t;
+      v["mount"] = {{"x", s["x"]}, {"y", s["y"]}, {"z", s["z"]}, {"pitch", s["pitch"]}, {"yaw", s["yaw"]}, {"roll", s["roll"]}};
+      v["attrs"] = s.value("attributes", json::object());
+      if (t == "lidar" || t == "radar") v["width"] = v["height"] = std::min(w, h);
+      return v;
+    }
+    return json();  // sensor no longer in the rig
+  } else {
+    return json();
+  }
+  return v;
+}
+
+std::vector<std::pair<std::string, std::string>> App::ViewSources() {
+  std::vector<std::pair<std::string, std::string>> out = {
+      {"cam:chase", "相机 · 跟车"}, {"cam:hood", "相机 · 车头"}, {"cam:wheel", "相机 · 前轮特写"}, {"cam:top", "相机 · 俯视"},
+      {"semantic", "语义分割（前视）"}, {"depth", "深度（前视）"}, {"instance", "实例分割（前视）"},
+      {"lidar", "激光雷达点云（俯视）"}, {"radar", "毫米波雷达（俯视）"}};
+  static const char* kTypes[][2] = {{"rgb", "相机"}, {"depth", "深度"}, {"semantic", "语义"}, {"instance", "实例"},
+                                    {"lidar", "激光雷达"}, {"radar", "毫米波雷达"}};
+  for (const json& s : RigSensors()) {
+    const std::string t = s.value("type", std::string());
+    for (const auto& k : kTypes)
+      if (t == k[0]) out.push_back({"rig:" + s.value("name", std::string()), Fmt("套件 · %s（%s）", s.value("name", std::string()).c_str(), k[1])});
+  }
+  return out;
+}
+
+void App::SendViews() {
+  static const int kRes[][2] = {{480, 270}, {640, 360}, {960, 540}, {1280, 720}};
+  // Main pane at the chosen resolution in single / 1+3 layouts; everything
+  // smaller when four panes share the viewport.
+  const int mw = view_layout_ == 2 ? 640 : kRes[view_res_][0], mh = view_layout_ == 2 ? 360 : kRes[view_res_][1];
+  const int sw = view_layout_ == 2 ? 640 : 480, sh = view_layout_ == 2 ? 360 : 270;
+  json main = {{"id", "p0"}, {"kind", "rgb"}, {"mode", view_mode_}, {"width", mw}, {"height", mh}, {"fps", 15}};
+  if (!view_rig_mount_.is_null()) {
+    main["mount"] = view_rig_mount_;
+    main["attrs"] = {{"fov", view_rig_fov_}};
+  }
+  json views = json::array({main});
+  const int n = view_layout_ == 0 ? 1 : 4;
+  for (int i = 1; i < n; ++i) {
+    json v = PaneSpec(panes_[i].source, sw, sh);
+    if (v.is_null()) continue;
+    v["id"] = Fmt("p%d", i);
+    views.push_back(v);
+    panes_[i].frames = 0;
+  }
+  Call("views_set", {{"views", views}}, [this](const json&) { view_on_ = true; });
+}
+
+static void UploadRgb(unsigned int& tex, int w, int h, const std::vector<unsigned char>& px) {
+  if (!tex) {
     GLuint t = 0;
     glGenTextures(1, &t);
-    view_tex_ = t;
-    glBindTexture(GL_TEXTURE_2D, view_tex_);
+    tex = t;
+    glBindTexture(GL_TEXTURE_2D, tex);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, 0x812F);  // GL_CLAMP_TO_EDGE
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, 0x812F);
   }
-  glBindTexture(GL_TEXTURE_2D, view_tex_);
+  glBindTexture(GL_TEXTURE_2D, tex);
   glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
-  glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, view_w_, view_h_, 0, GL_RGB, GL_UNSIGNED_BYTE, view_pixels_.data());
+  glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, w, h, 0, GL_RGB, GL_UNSIGNED_BYTE, px.data());
+}
+
+void App::UploadViewTexture() {
+  if (view_dirty_) {
+    view_dirty_ = false;
+    UploadRgb(view_tex_, view_w_, view_h_, view_pixels_);
+  }
+  for (int i = 1; i < 4; ++i) {
+    if (!panes_[i].dirty) continue;
+    panes_[i].dirty = false;
+    UploadRgb(panes_[i].tex, panes_[i].w, panes_[i].h, panes_[i].px);
+  }
 }
 
 // Keyboard driving: W/S or arrow keys = throttle / brake, A/D = steer. Inputs
@@ -595,7 +672,18 @@ void App::OnEvent(const json& ev) {
   } else if (type == "collect_stats") {
     collect_stats_ = ev;
   } else if (type == "frame") {
-    if (view_on_ && Base64Decode(ev.value("rgb", std::string()), view_pixels_)) {
+    const std::string vid = ev.value("view", std::string("p0"));
+    if (vid.size() == 2 && vid[1] >= '1' && vid[1] <= '3') {
+      ViewPane& pane = panes_[vid[1] - '0'];
+      if (view_on_ && Base64Decode(ev.value("rgb", std::string()), pane.px)) {
+        pane.w = ev.value("w", 0);
+        pane.h = ev.value("h", 0);
+        if (static_cast<int>(pane.px.size()) >= pane.w * pane.h * 3) {
+          pane.dirty = true;
+          ++pane.frames;
+        }
+      }
+    } else if (view_on_ && Base64Decode(ev.value("rgb", std::string()), view_pixels_)) {
       view_w_ = ev.value("w", 0);
       view_h_ = ev.value("h", 0);
       if (static_cast<int>(view_pixels_.size()) >= view_w_ * view_h_ * 3) {
@@ -635,6 +723,16 @@ void App::BuildTour() {
       {kPanelRig, [this] { rig_sel_ = 0; }, idle, "04_rig_nuscenes"},
       {kPanelView, [this] { view_mode_ = "wheel"; view_res_ = 2; StartView(); },
        [this, idle] { return idle() && view_frames_ > 5; }, "05_view_wheel"},
+      // Multi-view, driven by real clicks: 2x2, change a pane's source, 1+3, back to single.
+      {kPanelView, [this] { click_target_ = "layout:2"; },
+       [this, idle] { return idle() && view_layout_ == 2 && panes_[1].frames > 3 && panes_[2].frames > 3 && panes_[3].frames > 3; },
+       "05b_multiview_2x2"},
+      {kPanelView, [this] { click_target_ = "pane:1"; }, [] { return true; }, ""},
+      {kPanelView, [this] { click_target_ = "src:radar"; },
+       [this, idle] { return idle() && panes_[1].source == "radar" && panes_[1].frames > 3; }, ""},
+      {kPanelView, [this] { click_target_ = "layout:1"; },
+       [this, idle] { return idle() && view_layout_ == 1 && panes_[3].frames > 3; }, "05c_multiview_1p3"},
+      {kPanelView, [this] { click_target_ = "layout:0"; }, [this, idle] { return idle() && view_layout_ == 0; }, ""},
       {kPanelTraffic, [this] { traffic_vehicles_ = 12; traffic_walkers_ = 8; SpawnTraffic(); }, idle, "06_traffic"},
       {kPanelDrive, [this] {
          cfg_["drive"]["dynamics"] = "cosim";

@@ -110,6 +110,28 @@ def main():
         imu = c.call("add_sensor", type="imu", save_dir="/tmp/cc_gen/sens/imu")
         check("add_sensor", cam["id"] > 0 and imu["id"] > 0)
 
+        # ---- multi-view: camera, semantic, depth, lidar and radar at once ----
+        import base64
+        views = [{"id": "p0", "kind": "rgb", "mode": "chase", "width": 320, "height": 180, "fps": 10},
+                 {"id": "p1", "kind": "semantic", "mode": "hood", "width": 320, "height": 180, "fps": 10},
+                 {"id": "p2", "kind": "depth", "mode": "hood", "width": 320, "height": 180, "fps": 10},
+                 {"id": "p3", "kind": "lidar", "width": 240, "height": 240, "fps": 10},
+                 {"id": "p4", "kind": "radar", "width": 240, "height": 240, "fps": 10}]
+        c.call("views_set", views=views)
+        got = {}
+        t_end = time.time() + 30
+        while len(got) < len(views) and time.time() < t_end:
+            e = c.wait_event(lambda e: e.get("event") == "frame", 10)
+            c.events.remove(e)
+            if e.get("view") and e["view"] not in got:
+                px = base64.b64decode(e["rgb"])
+                got[e["view"]] = (e["w"], e["h"], len(set(px[::97])))
+        check("views_set streams 5 views", sorted(got) == ["p0", "p1", "p2", "p3", "p4"], got)
+        check("view sizes", got.get("p1", (0, 0))[:2] == (320, 180) and got.get("p3", (0, 0))[:2] == (240, 240),
+              {k: v[:2] for k, v in got.items()})
+        check("lidar view has points", got.get("p3", (0, 0, 0))[2] > 20, "distinct byte values %s" % (got.get("p3"),))
+        c.call("views_set", views=views[:2])   # kept across the run below (ego is respawned)
+
         rec = c.call("start_recorder", filename="/tmp/cc_gen/test_rec.log")
         check("start_recorder", bool(rec))
 
@@ -123,7 +145,11 @@ def main():
         tel = c.wait_event(lambda e: e.get("event") == "telemetry" and e["data"]["t"] > 2.0)["data"]
         check("telemetry", tel["speed_kmh"] > 1.0 and len(tel["wheel_steer"]) == 4,
               "t=%.2f v=%.1f km/h rt=%.2fx" % (tel["t"], tel["speed_kmh"], tel["rt_factor"]))
+        c.events.clear()
         check("pause", c.call("cosim_pause") == "paused")
+        # The GUI must see the exact frame it paused on: stepping then adds exactly 1.
+        c.call("ping")
+        last = [e["data"]["frame"] for e in c.events if e.get("event") == "telemetry"]
         f0 = tel["frame"]
         # Each single step must reach the GUI as its own telemetry frame.
         frames = []
@@ -132,7 +158,11 @@ def main():
             c.call("cosim_step")
             frames.append(c.wait_event(lambda e: e.get("event") == "telemetry", 10)["data"]["frame"])
         check("single step shows every frame", all(b - a == 1 for a, b in zip(frames, frames[1:])), frames)
+        check("paused frame is shown, step is +1", bool(last) and frames[0] == last[-1] + 1, (last[-1:] , frames[0]))
         check("resume", c.call("cosim_resume") == "running")
+        c.events.clear()
+        f = c.wait_event(lambda e: e.get("event") == "frame" and e.get("view") == "p1", 20)
+        check("views restored on the new ego after run start", f["w"] == 320, f.get("view"))
         done = c.wait_event(lambda e: e.get("event") == "cosim_state" and e["state"] in ("finished", "error"), 120)
         check("cosim finished", done["state"] == "finished", done)
         winfo = c.call("world_info")

@@ -32,6 +32,7 @@ import collector as coll
 import rig as rigmod
 import settings as st
 from session import CarlaDriveSession, CoSimSession
+from views import ViewStreamer
 
 WEATHER_PRESETS = [n for n in dir(carla.WeatherParameters)
                    if n[0].isupper() and isinstance(getattr(carla.WeatherParameters, n), carla.WeatherParameters)]
@@ -61,8 +62,9 @@ class Backend:
         self.idle_tick = False     # tick the world ourselves when sync mode is on and idle
         self.frame_dt = 0.05
         self.spec_cache = {}
-        self.view = None           # {"actor", "fps", "last", "mode"}
+        self.views = ViewStreamer(lambda msg: self.emit(msg))  # live views of the GUI viewport
         self.collector = None
+        self._unsent_tel = None    # last telemetry frame not sent to the GUI yet
         self.emit = lambda msg: None
         self.requests = queue.Queue()
 
@@ -476,56 +478,26 @@ class Backend:
         return True
 
     # ------------------------------------------------------------ live view
-    VIEW_MOUNTS = {
-        "chase": carla.Transform(carla.Location(x=-6.5, z=2.8), carla.Rotation(pitch=-12)),
-        "hood": carla.Transform(carla.Location(x=0.6, z=1.45)),
-        "wheel": carla.Transform(carla.Location(x=3.6, y=-2.6, z=0.9), carla.Rotation(pitch=-8, yaw=145)),
-        "top": carla.Transform(carla.Location(z=22.0), carla.Rotation(pitch=-90)),
-    }
-
-    def cmd_view_start(self, mode="chase", width=640, height=360, fps=15.0, mount=None, fov=90.0):
-        """Stream a camera on the ego vehicle to the GUI as raw RGB frames.
-        mount: optional {"x","y","z","pitch","yaw","roll"} to preview a rig camera."""
+    def cmd_views_set(self, views):
+        """Stream several sensors on the ego to the GUI at once (see views.py)."""
         w = self._need_world()
         if not self._alive(self.ego):
             raise RuntimeError("请先生成主车")
-        self.cmd_view_stop()
-        bp = w.get_blueprint_library().find("sensor.camera.rgb")
-        bp.set_attribute("image_size_x", str(int(width)))
-        bp.set_attribute("image_size_y", str(int(height)))
-        bp.set_attribute("fov", str(fov) if mount else ("90" if mode != "wheel" else "60"))
-        tf = carla.Transform(carla.Location(mount["x"], mount["y"], mount["z"]),
-                             carla.Rotation(pitch=mount.get("pitch", 0.0), yaw=mount.get("yaw", 0.0),
-                                            roll=mount.get("roll", 0.0))) if mount else \
-            self.VIEW_MOUNTS.get(mode, self.VIEW_MOUNTS["chase"])
-        actor = w.spawn_actor(bp, tf, attach_to=self.ego)
-        self.view = {"actor": actor, "period": 1.0 / max(1.0, float(fps)), "last": 0.0, "mode": mode,
-                     "args": {"mode": mode, "width": width, "height": height, "fps": fps, "mount": mount, "fov": fov}}
-        actor.listen(self._on_view_frame)
-        return {"id": actor.id, "mode": mode}
+        return self.views.set(w, self.ego, list(views))
 
-    def _on_view_frame(self, img):
-        v = self.view
-        if v is None:
-            return
-        now = time.time()
-        if now - v["last"] < v["period"]:
-            return
-        v["last"] = now
-        import numpy as np
-        rgb = np.frombuffer(img.raw_data, dtype=np.uint8).reshape(img.height, img.width, 4)[:, :, 2::-1]
-        self.emit({"event": "frame", "w": img.width, "h": img.height, "frame": img.frame,
-                   "rgb": base64.b64encode(np.ascontiguousarray(rgb).tobytes()).decode("ascii")})
+    def cmd_views_stop(self):
+        self.views.stop()
+        return True
+
+    def cmd_view_start(self, mode="chase", width=640, height=360, fps=15.0, mount=None, fov=90.0):
+        """Single camera view (older clients): same as views_set with one view."""
+        spec = {"id": "p0", "kind": "rgb", "mode": mode, "width": width, "height": height, "fps": fps,
+                "mount": mount, "attrs": {"fov": fov} if mount else {}}
+        r = self.cmd_views_set([spec])
+        return {"id": r[0]["actor"], "mode": mode}
 
     def cmd_view_stop(self):
-        v, self.view = self.view, None
-        if v is not None:
-            try:
-                v["actor"].stop()
-                v["actor"].destroy()
-            except RuntimeError:
-                pass
-        return True
+        return self.cmd_views_stop()
 
     # ------------------------------------------------------------- recorder
     def cmd_start_recorder(self, filename="cosim_record.log", additional_data=True):
@@ -598,13 +570,13 @@ class Backend:
         # keeps stale traffic-manager state (autopilot then brakes forever),
         # so respawn instead, and bring back the user's sensors and view.
         sensor_specs = [dict(r["spec"]) for r in self.sensors.values()]
-        view_args = dict(self.view["args"]) if self.view else None
+        view_specs = self.views.specs()
         color = self.ego.attributes.get("color", "") if self._alive(self.ego) else ""
         self.cmd_spawn_ego(c["vehicle"], c["spawn_index"], color)
         for spec in sensor_specs:
             self.cmd_add_sensor(**spec)
-        if view_args:
-            self.cmd_view_start(**view_args)
+        if view_specs:
+            self.cmd_views_set(view_specs)
         # Settle under PhysX so the bridge reads a resting vehicle.
         self._pre_cosim_settings = w.get_settings()
         s = w.get_settings()
@@ -672,6 +644,11 @@ class Backend:
     def cmd_cosim_pause(self):
         if self.cosim_state == "running":
             self._set_cosim_state("paused")
+            # Telemetry goes out every 2nd frame: send the frame we stopped on,
+            # so the GUI shows exactly the paused state (and a step is +1).
+            if self._unsent_tel is not None:
+                self.emit({"event": "telemetry", "data": self._unsent_tel})
+                self._unsent_tel = None
         return self.cosim_state
 
     def cmd_cosim_resume(self):
@@ -742,6 +719,9 @@ class Backend:
         # Every 2nd frame is enough for the GUI, but a single step must show.
         if always_emit or tel["frame"] % 2 == 0 or tel["done"]:
             self.emit({"event": "telemetry", "data": tel})
+            self._unsent_tel = None
+        else:
+            self._unsent_tel = tel
         if tel["done"]:
             self._log("联合仿真完成：%.1f s，%.2f 倍实时" % (tel["t"], tel["rt_factor"]))
             self._stop_cosim_if_running("finished")

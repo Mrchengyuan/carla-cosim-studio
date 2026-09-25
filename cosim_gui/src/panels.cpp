@@ -890,7 +890,7 @@ void App::DrawPanelView() {
   }
   const char* res[] = {"480×270", "640×360", "960×540", "1280×720"};
   ui::Row("分辨率", nullptr, fs * 8);
-  if (ImGui::Combo("##res", &view_res_, res, 4) && view_on_) StartView();
+  if (ImGui::Combo("##res", &view_res_, res, 4) && view_on_) SendViews();
   ImGui::SetCursorPosX(ImGui::GetCursorPosX() + ui::LabelWidth());
   ImGui::BeginDisabled(world_.value("ego_id", 0) == 0);
   if (!view_on_) {
@@ -902,6 +902,37 @@ void App::DrawPanelView() {
   ImGui::EndDisabled();
   if (world_.value("ego_id", 0) == 0) { ImGui::SameLine(); ImGui::TextColored(p.text_dim, "先在“车辆与视角”页生成主车"); }
   if (view_on_) { ImGui::SameLine(); ImGui::TextColored(p.text_dim, "%d×%d · 已接收 %d 帧", view_w_, view_h_, view_frames_); }
-  ImGui::TextColored(p.text_dim, ICON_FA_CIRCLE_INFO "  画面显示在中间的视口里；视口左上角也可以直接切换视角。");
+  ImGui::TextColored(p.text_dim, ICON_FA_CIRCLE_INFO "  画面显示在中间的视口里；视口左上角也可以直接切换视角和布局。");
+  ui::EndCard();
+
+  ui::BeginCard(ICON_FA_TABLE_CELLS_LARGE, "多视图");
+  const char* layouts[] = {"单画面", "1 大 + 3 小", "2 × 2"};
+  ui::Row("布局", "多个视图同时显示：相机、语义分割、深度、实例分割、激光雷达点云、毫米波雷达，或传感器套件里的任意传感器");
+  for (int i = 0; i < 3; ++i) {
+    if (i) ImGui::SameLine();
+    if (ImGui::RadioButton(layouts[i], view_layout_ == i) && view_layout_ != i) {
+      view_layout_ = i;
+      if (view_on_) SendViews();
+    }
+  }
+  if (view_layout_ > 0) {
+    const auto sources = ViewSources();
+    std::vector<std::string> ids, labels;
+    for (const auto& src : sources) { ids.push_back(src.first); labels.push_back(src.second); }
+    for (int i = 1; i < 4; ++i) {
+      ui::Row(Fmt("视图 %d", i).c_str(), nullptr, fs * 16);
+      std::string v = panes_[i].source;
+      if (ComboStr(Fmt("##pane%d", i).c_str(), v, ids, &labels)) {
+        panes_[i].source = v;
+        if (view_on_) SendViews();
+      }
+      if (view_on_ && panes_[i].frames > 0) {
+        ImGui::SameLine();
+        ImGui::TextColored(p.text_dim, "%d×%d", panes_[i].w, panes_[i].h);
+      }
+    }
+    ImGui::TextColored(p.text_dim, ICON_FA_CIRCLE_INFO "  前视的语义 / 深度 / 实例用车头相机位置；选“套件 · …”则用传感器套件里的实际安装位置和参数。");
+    ImGui::TextColored(p.text_dim, ICON_FA_CIRCLE_INFO "  视图越多，服务器渲染和传输越重；2 × 2 时每个视图 640×360。");
+  }
   ui::EndCard();
 }

@@ -167,12 +167,15 @@ void App::DrawPanelWorld() {
                              {"SoftRainNight", "雨夜"}, {"MidRainSunset", "黄昏中雨"}};
   ui::Row("快速预设");
   ImGui::BeginGroup();
+  const float qw = std::min(fs * 5.5f, (ImGui::GetContentRegionAvail().x - ImGui::GetStyle().ItemSpacing.x * 3) / 4);
   for (int i = 0; i < 8; ++i) {
     if (i % 4) ImGui::SameLine();
-    if (ImGui::Button(kQuick[i].name, ImVec2(fs * 5.5f, 0))) ApplyWeatherPreset(kQuick[i].preset);
+    if (ImGui::Button(kQuick[i].name, ImVec2(qw, 0))) ApplyWeatherPreset(kQuick[i].preset);
   }
   ImGui::EndGroup();
   ui::Row("全部预设");
+  ImGui::SetNextItemWidth(std::min(fs * 26, ImGui::GetContentRegionAvail().x - ImGui::CalcTextSize("应用").x -
+                                                ImGui::GetStyle().FramePadding.x * 2 - ImGui::GetStyle().ItemSpacing.x));
   ComboStr("##weather", weather_choice_, weathers_);
   ImGui::SameLine();
   if (ImGui::Button("应用")) ApplyWeatherPreset(weather_choice_);
@@ -603,7 +606,9 @@ void App::DrawPanelCoSim() {
     for (const auto& x : missing) m += x + " ";
     ui::Pill((ICON_FA_TRIANGLE_EXCLAMATION " 缺少：" + m).c_str(), p.danger);
   }
-  ImGui::BeginChild("exports", ImVec2(fs * 19, fs * 15), ImGuiChildFlags_Borders);
+  // Editor beside the list when there is room, below it in a narrow panel.
+  const bool narrow = ImGui::GetContentRegionAvail().x < fs * 38;
+  ImGui::BeginChild("exports", ImVec2(narrow ? 0.0f : fs * 19, fs * 15), ImGuiChildFlags_Borders);
   int mv_from = -1, mv_to = -1, erase = -1;
   for (int i = 0; i < static_cast<int>(names.size()); ++i) {
     const std::string nm = names[static_cast<size_t>(i)];
@@ -622,7 +627,7 @@ void App::DrawPanelCoSim() {
   if (mv_from >= 0) std::swap(names[static_cast<size_t>(mv_from)], names[static_cast<size_t>(mv_to)]);
   if (erase >= 0) names.erase(names.begin() + erase);
   ImGui::EndChild();
-  ImGui::SameLine();
+  if (!narrow) ImGui::SameLine();
   ImGui::BeginGroup();
   ImGui::SetNextItemWidth(fs * 9);
   InputStr("##newexp", new_export_);
@@ -897,9 +902,6 @@ void App::DrawPanelView() {
   ImGui::EndDisabled();
   if (world_.value("ego_id", 0) == 0) { ImGui::SameLine(); ImGui::TextColored(p.text_dim, "先在“车辆与视角”页生成主车"); }
   if (view_on_) { ImGui::SameLine(); ImGui::TextColored(p.text_dim, "%d×%d · 已接收 %d 帧", view_w_, view_h_, view_frames_); }
+  ImGui::TextColored(p.text_dim, ICON_FA_CIRCLE_INFO "  画面显示在中间的视口里；视口左上角也可以直接切换视角。");
   ui::EndCard();
-  if (view_on_) {
-    ImVec2 avail = ImGui::GetContentRegionAvail();
-    DrawViewImage(avail.x, avail.y - fs);
-  }
 }

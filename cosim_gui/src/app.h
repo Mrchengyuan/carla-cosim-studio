@@ -8,6 +8,7 @@
 #include <vector>
 
 #include "backend_client.h"
+#include "imgui.h"
 #include "platform.h"
 
 struct TourStep;
@@ -47,9 +48,15 @@ class App {
   void HandleShortcuts();
   void DrawToolbar();
   void DrawNav();
-  void DrawMonitor();
+  void DrawProperties();
+  void DrawViewport(float w, float h);
+  void DrawHud(ImVec2 bottom_left);
+  void DrawMinimap(ImVec2 top_left, float size);
+  void DrawDock(float w, float h);
+  void DrawPlots();
+  void DrawVehicleState();
+  void DrawLogList(int warns, int errors);
   void DrawStatusBar();
-  void DrawLogDrawer();
 
   // ---------------------------------------------------------- panels (panels.cpp)
   void DrawPanelConnect();
@@ -174,20 +181,24 @@ class App {
 
   struct LogLine { std::string level, time, text; };
   std::deque<LogLine> log_;
-  bool log_open_ = false, log_scroll_ = false;
+  bool log_open_ = true, log_scroll_ = false;  // log_open_: bottom dock visible
   int log_errors_ = 0;
   int log_filter_ = 0;  // 0 all, 1 warnings + errors, 2 errors
 
   // window layout (sizes in pixels, set from the font size on the first frame)
   float nav_w_ = 0, mon_w_ = 0, console_h_ = 0;
-  bool monitor_open_ = true, about_open_ = false;
+  bool monitor_open_ = true, about_open_ = false;  // monitor_open_: properties panel visible
+  int dock_tab_select_ = -1;                       // >= 0: select this dock tab next frame
+  bool view_auto_ = true;                          // open the viewport camera when an ego appears
+  int view_auto_ego_ = 0;
+  std::vector<float> trail_x_, trail_y_;           // ego path of the current run (minimap)
   bool nav_collapsed_[8] = {};
 
   // live view
   bool view_on_ = false;
   std::string view_mode_ = "chase";
   std::string view_rig_sensor_;  // non-empty: previewing a rig camera
-  int view_res_ = 1;
+  int view_res_ = 2;  // 960x540: the viewport is large
   unsigned int view_tex_ = 0;
   int view_w_ = 0, view_h_ = 0, view_frames_ = 0;
   std::vector<unsigned char> view_pixels_;

@@ -441,6 +441,8 @@ void App::StartRun() {
     cfg_["run"]["driver"] = cfg_["drive"]["cosim_driver"];
   for (auto* h : {&h_t_, &h_speed_, &h_steer_fl_, &h_steer_fr_, &h_rt_, &h_thr_, &h_brk_}) h->clear();
   for (auto& h : h_susp_) h.clear();
+  trail_x_.clear();
+  trail_y_.clear();
   last_tel_ = json::object();
   collect_stats_ = json::object();
   Call("cosim_start", {{"config", cfg_}}, [this](const json& r) {
@@ -554,6 +556,10 @@ void App::OnEvent(const json& ev) {
     last_tel_ = ev["data"];
     const json& d = last_tel_;
     PushHist(h_t_, d.value("t", 0.0f), kHist);
+    if (d.contains("location") && d["location"].size() >= 2) {
+      PushHist(trail_x_, d["location"][0].get<float>(), 6000);
+      PushHist(trail_y_, d["location"][1].get<float>(), 6000);
+    }
     PushHist(h_speed_, d.value("speed_kmh", 0.0f), kHist);
     PushHist(h_rt_, d.value("rt_factor", 0.0f), kHist);
     const json& st = d["wheel_steer"];

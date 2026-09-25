@@ -141,6 +141,10 @@ void App::DrawPanelRig() {
     ids.push_back(pr.value("id", std::string()));
     names.push_back(pr.value("name", std::string()));
   }
+  {
+    const float bw = ImGui::CalcTextSize(ICON_FA_WAND_MAGIC_SPARKLES "  加载预设").x + ImGui::GetStyle().FramePadding.x * 2;
+    ImGui::SetNextItemWidth(std::min(fs * 26, ImGui::GetContentRegionAvail().x - bw - ImGui::GetStyle().ItemSpacing.x));
+  }
   ComboStr("##preset", rig_preset_choice_, ids, &names);
   ImGui::SameLine();
   ImGui::BeginDisabled(!busy_.empty() || Running());
@@ -151,12 +155,18 @@ void App::DrawPanelRig() {
   static const A kAdd[] = {{"rgb", "相机"}, {"depth", "深度"}, {"semantic", "语义"}, {"instance", "实例"},
                            {"lidar", "激光雷达"}, {"radar", "毫米波"}, {"imu", "IMU"}, {"gnss", "GNSS"}};
   ImGui::BeginDisabled(Running());
+  ImGui::BeginGroup();
+  // Wrap onto the next line when the properties panel is narrow.
+  const float right_edge = ImGui::GetWindowPos().x + ImGui::GetWindowContentRegionMax().x;
   for (int i = 0; i < 8; ++i) {
-    if (i) ImGui::SameLine();
+    const std::string label = Fmt("%s %s", TypeIcon(kAdd[i].type), kAdd[i].label);
+    const float bw = ImGui::CalcTextSize(label.c_str()).x + ImGui::GetStyle().FramePadding.x * 2;
+    if (i && ImGui::GetItemRectMax().x + ImGui::GetStyle().ItemSpacing.x + bw < right_edge) ImGui::SameLine();
     ImGui::PushStyleColor(ImGuiCol_Text, TypeColor(kAdd[i].type));
-    if (ImGui::Button(Fmt("%s %s", TypeIcon(kAdd[i].type), kAdd[i].label).c_str())) AddRigSensor(kAdd[i].type);
+    if (ImGui::Button(label.c_str())) AddRigSensor(kAdd[i].type);
     ImGui::PopStyleColor();
   }
+  ImGui::EndGroup();
   ImGui::EndDisabled();
   const json* spec = SelectedVehicleSpec();
   if (!spec) {
@@ -168,12 +178,14 @@ void App::DrawPanelRig() {
   // ---- views ----------------------------------------------------------------
   ui::BeginCard(ICON_FA_CAR, "安装位置（拖动传感器调整）");
   const float avail = ImGui::GetContentRegionAvail().x;
-  const float top_w = avail * 0.5f - ImGui::GetStyle().ItemSpacing.x * 0.5f;
+  // Side by side when there is room, stacked in a narrow properties panel.
+  const bool stacked = avail < fs * 40;
+  const float top_w = stacked ? avail : avail * 0.5f - ImGui::GetStyle().ItemSpacing.x * 0.5f;
   ImGui::BeginGroup();
   ImGui::TextColored(p.text_dim, "俯视图（车头朝上，x 向前，y 向右）");
-  DrawRigTopView(top_w, fs * 20);
+  DrawRigTopView(top_w, fs * (stacked ? 17 : 20));
   ImGui::EndGroup();
-  ImGui::SameLine();
+  if (!stacked) ImGui::SameLine();
   ImGui::BeginGroup();
   ImGui::TextColored(p.text_dim, "侧视图（车头朝右，z 向上）");
   DrawRigSideView(top_w, fs * 12);

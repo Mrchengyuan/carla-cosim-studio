@@ -268,8 +268,11 @@ class Backend:
             if actor is None:
                 continue
             try:
-                actor.set_simulate_physics(False)
+                # Read before turning physics off: CARLA 0.9.16 then reads the wheel
+                # list of multi-wheel vehicles (trucks, buses) out of bounds, which
+                # crashes development builds such as the modified CARLA.
                 pc = actor.get_physics_control()
+                actor.set_simulate_physics(False)
                 inv = actor.get_transform().get_inverse_matrix()
                 local = []
                 for wh in pc.wheels:

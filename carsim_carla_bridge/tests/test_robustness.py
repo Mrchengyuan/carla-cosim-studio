@@ -40,7 +40,9 @@ def run_until(c, states, timeout=60):
 def main():
     carla_port = int(sys.argv[sys.argv.index("--port") + 1]) if "--port" in sys.argv else 2000
     import carla
-    w = carla.Client("localhost", carla_port).get_world()
+    cl = carla.Client("localhost", carla_port)
+    cl.set_timeout(60)  # the modified CARLA (editor build) answers slowly right after start
+    w = cl.get_world()
     tmp = tempfile.mkdtemp(prefix="cc_rob_")
     proc = subprocess.Popen([sys.executable, os.path.join(HERE, "..", "backend_server.py"), "--port", str(PORT)],
                             cwd=os.path.join(HERE, ".."))
@@ -135,6 +137,15 @@ def main():
         else:
             check("auto interface with the original client: compatibility mode",
                   info["external_api"] is False and c.call("world_info")["external_api_server"] is None)
+
+        # ---- measuring every vehicle, trucks with 6 wheels included ------------
+        # (the read order matters: the other one crashes development builds of CARLA)
+        specs = c.call("vehicle_specs", timeout=600)
+        n_bp = len(w.get_blueprint_library().filter("vehicle.*"))
+        hgv = specs.get("vehicle.carlamotors.european_hgv", {})
+        check("vehicle_specs measures every vehicle, multi-wheel trucks included",
+              len(specs) == n_bp and len(hgv.get("wheel_radius_m", [])) == 6 and c.call("ping") == "pong",
+              "%d / %d vehicles, european_hgv wheels %d" % (len(specs), n_bp, len(hgv.get("wheel_radius_m", []))))
 
         # ---- reconnect cleans up what this backend put into the world ----------
         n_traffic = c.call("spawn_traffic", vehicles=5, walkers=0, seed=3)["vehicles"]

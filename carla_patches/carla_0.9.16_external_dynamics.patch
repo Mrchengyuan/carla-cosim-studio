@@ -843,3 +843,22 @@ index 0000000..8622e67
 +  TArray<float> WheelSuspension;
 +  int32 Gear = 0;
 +};
+diff --git a/Unreal/CarlaUE4/Plugins/Carla/Source/Carla/Vehicle/CarlaWheeledVehicle.cpp b/Unreal/CarlaUE4/Plugins/Carla/Source/Carla/Vehicle/CarlaWheeledVehicle.cpp
+index 5b56fdc..d9ff407 100644
+--- a/Unreal/CarlaUE4/Plugins/Carla/Source/Carla/Vehicle/CarlaWheeledVehicle.cpp
++++ b/Unreal/CarlaUE4/Plugins/Carla/Source/Carla/Vehicle/CarlaWheeledVehicle.cpp
+@@ -575,8 +575,12 @@ FVehiclePhysicsControl ACarlaWheeledVehicle::GetVehiclePhysicsControl() const
+         }
+       }
+ 
+-      PhysicsWheel.TireFriction = VehicleNW->Wheels[i]->TireConfig->GetFrictionScale();
+-      PhysicsWheel.Position = VehicleNW->Wheels[i]->Location;
++      // With physics off the wheel list is empty (the 4W branch above reads it
++      // only with physics on); indexing it anyway crashed multi-wheel vehicles.
++      if (i < VehicleNW->Wheels.Num() && VehicleNW->Wheels[i] != nullptr) {
++        PhysicsWheel.TireFriction = VehicleNW->Wheels[i]->TireConfig->GetFrictionScale();
++        PhysicsWheel.Position = VehicleNW->Wheels[i]->Location;
++      }
+ 
+       Wheels.Add(PhysicsWheel);
+     }

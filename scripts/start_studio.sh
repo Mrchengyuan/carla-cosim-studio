@@ -23,8 +23,11 @@ notify() { command -v zenity >/dev/null && zenity "$@" 2>/dev/null; }
 
 STARTED=0
 if ! listening; then
-  # Record when the server ends; stop.log says whether a script stopped it.
-  tmux new -d -s "$SESSION" "$START; echo \"\$(date '+%F %T') $NAME 已退出，退出码 \$?\" >> '$LOG'"
+  # Record when the server ends (stop.log says whether a script stopped it) and
+  # keep its own output: a crash of CARLA itself is explained there.
+  CARLA_LOG="${LOG%.log}_carla.log"
+  [ -f "$CARLA_LOG" ] && mv -f "$CARLA_LOG" "$CARLA_LOG.prev"
+  tmux new -d -s "$SESSION" "$START > '$CARLA_LOG' 2>&1; echo \"\$(date '+%F %T') $NAME 已退出，退出码 \$?（CARLA 的输出：$CARLA_LOG）\" >> '$LOG'"
   STARTED=1
   (
     # Closing the progress window must not end this wait: CARLA would then be

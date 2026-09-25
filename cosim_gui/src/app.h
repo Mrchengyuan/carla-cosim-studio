@@ -149,6 +149,7 @@ class App {
   bool recover_connect_ = false;  // after RestartBackend: reconnect and clear what the old one left
   std::string busy_task_;         // what the backend worker has been busy with ("busy" heartbeat)
   double busy_secs_ = 0, busy_seen_ = 0;
+  bool busy_carla_gone_ = false;  // ... and CARLA does not listen any more
   std::string backend_problem_;   // backend hung or died: viewport banner with a restart button
   bool dark_ = true, theme_changed_ = false;
   int panel_ = kPanelConnect;

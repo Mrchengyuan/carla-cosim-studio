@@ -24,6 +24,7 @@ import re
 import shutil
 import signal
 import socket
+import subprocess
 import threading
 import time
 import traceback
@@ -52,6 +53,7 @@ SENSOR_TYPES = {
 # No car of the background traffic drives this fast (180 km/h): one that does
 # was thrown by a collision or is falling out of the world.
 RUNAWAY_SPEED = 50.0
+PROBE_ROLE = "cosim_probe"  # cars vehicle_specs spawns to measure a vehicle model
 
 
 class Backend:
@@ -68,11 +70,16 @@ class Backend:
         self.idle_tick = False     # tick the world ourselves when sync mode is on and idle
         self.frame_dt = 0.05
         self.spec_cache = {}
+        self.replay_before = None  # ids in the world before a replay started (its actors are the rest)
+        self._probe = None         # the car vehicle_specs is measuring right now
         self.views = ViewStreamer(lambda msg: self.emit(msg))  # live views of the GUI viewport
         self.collector = None
         self._unsent_tel = None    # last telemetry frame not sent to the GUI yet
         self._ego_missing = (0, set())  # (ego id, world frames whose snapshot lacks it)
         self.task = None           # (what the worker is doing, since when), for the "busy" heartbeat
+        self.ego_autopilot = False  # the ego is driven by the traffic manager outside of a run
+        self.carla_addr = None     # (host, port) of the CARLA server we are connected to
+        self._alive_check = 0.0    # when we last checked that CARLA still listens
         self._ds = None            # dataset.Session being browsed
         self.exporter = dsmod.Exporter(lambda msg: self.emit(msg))
         self.emit = lambda msg: None
@@ -97,6 +104,86 @@ class Backend:
         except RuntimeError:
             return False
 
+    def _carla_listening(self, now=False):
+        """Does the CARLA server still listen? Never by connecting to it:
+        CARLA 0.9.16 crashes ("close: Bad file descriptor") after a few hundred
+        connections that close right away. Local Linux: the kernel's socket
+        table; local Windows: netstat, only right after a call timed out;
+        another host: a call that timed out is taken as the answer (None: can't tell)."""
+        host, port = self.carla_addr
+        if host not in ("localhost", "127.0.0.1", "::1"):
+            return None if not now else False
+        if os.path.exists("/proc/net/tcp"):
+            want = ":%04X" % port
+            for table in ("/proc/net/tcp", "/proc/net/tcp6"):
+                try:
+                    with open(table) as f:
+                        for line in f.readlines()[1:]:
+                            cols = line.split()
+                            if cols[1].endswith(want) and cols[3] == "0A":  # 0A = LISTEN
+                                return True
+                except OSError:
+                    pass
+            return False
+        if os.name == "nt" and now:
+            try:
+                out = subprocess.run(["netstat", "-ano", "-p", "TCP"], capture_output=True, text=True, timeout=10).stdout
+            except (OSError, subprocess.SubprocessError):
+                return None
+            return any(":%d " % port in l and "LISTEN" in l for l in out.splitlines())
+        return None
+
+    def _check_carla(self, now=False):
+        """Every 2 s (or right after a CARLA call timed out): is the server still
+        there? Once it is gone (closed, crashed) every call would wait for the
+        client time-out (20 s) and the GUI would crawl: stop using it instead."""
+        if self.world is None or self.carla_addr is None:
+            return
+        if not now and time.time() - self._alive_check < 2.0:
+            return
+        self._alive_check = time.time()
+        if self._carla_listening(now) is not False:
+            return
+        why = "CARLA 服务器已退出或连不上（%s:%d）" % self.carla_addr
+        self.emit({"event": "carla_lost", "reason": why})  # first: the GUI stops asking about that world
+        self._try(lambda: self.client.set_timeout(0.5))  # the cleanup below must not wait
+        self._try(lambda: self._stop_cosim_if_running("error", why))
+        self._try(lambda: self.views.stop())
+        for sid in list(self.sensors):
+            self._try(lambda sid=sid: self.cmd_remove_sensor(sid))
+        self.traffic = {"vehicles": [], "walkers": [], "controllers": []}
+        self.ego = self.anchor = self._probe = self.replay_before = None
+        # Let go of the old connection entirely: its streaming thread reconnects
+        # by itself once a new CARLA listens on the same port, and a stale
+        # client (or traffic manager) then trips over the new server.
+        self._release_tm()
+        # Parts of it may live on anyway (e.g. sensor streams): with the original
+        # carla package a call of theirs timing out on a CARLA just restarting
+        # ends this process, so give them time again.
+        self._try(lambda: self.client.set_timeout(60.0))
+        self.world = self.client = None
+        self._log(why + "。重新启动 CARLA 后点“连接”", "error")
+
+    def _need_tm(self):
+        """The traffic manager, started on first use (traffic, autopilot). It runs
+        a thread inside this process that queries CARLA all the time, and in
+        CARLA 0.9.16 that thread takes the whole process down when CARLA stops
+        answering (the modified carla package fixes that): no traffic, no
+        traffic manager."""
+        if self.tm is None:
+            self.tm = self.client.get_trafficmanager(8000)
+            self.tm.set_synchronous_mode(self.world.get_settings().synchronous_mode)
+        return self.tm
+
+    def _release_tm(self):
+        if self.tm is not None:
+            tm, self.tm = self.tm, None
+            self._try(tm.shut_down)
+
+    def _tm_sync(self, on):
+        if self.tm is not None:
+            self.tm.set_synchronous_mode(bool(on))
+
     def _check_ego(self):
         """is_alive only knows about actors this client destroyed. CARLA removes
         a car that fell out of the world (driven off the map) by itself, and
@@ -115,8 +202,26 @@ class Backend:
             self._ego_missing[1].clear()
             return
         self._ego_missing[1].add(snap.frame)
-        if len(self._ego_missing[1]) >= 3:
+        if len(self._ego_missing[1]) >= 3 and not self._follow_next_replay_hero(snap):
             self._lose_ego()
+
+    def _follow_next_replay_hero(self, snap):
+        """A recording holds every ego of that time (a run respawns it): the
+        replay removes one and spawns the next. Keep the views on the current one."""
+        if self.replay_before is None:
+            return False
+        hero = next((a for a in self.world.get_actors().filter("vehicle.*")
+                     if a.id not in self.replay_before and a.id != self.ego.id
+                     and a.attributes.get("role_name") == "hero" and snap.find(a.id) is not None), None)
+        if hero is None:
+            return False
+        view_specs = self.views.specs()
+        self._try(self._drop_ego_refs)
+        self.ego = hero
+        if view_specs:
+            self._try(lambda: self.cmd_views_set(view_specs))
+        self.emit({"event": "ego_changed", "id": hero.id})
+        return True
 
     def _ego_gone(self, err=None):
         """The ego is not in the latest world snapshot (see _check_ego), or the
@@ -165,7 +270,7 @@ class Backend:
                     bad.append(a)
         if not bad:
             return
-        port = self.tm.get_port() if self.tm is not None else 8000
+        port = self._need_tm().get_port()
         self._try(lambda: self.client.apply_batch(
             [carla.command.SetAutopilot(a.id, False, port) for a in bad] +
             [carla.command.DestroyActor(a.id) for a in bad]))
@@ -185,6 +290,8 @@ class Backend:
         """Remove everything this backend put into the world (run, views, sensors,
         traffic, ego), best effort: used before reconnecting and on exit."""
         self._try(lambda: self._stop_cosim_if_running("stopped"))
+        self._try(lambda: self._probe.destroy() if self._probe is not None else None)
+        self._try(self._clear_replay)
         self._try(self.views.stop)
         for sid in list(self.sensors):
             self._try(lambda sid=sid: self.cmd_remove_sensor(sid))
@@ -211,6 +318,7 @@ class Backend:
             self._teardown()
         self.client = carla.Client(host, int(port))
         self.client.set_timeout(float(timeout))
+        self.carla_addr = (host, int(port))
         self.world = self.client.get_world()
         s = self.world.get_settings()
         if s.synchronous_mode:
@@ -225,7 +333,7 @@ class Backend:
                 self._log("CARLA 停在同步模式、没有程序在推进（上一次后端没有正常退出），已切回异步模式", "warn")
         if recover:
             self._remove_leftovers()
-        self.tm = self.client.get_trafficmanager(8000)
+        self._release_tm()
         self.ego = None
         sv, cv = self.client.get_server_version(), self.client.get_client_version()
         # Does the server have the external-dynamics API? A server built from
@@ -250,7 +358,7 @@ class Backend:
         autopilot), pedestrians with their AI controllers, and sensors."""
         self.world.wait_for_tick(5.0)
         acts = [a for a in self.world.get_actors()
-                if (a.type_id.startswith("vehicle.") and a.attributes.get("role_name") in ("hero", "autopilot"))
+                if (a.type_id.startswith("vehicle.") and a.attributes.get("role_name") in ("hero", "autopilot", PROBE_ROLE))
                 or a.type_id.startswith(("walker.pedestrian.", "controller.ai.walker", "sensor."))]
         for a in acts:
             if a.type_id.startswith("controller."):
@@ -286,18 +394,16 @@ class Backend:
         self._stop_cosim_if_running()
         self.cmd_clear_traffic()
         self._drop_ego_refs()
+        self.replay_before = None  # its actors go with the old world
         # The traffic manager runs inside this process and keeps its vehicle
         # registry across a world change; load_world() then segfaults in
-        # libcarla. Shut it down first and start a fresh one afterwards.
-        if self.tm is not None:
-            self.tm.shut_down()
-            self.tm = None
+        # libcarla. Shut it down first (a fresh one starts when needed).
+        self._release_tm()
         self.client.set_timeout(180.0)
         try:
             self.world = load()
         finally:
             self.client.set_timeout(20.0)
-            self.tm = self.client.get_trafficmanager(8000)
         return self.cmd_world_info()
 
     def cmd_load_map(self, name):
@@ -312,7 +418,7 @@ class Backend:
         s = w.get_settings()
         if synchronous is not None:
             s.synchronous_mode = bool(synchronous)
-            self.tm.set_synchronous_mode(bool(synchronous))
+            self._tm_sync(synchronous)
         if frame_dt is not None:
             s.fixed_delta_seconds = float(frame_dt) if frame_dt else None
             if frame_dt:
@@ -367,6 +473,11 @@ class Backend:
         ids = ids or [b.id for b in bl.filter("vehicle.*")]
         spots = w.get_map().get_spawn_points()
         base = carla.Transform(carla.Location(spots[0].location.x, spots[0].location.y, 500.0))
+        # A measurement cut short (backend killed or closed meanwhile) leaves its
+        # probe car up there, which then blocks that spot for good.
+        stale = [a.id for a in w.get_actors().filter("vehicle.*") if a.attributes.get("role_name") == PROBE_ROLE]
+        if stale:
+            self.client.apply_batch_sync([carla.command.DestroyActor(i) for i in stale], False)
         result = {}
         for k, vid in enumerate(ids):
             if vid in self.spec_cache:
@@ -374,7 +485,9 @@ class Backend:
                 continue
             self.emit({"event": "progress", "task": "vehicle_specs", "done": k, "total": len(ids), "item": vid})
             tf = carla.Transform(carla.Location(base.location.x + 20.0 * k, base.location.y, 500.0))
-            actor = w.try_spawn_actor(bl.find(vid), tf)
+            bp = bl.find(vid)
+            bp.set_attribute("role_name", PROBE_ROLE)
+            actor = self._probe = w.try_spawn_actor(bp, tf)
             if actor is None:
                 continue
             try:
@@ -400,6 +513,7 @@ class Backend:
                     spec["front_axle_x_m"] = round((local[0][0] + local[1][0]) / 2, 3)
                 self.spec_cache[vid] = result[vid] = spec
             finally:
+                self._probe = None
                 actor.destroy()
         self.emit({"event": "progress", "task": "vehicle_specs", "done": len(ids), "total": len(ids), "item": ""})
         return result
@@ -427,18 +541,74 @@ class Backend:
             raise RuntimeError("当前地图没有出生点")
         self._stop_cosim_if_running()
         self.cmd_destroy_ego()
+        self._clear_replay()
         bp.set_attribute("role_name", "hero")
         if color and bp.has_attribute("color"):
             bp.set_attribute("color", color)
         spawn_index = int(spawn_index) % len(pts)
         self.anchor = pts[spawn_index]
         self.ego = w.try_spawn_actor(bp, self.anchor)
+        if self.ego is None and self._clear_spawn_point(self.anchor, spawn_index):
+            for _ in range(5):  # a destroyed car leaves the physics scene with the next frame
+                self._tick_or_wait(1)
+                self.ego = w.try_spawn_actor(bp, self.anchor)
+                if self.ego is not None:
+                    break
         if self.ego is None:
             self.anchor = None
             raise RuntimeError("出生点 %d 被其他车辆或物体占用，无法生成主车：换一个出生点，或先在“交通流”页清除交通" % spawn_index)
         self._tick_or_wait(1)
         self._log("已生成主车 %s (id %d) 于 spawn point %d" % (blueprint, self.ego.id, spawn_index))
         return {"id": self.ego.id, "spawn_index": spawn_index}
+
+    def _clear_spawn_point(self, tf, spawn_index, radius=8.0):
+        """Traffic drives around: one of our cars may just be standing on the
+        ego's spawn point, and the run could not start. The ego has priority:
+        replace such cars by new ones on spawn points further away (a car
+        teleported instead keeps stale traffic-manager state)."""
+        near = [a for a in self.traffic["vehicles"] if a.get_location().distance(tf.location) < radius]
+        if not near:
+            return False
+        w = self.world
+        ids = {a.id for a in near}
+        blueprints = [w.get_blueprint_library().find(a.type_id) for a in near]
+        port = self._need_tm().get_port()
+        self.client.apply_batch_sync([carla.command.SetAutopilot(i, False, port) for i in ids] +
+                                     [carla.command.DestroyActor(i) for i in ids], False)
+        self.traffic["vehicles"] = [a for a in self.traffic["vehicles"] if a.id not in ids]
+        free = [p for p in w.get_map().get_spawn_points() if p.location.distance(tf.location) > 40.0]
+        random.shuffle(free)
+        for bp in blueprints:
+            bp.set_attribute("role_name", "autopilot")
+            for p in free:
+                a = w.try_spawn_actor(bp, p)
+                if a is not None:
+                    free.remove(p)
+                    a.set_autopilot(True, port)
+                    self.traffic["vehicles"].append(a)
+                    break
+        self._log("出生点 %d 上停着 %d 辆交通车，已把它挪到别处" % (spawn_index, len(ids)))
+        return True
+
+    def _clear_replay(self):
+        """The replayer leaves every actor it spawned in the world: remove them
+        (everything new since the replay started that is not ours)."""
+        if self.replay_before is None or self.world is None:
+            return
+        before, self.replay_before = self.replay_before, None
+        self._try(lambda: self.client.stop_replayer(True))
+        ours = {a.id for a in self.traffic["vehicles"] + self.traffic["walkers"] + self.traffic["controllers"]}
+        ours |= set(self.sensors) | {v["actor"].id for v in self.views.views.values()}
+        if self._alive(self.ego):
+            ours.add(self.ego.id)
+        acts = [a for a in self.world.get_actors() if a.id not in before and a.id not in ours
+                and a.type_id.split(".")[0] in ("vehicle", "walker", "controller", "sensor")]
+        for a in acts:
+            if a.type_id.startswith("controller."):
+                self._try(a.stop)
+        if acts:
+            self.client.apply_batch_sync([carla.command.DestroyActor(a.id) for a in acts], False)
+            self._log("已清除回放留下的 %d 个对象" % len(acts))
 
     def cmd_destroy_ego(self):
         self._stop_cosim_if_running()
@@ -448,6 +618,7 @@ class Backend:
         if self._alive(self.ego):
             self.ego.destroy()
         self.ego = None
+        self.ego_autopilot = False
         return True
 
     def cmd_ego_autopilot(self, enabled=True):
@@ -455,7 +626,9 @@ class Backend:
             raise RuntimeError("没有主车")
         if self.cosim_state in ("running", "paused"):
             raise RuntimeError("仿真运行中，主车由当前驾驶方式控制")
-        self.ego.set_autopilot(bool(enabled), self.tm.get_port())
+        if enabled or self.tm is not None:
+            self.ego.set_autopilot(bool(enabled), self._need_tm().get_port())
+        self.ego_autopilot = bool(enabled)
         return True
 
     # ------------------------------------------------------------ spectator
@@ -484,6 +657,7 @@ class Backend:
     # -------------------------------------------------------------- traffic
     def cmd_spawn_traffic(self, vehicles=20, walkers=10, seed=0, safe=True):
         w = self._need_world()
+        self._clear_replay()
         rng = random.Random(int(seed))
         bl = w.get_blueprint_library()
         vbps = [b for b in bl.filter("vehicle.*") if not safe or
@@ -491,8 +665,7 @@ class Backend:
         pts = w.get_map().get_spawn_points()
         rng.shuffle(pts)
         ego_loc = self.ego.get_location() if self._alive(self.ego) else None
-        tm_port = self.tm.get_port()
-        self.tm.set_synchronous_mode(w.get_settings().synchronous_mode)
+        tm_port = self._need_tm().get_port()
         n = 0
         for p in pts:
             if n >= int(vehicles):
@@ -555,6 +728,8 @@ class Backend:
             self.client.apply_batch_sync([carla.command.DestroyActor(i) for i in ids],
                                          self.world.get_settings().synchronous_mode)
         self.traffic = {"vehicles": [], "walkers": [], "controllers": []}
+        if not self.ego_autopilot and self.cosim_state not in ("running", "paused"):
+            self._release_tm()  # nothing left for it to drive (see _need_tm)
         return True
 
     # -------------------------------------------------------------- sensors
@@ -711,9 +886,32 @@ class Backend:
         return True
 
     def cmd_replay(self, filename, start=0.0, duration=0.0, follow_id=0):
-        self._need_world()
+        w = self._need_world()
+        if not os.path.isfile(filename):
+            raise RuntimeError("找不到录制文件 %s" % filename)
         self._stop_cosim_if_running()
-        return self.client.replay_file(os.path.abspath(filename), float(start), float(duration), int(follow_id))
+        # The replayer spawns every recorded vehicle and pedestrian again, the
+        # ego and our traffic included: with ours still there the copies overlap
+        # them and are thrown around. Clear the stage, then show the recorded
+        # ego in the viewport.
+        view_specs = self.views.specs()
+        self._clear_replay()
+        self.cmd_clear_traffic()
+        self.cmd_destroy_ego()
+        self._tick_or_wait(1)
+        self.replay_before = {a.id for a in w.get_actors()}
+        info = self.client.replay_file(os.path.abspath(filename), float(start), float(duration), int(follow_id))
+        for _ in range(40):
+            self._tick_or_wait(1)
+            hero = next((a for a in w.get_actors().filter("vehicle.*")
+                         if a.id not in self.replay_before and a.attributes.get("role_name") == "hero"), None)
+            if hero is not None:
+                self.ego, self.anchor = hero, None
+                if view_specs:
+                    self._try(lambda: self.cmd_views_set(view_specs))
+                break
+        self._log("回放开始：当前的主车和交通已清除，画面跟随录像里的主车")
+        return info
 
     def cmd_recorder_info(self, filename):
         self._need_world()
@@ -795,17 +993,18 @@ class Backend:
             s = w.get_settings()
             s.synchronous_mode, s.fixed_delta_seconds = True, d["sync"]["frame_dt"]
             w.apply_settings(s)
-            self.tm.set_synchronous_mode(True)
+            self._tm_sync(True)
             for _ in range(20):
                 w.tick()
             cosim = d["drive"]["dynamics"] == "cosim"
+            autopilot = not cosim and d["drive"]["carla_driver"] == "autopilot"
             self.session = CoSimSession(w, self.ego, self.anchor, d) if cosim else \
-                CarlaDriveSession(w, self.ego, d, self.tm)
+                CarlaDriveSession(w, self.ego, d, self._need_tm() if autopilot else None)
         except BaseException:
             # Never leave the world in sync mode with nobody ticking it.
             pre, self._pre_cosim_settings = self._pre_cosim_settings, None
             self._try(lambda: w.apply_settings(pre))
-            self._try(lambda: self.tm.set_synchronous_mode(pre.synchronous_mode))
+            self._try(lambda: self._tm_sync(pre.synchronous_mode))
             raise
         try:
             info = self.session.start()
@@ -936,7 +1135,7 @@ class Backend:
         pre, self._pre_cosim_settings = getattr(self, "_pre_cosim_settings", None), None
         if pre is not None:
             self._try(lambda: self.world.apply_settings(pre))
-        self._try(lambda: self.tm.set_synchronous_mode(self.world.get_settings().synchronous_mode))
+        self._try(lambda: self._tm_sync(self.world.get_settings().synchronous_mode))
         self._try(self._park_ego)
         self._set_cosim_state(final, detail)
 
@@ -947,7 +1146,9 @@ class Backend:
         if not self._alive(self.ego):
             return
         try:
-            self.ego.set_autopilot(False, self.tm.get_port())
+            if self.tm is not None:
+                self.ego.set_autopilot(False, self.tm.get_port())
+            self.ego_autopilot = False
             self.ego.apply_control(carla.VehicleControl(throttle=0.0, steer=0.0, brake=1.0))
             self.ego.set_target_velocity(carla.Vector3D())
             self.ego.set_target_angular_velocity(carla.Vector3D())
@@ -968,6 +1169,10 @@ class Backend:
                     tel["done"] = True
         except (Exception, SystemExit) as e:  # SystemExit: e.g. argparse in a user controller
             traceback.print_exc()
+            if "time-out" in str(e):
+                self._check_carla(now=True)
+                if self.world is None:
+                    return
             if self._ego_gone(e):
                 # The modified CARLA refuses the pose of a car that is gone right
                 # away: report that, not the RPC error it causes.
@@ -1013,9 +1218,11 @@ class Backend:
         """Clean the world up and exit, but never hang on the way out: a stuck
         CARLA call (e.g. a looping traffic manager) would keep the process, and
         the GUI waiting for it, alive forever."""
+        t0 = time.time()
         t = threading.Thread(target=self.cleanup, daemon=True)
         t.start()
         t.join(limit)
+        print("exit: cleanup %s after %.1f s" % ("done" if not t.is_alive() else "NOT finished", time.time() - t0), flush=True)
         os._exit(0)
 
     # ----------------------------------------------------------- dispatcher
@@ -1038,6 +1245,7 @@ class Backend:
                 time.sleep(0.1)
 
     def _worker_iteration(self):
+        self._check_carla()
         self._check_ego()
         self._check_traffic()
         if self.cosim_state == "running":
@@ -1060,6 +1268,8 @@ class Backend:
             except BaseException as e:  # report every failure to the GUI (SystemExit too)
                 traceback.print_exc()
                 reply({"id": req.get("id"), "ok": False, "error": str(e) or e.__class__.__name__})
+                if "time-out" in str(e):
+                    self._check_carla(now=True)
             finally:
                 self.task = None
         if self.cosim_state != "running" and self.world is not None:
@@ -1072,8 +1282,9 @@ class Backend:
                         self.task = None
                     time.sleep(self.frame_dt)
                 self._update_spectator()
-            except RuntimeError:
-                pass
+            except RuntimeError as e:
+                if "time-out" in str(e):
+                    self._check_carla(now=True)
 
 
 def _json_safe(o):
@@ -1111,7 +1322,13 @@ def serve(port, exit_with_client=False):
             time.sleep(1.0)
             task = backend.task
             if task is not None and time.time() - task[1] >= 2.0:
-                backend.emit({"event": "busy", "task": task[0], "seconds": round(time.time() - task[1], 1)})
+                # A CARLA call that waits because CARLA is gone: say so now, and
+                # let the calls after it give up quickly.
+                gone = backend.world is not None and backend.carla_addr is not None and backend._carla_listening() is False
+                if gone:
+                    backend._try(lambda: backend.client.set_timeout(0.5))
+                backend.emit({"event": "busy", "task": task[0], "seconds": round(time.time() - task[1], 1),
+                              "carla_gone": gone})
     threading.Thread(target=heartbeat, daemon=True).start()
     srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)

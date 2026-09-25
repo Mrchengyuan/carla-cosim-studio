@@ -315,6 +315,7 @@ void App::ConnectCarla(bool recover) {
   Call("connect", args, [this](const json& r) {
     carla_connected_ = true;
     server_info_ = r;
+    run_note_.clear();  // it was about the previous connection (e.g. "CARLA 服务器已退出")
     SetWorld(r);
     if (r.contains("cosim_state") && r["cosim_state"].is_string()) run_state_ = r["cosim_state"].get<std::string>();
     map_choice_ = r.value("map", std::string());
@@ -704,8 +705,10 @@ void App::OnEvent(const json& ev) {
       // The car is parked now: clear the live readouts so the viewport HUD
       // does not keep showing the last speed (the plots keep the history).
       last_tel_ = json::object();
-      RefreshWorld();
-      RefreshDisk();
+      if (carla_connected_) {  // not after "carla_lost": that world is gone
+        RefreshWorld();
+        RefreshDisk();
+      }
       kb_throttle_ = kb_brake_ = kb_steer_ = 0;
     }
   } else if (type == "telemetry") {
@@ -761,7 +764,19 @@ void App::OnEvent(const json& ev) {
   } else if (type == "busy") {
     busy_task_ = ev.value("task", std::string());
     busy_secs_ = ev.value("seconds", 0.0);
+    busy_carla_gone_ = ev.value("carla_gone", false);
     busy_seen_ = ImGui::GetTime();
+  } else if (type == "carla_lost") {
+    // The CARLA server is gone: nothing of that world exists any more.
+    carla_connected_ = false;
+    view_on_ = false;
+    world_ = json::object();
+    last_tel_ = json::object();
+    run_note_level_ = "error";
+    run_note_ego_ = 0;
+    run_note_ = ev.value("reason", std::string()) + "。重新启动 CARLA 后点“连接”。";
+  } else if (type == "ego_changed") {
+    RefreshWorld();  // a replay moved on to the next recorded ego
   } else if (type == "ego_lost") {
     // CARLA removed the ego by itself (e.g. it fell off the map): say so, and
     // keep saying it until there is a new ego.

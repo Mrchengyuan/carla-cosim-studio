@@ -855,7 +855,10 @@ void App::DrawPanelRecorder() {
   ImGui::SetCursorPosX(ImGui::GetCursorPosX() + ui::LabelWidth());
   if (ui::Button(ICON_FA_PLAY, "回放", ui::Kind::Primary))
     Call("replay", {{"filename", rec_file_}, {"start", replay_start_}, {"duration", replay_duration_}, {"follow_id", replay_follow_}},
-         [this](const json& r) { Log("回放：" + r.get<std::string>().substr(0, 200)); });
+         [this](const json& r) {
+           Log("回放：" + r.get<std::string>().substr(0, 200));
+           RefreshWorld();  // the viewport follows the recorded ego
+         });
   ImGui::SameLine();
   if (ui::Button(ICON_FA_CIRCLE_INFO, "文件信息"))
     Call("recorder_info", {{"filename", rec_file_}}, [this](const json& r) { rec_info_ = r.get<std::string>(); });

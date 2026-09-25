@@ -44,7 +44,7 @@ git apply --check carla_0.9.16_external_dynamics.patch
 git apply carla_0.9.16_external_dynamics.patch
 git status
 ```
-`git status` 应显示 17 个修改文件和 3 个新文件：
+`git status` 应显示 19 个修改文件和 3 个新文件：
 ```
 LibCarla/source/carla/rpc/VehicleExternalState.h                                   (新)
 Unreal/.../Vehicle/MovementComponents/ExternalDynamicsMovementComponent.h/.cpp     (新)
@@ -56,18 +56,21 @@ Unreal/.../Vehicle/MovementComponents/ExternalDynamicsMovementComponent.h/.cpp  
 
 ### 已经按旧版补丁编译过：只打新增的部分
 
-补丁后来加了两处对 CARLA 0.9.16 自身错误的修复，都在旧补丁没有碰过的文件里，所以可以单独打：
+补丁后来加了几处对 CARLA 0.9.16 自身错误的修复，都在旧补丁没有碰过的文件里，所以可以单独打：
 
 | 修复 | 文件 | 打完后需要 |
 |---|---|---|
 | 读取多轮车辆（卡车、巴士）物理参数时服务器崩溃 | `Unreal/.../Vehicle/CarlaWheeledVehicle.cpp` | 重新 `make package` |
-| 交通车被撞飞或掉出世界时交通管理器死循环、仿真卡住 | `LibCarla/source/carla/trafficmanager/` 下 2 个文件 | 重新 `make PythonAPI` 并重装 `.whl`（见第 3 节） |
+| 交通车被撞飞或掉出世界时交通管理器死循环、仿真卡住；CARLA 退出或卡顿时交通管理器线程中止整个进程 | `LibCarla/source/carla/trafficmanager/` 下 3 个文件 | 重新 `make PythonAPI` 并重装 `.whl`（见第 3 节） |
+| CARLA 重启或卡顿时世界状态推送线程中止整个进程 | `LibCarla/source/carla/client/detail/Episode.cpp` | 同上 |
 
 ```bat
 cd C:\carla
 set P=C:\carla-cosim-studio\carla_patches\carla_0.9.16_external_dynamics.patch
 git apply --check --include=LibCarla/source/carla/trafficmanager/* %P%
 git apply --include=LibCarla/source/carla/trafficmanager/* %P%
+git apply --check --include=LibCarla/source/carla/client/detail/Episode.cpp %P%
+git apply --include=LibCarla/source/carla/client/detail/Episode.cpp %P%
 git apply --check --include=Unreal/CarlaUE4/Plugins/Carla/Source/Carla/Vehicle/CarlaWheeledVehicle.cpp %P%
 git apply --include=Unreal/CarlaUE4/Plugins/Carla/Source/Carla/Vehicle/CarlaWheeledVehicle.cpp %P%
 ```

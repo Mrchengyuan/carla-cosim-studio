@@ -73,7 +73,11 @@ def main():
         # ---- user code that raises SystemExit / returns NaN during the run ------
         for name, body, text in (
                 ("exit_in_control.py", "class Controller:\n    def control(self, e, t, dt):\n        raise SystemExit(3)\n", ""),
-                ("nan_out.py", "class Controller:\n    def control(self, e, t, dt):\n        return [float('nan'), 0.0, 0.0]\n", "无效数值")):
+                ("nan_out.py", "class Controller:\n    def control(self, e, t, dt):\n        return [float('nan'), 0.0, 0.0]\n", "无效数值"),
+                # CarSim itself would fill the missing import (steering) with 0 silently
+                ("two_values.py", "class Controller:\n    def control(self, e, t, dt):\n        return [0.3, 0.0]\n", "个导入变量"),
+                ("raises.py", "class Controller:\n    def control(self, e, t, dt):\n        raise ValueError('boom')\n",
+                 "ValueError: boom（raises.py 第 3 行）")):
             c.events.clear()
             c.call("cosim_start", config=ctrl(name, body))
             st = run_until(c, ("error", "finished", "stopped"))
@@ -195,6 +199,53 @@ def main():
             check("a traffic car thrown into the air does not freeze the run", t2 is not None, "t %.1f -> %s" % (t1, t2))
             c.call("cosim_stop")
             c.call("clear_traffic")
+
+        # ---- traffic standing on the ego's spawn point does not block a run ----
+        c.call("destroy_ego")
+        n = c.call("spawn_traffic", vehicles=300, walkers=0, seed=7)["vehicles"]  # every spawn point
+        ow.wait_for_tick(10)
+        cars = [a.get_location() for a in ow.get_actors().filter("vehicle.*") if a.attributes.get("role_name") == "autopilot"]
+        taken = next(i for i, p in enumerate(ow.get_map().get_spawn_points())
+                     if any(p.location.distance(l) < 2.0 for l in cars))
+        blocked = json.loads(json.dumps(base))
+        blocked["carla"]["spawn_index"] = taken
+        c.events.clear()
+        try:
+            c.call("cosim_start", config=blocked)
+            started = True
+        except RuntimeError as e:
+            started = str(e)[-80:]
+        c.call("cosim_stop")
+        moved = any(e.get("event") == "log" and "挪到别处" in e.get("msg", "") for e in c.events)
+        check("a traffic car on the ego's spawn point is moved away and the run starts",
+              started is True and moved, (n, started))
+        c.call("clear_traffic")
+        c.call("views_set", views=[{"id": "p0", "kind": "rgb", "mode": "chase", "width": 160, "height": 90, "fps": 5}])
+
+        # ---- a recording replays without duplicates and leaves nothing behind --
+        rec = os.path.join(tmp, "rec.log")
+        c.call("spawn_traffic", vehicles=6, walkers=3, seed=8)
+        c.call("start_recorder", filename=rec)
+        short = json.loads(json.dumps(base))
+        short["sync"]["duration"] = 3.0
+        c.events.clear()
+        c.call("cosim_start", config=short)
+        run_until(c, ("finished", "error"))
+        c.call("stop_recorder")
+        c.call("replay", filename=rec)
+        time.sleep(2.0)
+        ow.wait_for_tick(10)
+        heroes_now = heroes(ow)
+        cars = [a for a in ow.get_actors().filter("vehicle.*") if a.attributes.get("role_name") == "autopilot"]
+        followed = c.call("world_info")["ego_id"] in [a.id for a in heroes_now]
+        c.call("spawn_ego", blueprint="vehicle.tesla.model3", spawn_index=3)
+        ow.wait_for_tick(10)
+        left = [a for a in ow.get_actors() if a.type_id.startswith(("vehicle.", "walker.", "controller."))
+                and a.attributes.get("role_name") != "hero"]
+        check("replay: one copy of the recording, the view follows its ego, nothing left after",
+              len(heroes_now) == 1 and len(cars) == 6 and followed and not left and len(heroes(ow)) == 1,
+              "heroes %d, cars %d, followed %s, left %d" % (len(heroes_now), len(cars), followed, len(left)))
+        c.call("views_set", views=[{"id": "p0", "kind": "rgb", "mode": "chase", "width": 160, "height": 90, "fps": 5}])
 
         # ---- reconnect cleans up what this backend put into the world ----------
         n_traffic = c.call("spawn_traffic", vehicles=5, walkers=0, seed=3)["vehicles"]

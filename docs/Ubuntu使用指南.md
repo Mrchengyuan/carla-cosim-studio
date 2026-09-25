@@ -335,6 +335,7 @@ python tests/test_features.py                        # 驾驶模式 + 3 帧采�
 python tests/test_robustness.py                      # 控制算法出错、NaN、错误请求、主车被删、交通车被撞飞、重新连接时的清理
 python tests/test_dataset.py                         # 6 帧采集 → 浏览 → KITTI / nuScenes 导出（测完自动删除）
 python tests/test_all_vehicles.py                    # 每种车型都当一次主车联合仿真，服务器不能崩
+python tests/test_carla_restart.py                   # 运行中关掉并重启 CARLA（会真的重启它；改版加 --mod）
 python tests/test_modified_carla.py --port 3000      # 改版 CARLA 接口（需要改版 CARLA 和 venv_build）
 ```
 界面自动演示：`./cosim_gui/build/carla_cosim_studio --tour /tmp/tour --auto-connect`（会依次操作每个页面并截图到 `/tmp/tour`）。
@@ -350,6 +351,8 @@ python tests/test_modified_carla.py --port 3000      # 改版 CARLA 接口（需
 | 状态栏“后端 未运行” | Python 路径不对或缺包。看 `carsim_carla_bridge/backend.log`；在“连接”页改 Python 解释器 |
 | 画面不动，视口上方红色提示“后端卡住了：……已经 N 秒没有完成” | 后端里的 CARLA 调用没有返回（常见原因：用原版 Python 包时，一辆交通车被撞飞，CARLA 0.9.16 的交通管理器陷入死循环）。点提示条上的“重启后端”：界面会结束旧后端、启动新后端并重新连接，同时把 CARLA 恢复成异步模式、清掉旧后端留下的主车和交通。卡住时各线程在做什么记在 `carsim_carla_bridge/backend.prev.log`，遇到请发给我们 |
 | 视口上方红色提示“后端进程意外退出（信号 11，段错误）” | 后端进程崩溃了。点“重启后端”（或视口中间的“启动后端”）即可继续；崩溃时的调用栈记在 `backend.log`，重启后保存为 `backend.prev.log` |
+| 视口上方红色提示“CARLA 服务器已退出或连不上” | CARLA 在运行中退出（被关掉或崩溃）。运行已停止，界面显示“未连接 CARLA”；重新启动 CARLA 后点“连接”即可继续，不用重启界面。崩溃原因见上面的 CARLA 输出记录 |
+| 运行出错：“控制算法返回了 2 个值，但 .sim 里有 3 个导入变量” | 你的 `control()` 返回值个数要和 `.sim` 里的导入变量个数一致、顺序一致；CarSim 自己会把缺的导入变量默默填 0（例如方向盘一直是 0），所以这里直接报错。控制算法抛出的异常会显示类型和你文件里的行号 |
 | 提示“主车已不在 CARLA 里” | 主车开出了地图边界、掉出了世界（CARLA 会自动删除掉出世界的车），或被别的程序删除了。运行会带着这个原因停止；重新生成主车即可。CarSim 的路线要落在 CARLA 地图的道路范围内 |
 | 连接 CARLA 超时 | CARLA 还没启动好（`ss -ltn \| grep 2000` 看端口），或端口填错（原版 2000，改版 3000） |
 | 日志提示 `57100` 端口被占用 | 上次的后端还在：`pkill -f backend_server.py` |
@@ -358,7 +361,7 @@ python tests/test_modified_carla.py --port 3000      # 改版 CARLA 接口（需
 | 连接时提示 `Version mismatch` | 用改版客户端连原版服务器（或反过来）时的正常提示，不影响使用 |
 | 采集点“运行”被拒绝 | 没设停止条件，或预计大小超过磁盘剩余空间（需保留 10 GB），在“数据采集”页调整 |
 | CARLA 关了但显存还被占 | 双击“关闭 CARLA”图标，或执行 `./scripts/stop_carla.sh` |
-| 双击桌面图标后 CARLA 没起来 / 中途消失 | 看两个记录：`~/.cache/carla_cosim_studio/launch_stock.log`（改版是 `launch_mod.log`）记录了启动过程和 CARLA 退出的时间；`~/.cache/carla_cosim_studio/stop.log` 记录了每一次“关闭 CARLA”是谁、因为什么触发的（界面关闭、启动失败、“关闭 CARLA”图标）。CARLA 退出了而 `stop.log` 里没有对应记录，说明是 CARLA 自己退出的，再看下一行 |
+| 双击桌面图标后 CARLA 没起来 / 中途消失 | 看这几个记录：`~/.cache/carla_cosim_studio/launch_stock_carla.log`（改版是 `launch_mod_carla.log`）是 CARLA 自己的输出，CARLA 崩溃时原因在最后几行（上一次的保存为 `.prev`）；`launch_stock.log`（改版是 `launch_mod.log`）记录了启动过程和 CARLA 退出的时间和退出码（139 是段错误）；`~/.cache/carla_cosim_studio/stop.log` 记录了每一次“关闭 CARLA”是谁、因为什么触发的（界面关闭、启动失败、“关闭 CARLA”图标）。CARLA 退出了而 `stop.log` 里没有对应记录，说明是 CARLA 自己退出的，再看下一行 |
 | 改版 CARLA 启动很慢，想关掉“正在启动”进度窗口 | 可以关，不影响启动（CARLA 会继续加载，好了以后界面照常打开）；改版第一次启动要编译着色器（20–40 分钟），以后约 40 秒 |
 | 改版 CARLA 启动后崩溃 | 看 `carla_src/Unreal/CarlaUE4/Saved/Crashes/` 下最新的 `Diagnostics.txt`；确认用的是 `scripts/carla_mod_server.sh` 启动 |
 | 显示器分辨率高、界面太小 | 在系统设置里调整缩放，界面会跟随系统缩放 |

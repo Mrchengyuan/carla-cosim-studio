@@ -147,15 +147,21 @@ void App::Frame() {
     const bool frame_task = busy_task_ == "仿真步进" || busy_task_ == "空闲时推进世界";
     const double limit = frame_task ? 15 : (busy_task_ == "load_map" || busy_task_ == "reload_world") ? 300
                        : busy_task_ == "vehicle_specs" ? 900 : 90;
-    if (busy_secs_ > limit)
+    if (busy_carla_gone_)  // not stuck: waiting for a server that has gone, it gives up soon
+      backend_problem_ = Fmt("后端卡住了：CARLA 服务器已退出，正在结束“%s”（最多约半分钟）……", busy_task_.c_str());
+    else if (busy_secs_ > limit)
       backend_problem_ = Fmt("后端卡住了：“%s”已经 %.0f 秒没有完成，多半是 CARLA 的客户端库卡死了。",
                              busy_task_.c_str(), busy_secs_);
   } else if (backend_problem_.rfind("后端卡住了", 0) == 0) {
     backend_problem_.clear();  // it went on after all
   }
-  if (backend_proc_.valid() && !be_.Connected() && !plat::IsAlive(backend_proc_) && backend_problem_.empty())
+  if (backend_proc_.valid() && !be_.Connected() && !plat::IsAlive(backend_proc_) && backend_problem_.empty()) {
+    // (Not probing CARLA's port here: CARLA 0.9.16 can crash on connections
+    // that close right away. With the original carla package the backend
+    // dies when CARLA does, hence the hint.)
     backend_problem_ = "后端进程意外退出（" + plat::ExitDescription(backend_proc_) +
-                       "）。出错记录在桥接目录的 backend.log，重启后保存为 backend.prev.log。";
+                       "）。如果 CARLA 也退出了，先重新启动 CARLA。出错记录在桥接目录的 backend.log，重启后保存为 backend.prev.log。";
+  }
   // The centre viewport shows the ego camera as soon as there is an ego.
   const int ego = world_.value("ego_id", 0);
   if (view_auto_ && carla_connected_ && ego && ego != view_auto_ego_ && !view_on_ && busy_.empty() && tour_dir_.empty()) {

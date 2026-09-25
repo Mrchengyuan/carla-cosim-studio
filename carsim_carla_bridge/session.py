@@ -10,6 +10,7 @@ import math
 import os
 import sys
 import time
+import traceback
 
 import carla
 
@@ -39,16 +40,28 @@ def make_env(d):
     return CarSimEnv(c["sim_path"])
 
 
-def make_driver(d, ex):
+def make_driver(d, ex, n_imports=None):
     drv = d["run"]["driver"]
     if drv == "demo":
         return lambda obs, t: demo_driver(t)
     if drv == "custom":
-        return load_controller(d, ex)
+        return load_controller(d, ex, n_imports)
     raise ValueError("unknown CarSim driver '%s'" % drv)
 
 
-def load_controller(d, ex):
+def _user_error(what, e, path):
+    """'控制算法出错：ValueError: boom（my_ctrl.py 第 12 行）': the user needs the
+    line of their own file, not the backend's."""
+    line = next((f.lineno for f in reversed(traceback.extract_tb(e.__traceback__))
+                 if os.path.abspath(f.filename) == path), None)
+    msg = str(e)
+    if isinstance(e, SyntaxError) and e.lineno:
+        line, msg = e.lineno, e.msg
+    where = "（%s 第 %d 行）" % (os.path.basename(path), line) if line else ""
+    return "%s：%s: %s%s" % (what, type(e).__name__, msg, where)
+
+
+def load_controller(d, ex, n_imports=None):
     """The user's control algorithm, loaded fresh from its file at every run
     start (edits apply on the next run). The entry is a class (instantiated,
     reset() called if present, then control() every frame) or a function:
@@ -91,9 +104,42 @@ def load_controller(d, ex):
     except SystemExit as e:  # e.g. argparse at module level: must not end the backend
         raise RuntimeError("控制算法 %s 在加载时调用了 sys.exit（常见原因：模块顶层用了 argparse）：%s"
                            % (os.path.basename(path), e))
+    except ValueError as e:
+        if "没有找到" in str(e):
+            raise
+        raise RuntimeError(_user_error("加载控制算法出错", e, path)) from e
+    except Exception as e:
+        raise RuntimeError(_user_error("加载控制算法出错", e, path)) from e
     dt = d["sync"]["frame_dt"]
     names = list(ex.index)
-    return lambda obs, t: [float(v) for v in obj({n: ex.raw(obs, n) for n in names}, t, dt)]
+
+    def control(obs, t):
+        exports = {n: ex.raw(obs, n) for n in names}
+        try:
+            out = obj(exports, t, dt)
+        except KeyError as e:
+            if e.args and e.args[0] not in exports:
+                raise RuntimeError(_user_error("控制算法出错", e, path) +
+                                   "——导出变量里没有 %r（导出变量在“CarSim 动力学”页设置，现有：%s）"
+                                   % (e.args[0], "、".join(names[:12]) + (" ..." if len(names) > 12 else ""))) from e
+            raise RuntimeError(_user_error("控制算法出错", e, path)) from e
+        except Exception as e:
+            raise RuntimeError(_user_error("控制算法出错", e, path)) from e
+        n = n_imports() if n_imports else None
+        want = "按 .sim 里导入变量的顺序返回 %s 个数，例如 [油门, 制动, 方向盘角]" % (n or "若干")
+        if out is None:
+            raise RuntimeError("控制算法的 control() 返回了 None（是不是忘了 return？）；应%s" % want)
+        if isinstance(out, (dict, str, bytes)):
+            raise RuntimeError("控制算法的 control() 返回了 %s；应%s" % (type(out).__name__, want))
+        try:
+            vals = [float(v) for v in out]
+        except (TypeError, ValueError):
+            raise RuntimeError("控制算法的 control() 返回值不是一组数字：%s；应%s" % (repr(out)[:80], want))
+        if n and len(vals) != n:
+            # CarSim would silently fill missing imports with 0 (e.g. no steering).
+            raise RuntimeError("控制算法返回了 %d 个值，但 .sim 里有 %d 个导入变量；应%s" % (len(vals), n, want))
+        return vals
+    return control
 
 
 def spawn_chase_camera(world, vehicle, out_dir):
@@ -152,7 +198,7 @@ class CoSimSession:
             self.driver = lambda obs, t: self.command_driver.step(
                 self.vehicle, self._speed, frame_dt).to_carsim(sw_max, scale)
         else:
-            self.driver = make_driver(d, self.sync.ex)
+            self.driver = make_driver(d, self.sync.ex, lambda: self.env.config.get("n_import"))
         self.env = make_env(d)
         if d["run"]["record_dir"]:
             self.camera = spawn_chase_camera(w, self.vehicle, d["run"]["record_dir"])
@@ -270,7 +316,8 @@ class CarlaDriveSession:
         s = w.get_settings()
         s.synchronous_mode, s.fixed_delta_seconds = True, dt
         w.apply_settings(s)
-        self.tm.set_synchronous_mode(True)
+        if self.tm is not None:  # only the autopilot needs the traffic manager
+            self.tm.set_synchronous_mode(True)
         dr = d["drive"]
         self.mode = dr["carla_driver"]
         if self.mode == "autopilot":

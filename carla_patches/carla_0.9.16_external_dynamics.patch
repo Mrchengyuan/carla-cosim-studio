@@ -903,3 +903,59 @@ index 33e1833..1e21b4b 100644
        SimpleWaypointPtr furthest_waypoint = waypoint_buffer.back();
        std::vector<SimpleWaypointPtr> next_waypoints = furthest_waypoint->GetNextWaypoint();
        uint64_t selection_index = 0u;
+diff --git a/LibCarla/source/carla/client/detail/Episode.cpp b/LibCarla/source/carla/client/detail/Episode.cpp
+index cdd1408..0173190 100644
+--- a/LibCarla/source/carla/client/detail/Episode.cpp
++++ b/LibCarla/source/carla/client/detail/Episode.cpp
+@@ -56,6 +56,10 @@ using namespace std::chrono_literals;
+     _client.SubscribeToStream(_token, [weak](auto buffer) {
+       auto self = weak.lock();
+       if (self != nullptr) {
++        // CoSim: this runs on a streaming thread. An exception leaving it (e.g.
++        // an RPC time-out in the light manager callbacks while the simulator
++        // stalls or restarts) used to std::terminate the whole client process.
++        try {
+ 
+         auto data = sensor::Deserializer::Deserialize(std::move(buffer));
+         auto next = std::make_shared<const EpisodeState>(CastData(*data));
+@@ -106,6 +110,9 @@ using namespace std::chrono_literals;
+           // Call user callbacks.
+           self->_on_tick_callbacks.Call(next);
+         }
++        } catch (const std::exception &e) {
++          log_error("episode update:", e.what());
++        }
+       }
+     });
+   }
+diff --git a/LibCarla/source/carla/trafficmanager/TrafficManagerLocal.cpp b/LibCarla/source/carla/trafficmanager/TrafficManagerLocal.cpp
+index 8426f93..9a36d93 100644
+--- a/LibCarla/source/carla/trafficmanager/TrafficManagerLocal.cpp
++++ b/LibCarla/source/carla/trafficmanager/TrafficManagerLocal.cpp
+@@ -147,6 +147,10 @@ void TrafficManagerLocal::Run() {
+ 
+   size_t last_frame = 0;
+   while (run_traffic_manger.load()) {
++    // CoSim: an exception in here (e.g. an RPC timeout once the simulator is
++    // gone or stalls) used to leave this thread and std::terminate the whole
++    // client process. Report it, release a waiting world.tick() and go on.
++    try {
+ 
+     bool synchronous_mode = parameters.GetSynchronousMode();
+     bool hybrid_physics_mode = parameters.GetHybridPhysicsMode();
+@@ -245,6 +249,15 @@ void TrafficManagerLocal::Run() {
+         episode_proxy.Lock()->ApplyBatchSync(control_frame, false);
+       }
+     }
++    } catch (const std::exception &e) {
++      log_error("traffic manager:", e.what());
++      if (parameters.GetSynchronousMode()) {
++        step_end.store(true);
++        step_end_trigger.notify_one();
++      } else {
++        std::this_thread::sleep_for(std::chrono::milliseconds(100));
++      }
++    }
+   }
+ }
+ 

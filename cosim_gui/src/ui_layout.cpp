@@ -102,11 +102,12 @@ void ControlBar(const char* label, float v, float lo, float hi, const ImVec4& co
 bool ToolTab(const char* label, bool active, float height) {
   const ui::Palette& p = ui::Colors();
   const float fs = ImGui::GetFontSize();
-  const bool disabled = (ImGui::GetItemFlags() & ImGuiItemFlags_Disabled) != 0;
+  const bool disabled = (ImGui::GetCurrentContext()->CurrentItemFlags & ImGuiItemFlags_Disabled) != 0;
   const ImVec2 ts = ImGui::CalcTextSize(label);
   const ImVec2 size(ts.x + fs * 1.4f, height);
   const ImVec2 pos = ImGui::GetCursorScreenPos();
   const bool clicked = ImGui::InvisibleButton(label, size);
+  ui::RecordTarget(std::string("tab:") + label);
   const bool hov = ImGui::IsItemHovered();
   ImDrawList* dl = ImGui::GetWindowDrawList();
   if (active) {
@@ -145,6 +146,7 @@ void App::Frame() {
     if (panel_ == kPanelCollect || panel_ == kPanelRig) RefreshDisk();
     last_panel = panel_;
   }
+  TourClick();
   UploadViewTexture();
   UpdateKeyboardDriving();
   HandleShortcuts();
@@ -482,6 +484,7 @@ void App::DrawNav() {
           panel_ = it.panel;
           monitor_open_ = true;
         }
+        ui::RecordTarget(std::string("nav:") + it.name);
         const bool hov = ImGui::IsItemHovered();
         ImGui::EndDisabled();
         if (sel) {
@@ -591,7 +594,9 @@ void App::DrawViewport(float w, float h) {
       const float bw = ImGui::CalcTextSize(label).x + fs * 2.0f;
       ImGui::SetCursorScreenPos(ImVec2(c.x - bw * 0.5f, c.y + ms.y + fs * 2.0f));
       ImGui::BeginDisabled(!busy_.empty() || (action == 1 && !be_.Connected()));
-      if (ui::Button("", label, ui::Kind::Primary, ImVec2(bw, 0))) {
+      const bool pressed = ui::Button("", label, ui::Kind::Primary, ImVec2(bw, 0));
+      ui::RecordTarget("viewport:action");
+      if (pressed) {
         if (action == 1) ConnectCarla();
         else if (action == 2) { panel_ = kPanelVehicle; monitor_open_ = true; SpawnEgo(); }
         else { view_auto_ = true; StartView(); }
@@ -617,7 +622,9 @@ void App::DrawViewport(float w, float h) {
       const bool on = view_on_ && view_rig_sensor_.empty() && view_mode_ == kModes[i];
       if (on) ImGui::PushStyleColor(ImGuiCol_Button, ui::WithAlpha(p.accent, 0.85f));
       ImGui::BeginDisabled(!busy_.empty());
-      if (ImGui::Button(kNames[i], ImVec2(0, bar_h))) {
+      const bool pressed = ImGui::Button(kNames[i], ImVec2(0, bar_h));
+      ui::RecordTarget(std::string("view:") + kModes[i]);
+      if (pressed) {
         view_mode_ = kModes[i];
         view_auto_ = true;
         StartView();
@@ -627,7 +634,9 @@ void App::DrawViewport(float w, float h) {
     }
     if (view_on_) {
       ImGui::SameLine(0, fs * 0.5f);
-      if (ImGui::Button(ICON_FA_XMARK, ImVec2(bar_h, bar_h))) {
+      const bool pressed = ImGui::Button(ICON_FA_XMARK, ImVec2(bar_h, bar_h));
+      ui::RecordTarget("view:close");
+      if (pressed) {
         Call("view_stop", json::object(), nullptr);
         view_on_ = false;
         view_auto_ = false;
@@ -652,6 +661,26 @@ void App::DrawViewport(float w, float h) {
     DrawHud(ImVec2(o.x + fs * 0.6f, e.y - fs * 0.6f));
     const float mm = std::min(fs * 13.0f, h * 0.4f);
     DrawMinimap(ImVec2(e.x - fs * 0.6f - mm, e.y - fs * 0.6f - mm), mm);
+  }
+  if (!run_note_.empty()) {
+    // Banner under the camera bar: why the last run ended, dismissable.
+    const ImVec4 col = run_note_level_ == "error" ? p.danger : p.warning;
+    const float bw = std::min(w - fs * 2.0f, ImGui::CalcTextSize(run_note_.c_str()).x + fs * 4.0f);
+    const ImVec2 a(o.x + (w - bw) * 0.5f, o.y + fs * 3.0f), b2(a.x + bw, a.y + fs * 2.2f);
+    dl->AddRectFilled(a, b2, ImGui::GetColorU32(ImVec4(0.08f, 0.08f, 0.09f, 0.9f)), 4.0f);
+    dl->AddRect(a, b2, ImGui::GetColorU32(col), 4.0f, 0, 1.5f);
+    dl->AddText(ImVec2(a.x + fs * 0.7f, a.y + fs * 0.6f), ImGui::GetColorU32(col),
+                run_note_level_ == "error" ? ICON_FA_CIRCLE_XMARK : ICON_FA_CIRCLE_INFO);
+    dl->PushClipRect(a, ImVec2(b2.x - fs * 2.0f, b2.y), true);
+    dl->AddText(ImVec2(a.x + fs * 2.0f, a.y + fs * 0.6f), ImGui::GetColorU32(kHudText), run_note_.c_str());
+    dl->PopClipRect();
+    ImGui::SetCursorScreenPos(ImVec2(b2.x - fs * 1.8f, a.y + fs * 0.35f));
+    ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0, 0, 0, 0));
+    ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(0, 0, 0, 0));
+    ImGui::PushStyleColor(ImGuiCol_Text, kHudDim);
+    if (ImGui::Button(ICON_FA_XMARK "##note")) run_note_.clear();
+    ImGui::PopStyleColor(3);
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("关闭提示");
   }
   if (Running() && last_tel_.value("at_red_light", false)) {
     const char* t = ICON_FA_TRAFFIC_LIGHT "  正在等红灯";

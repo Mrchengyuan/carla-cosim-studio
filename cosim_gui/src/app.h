@@ -191,7 +191,8 @@ class App {
   int dock_tab_select_ = -1;                       // >= 0: select this dock tab next frame
   bool view_auto_ = true;                          // open the viewport camera when an ego appears
   int view_auto_ego_ = 0;
-  std::vector<float> trail_x_, trail_y_;           // ego path of the current run (minimap)
+  std::vector<float> trail_x_, trail_y_;
+  std::string run_note_, run_note_level_;          // why the last run ended (viewport banner)           // ego path of the current run (minimap)
   bool nav_collapsed_[8] = {};
 
   // live view
@@ -213,6 +214,10 @@ class App {
   int frame_ = 0;
   void TourTick();
   void BuildTour();
+  void TourClick();                 // feeds a pending tour click to ImGui as real mouse events
+  std::string click_target_;
+  int click_phase_ = 0;
+  int tour_mark_ = 0;               // value remembered by a tour step (e.g. the frame before a single step)
 
   friend struct UiAccess;
 };

@@ -125,8 +125,13 @@ def main():
               "t=%.2f v=%.1f km/h rt=%.2fx" % (tel["t"], tel["speed_kmh"], tel["rt_factor"]))
         check("pause", c.call("cosim_pause") == "paused")
         f0 = tel["frame"]
-        c.call("cosim_step")
-        c.call("cosim_step")
+        # Each single step must reach the GUI as its own telemetry frame.
+        frames = []
+        for _ in range(3):
+            c.events.clear()
+            c.call("cosim_step")
+            frames.append(c.wait_event(lambda e: e.get("event") == "telemetry", 10)["data"]["frame"])
+        check("single step shows every frame", all(b - a == 1 for a, b in zip(frames, frames[1:])), frames)
         check("resume", c.call("cosim_resume") == "running")
         done = c.wait_event(lambda e: e.get("event") == "cosim_state" and e["state"] in ("finished", "error"), 120)
         check("cosim finished", done["state"] == "finished", done)

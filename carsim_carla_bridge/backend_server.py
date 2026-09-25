@@ -294,8 +294,8 @@ class Backend:
     def cmd_ego_autopilot(self, enabled=True):
         if not self._alive(self.ego):
             raise RuntimeError("没有主车")
-        if self.cosim_state != "stopped":
-            raise RuntimeError("联合仿真运行中，主车由 CarSim 驱动")
+        if self.cosim_state in ("running", "paused"):
+            raise RuntimeError("仿真运行中，主车由当前驾驶方式控制")
         self.ego.set_autopilot(bool(enabled), self.tm.get_port())
         return True
 
@@ -683,7 +683,7 @@ class Backend:
         """Single frame while paused."""
         if self.cosim_state != "paused":
             raise RuntimeError("仅在暂停时可单步")
-        self._cosim_frame()
+        self._cosim_frame(always_emit=True)
         return True
 
     def cmd_cosim_stop(self):
@@ -725,7 +725,7 @@ class Backend:
         except RuntimeError:
             pass
 
-    def _cosim_frame(self):
+    def _cosim_frame(self, always_emit=False):
         try:
             tel = self.session.step()
             if self.collector is not None:
@@ -739,7 +739,8 @@ class Backend:
             self._stop_cosim_if_running("error", str(e))
             return
         self._update_spectator()
-        if tel["frame"] % 2 == 0 or tel["done"]:
+        # Every 2nd frame is enough for the GUI, but a single step must show.
+        if always_emit or tel["frame"] % 2 == 0 or tel["done"]:
             self.emit({"event": "telemetry", "data": tel})
         if tel["done"]:
             self._log("联合仿真完成：%.1f s，%.2f 倍实时" % (tel["t"], tel["rt_factor"]))

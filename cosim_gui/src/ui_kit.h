@@ -77,6 +77,11 @@ void StatusDot(const ImVec4& color);
 void KpiTile(const char* label, const char* value, const char* unit, float width);
 void SectionCaption(const char* text);
 // Flat fold-out header (monitor sections, optional groups). Returns open.
+// Click targets for the --tour self-test: widgets record where they are so
+// the tour can press them with real mouse events.
+void RecordTarget(const std::string& name);
+bool FindTarget(const std::string& name, ImVec2* center);
+
 bool FoldHeader(const char* icon, const char* title, bool default_open = true, bool force_open = false);
 
 }  // namespace ui

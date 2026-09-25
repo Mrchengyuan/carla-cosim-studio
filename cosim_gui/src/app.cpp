@@ -1,6 +1,7 @@
 #include "app.h"
 
 #include <algorithm>
+#include <cfloat>
 #include <cmath>
 #include <cstdarg>
 #include <cstdio>
@@ -547,7 +548,28 @@ void App::OnEvent(const json& ev) {
     Log(ev.value("msg", std::string()), ev.value("level", std::string("info")));
   } else if (type == "cosim_state") {
     run_state_ = ev.value("state", std::string());
+    // Say clearly why a run ended on its own; a parked car otherwise looks stuck.
+    if (run_state_ == "finished" || run_state_ == "error") {
+      const double dur = cfg_.contains("sync") ? cfg_["sync"].value("duration", 0.0) : 0.0;
+      const double t = last_tel_.value("t", 0.0);
+      if (run_state_ == "error") {
+        run_note_level_ = "error";
+        run_note_ = "运行出错已停止：" + ev.value("detail", std::string()) + "（详情见底部“输出”）";
+      } else if (dur > 0 && t >= dur - 0.25) {
+        run_note_level_ = "warn";
+        run_note_ = Fmt("运行已结束：达到设定的运行时长 %.0f s，主车已停车。要一直运行，把“驾驶模式 → 运行时长”设为 0。", dur);
+      } else {
+        run_note_level_ = "warn";
+        run_note_ = "运行已结束（CarSim 到达结束时间或采集达到上限），主车已停车。";
+      }
+      Log(run_note_, run_note_level_);
+    } else {
+      run_note_.clear();
+    }
     if (!Running()) {
+      // The car is parked now: clear the live readouts so the viewport HUD
+      // does not keep showing the last speed (the plots keep the history).
+      last_tel_ = json::object();
       RefreshWorld();
       RefreshDisk();
       kb_throttle_ = kb_brake_ = kb_steer_ = 0;
@@ -621,7 +643,7 @@ void App::BuildTour() {
        }, idle, "07_drive"},
       {kPanelCoSim, [this] {
          cfg_["carsim"]["mock"] = true;
-         cfg_["sync"]["duration"] = 10.0;
+         cfg_["sync"]["duration"] = 0.0;  // stopped below with the toolbar button
          cfg_["run"]["log_path"] = "";
        }, idle, "08_cosim_config"},
       {kPanelCollect, [this, ds] {
@@ -629,10 +651,21 @@ void App::BuildTour() {
          cfg_["collect"]["out_dir"] = ds;
        }, idle, "09_collect_config"},
       {kPanelView, [this] { view_mode_ = "chase"; view_res_ = 1; StartView(); }, idle, ""},
-      {kPanelView, [this] { StartRun(); },
+      // From here the toolbar and viewport are driven by real mouse clicks.
+      {kPanelView, [this] { click_target_ = "运行"; },
        [this] { return run_state_ == "running" && last_tel_.value("t", 0.0) > 5.0; }, "10_running_view"},
       {kPanelDrive, [] {}, [this] { return run_state_ == "running" && last_tel_.value("t", 0.0) > 7.0; }, "11_running_drive"},
-      {kPanelDrive, [] {}, [this] { return !Running(); }, ""},
+      {kPanelDrive, [this] { click_target_ = "暂停"; }, [this] { return run_state_ == "paused"; }, ""},
+      {kPanelDrive, [this] { tour_mark_ = last_tel_.value("frame", 0); click_target_ = "单步"; },
+       [this] { return run_state_ == "paused" && last_tel_.value("frame", 0) == tour_mark_ + 1; }, ""},
+      {kPanelDrive, [this] { click_target_ = "继续"; }, [this] { return run_state_ == "running"; }, ""},
+      {kPanelDrive, [this] { click_target_ = "停止"; },
+       [this] { return run_state_ == "stopped" && last_tel_.empty(); }, "11b_stopped"},
+      {kPanelDrive, [this] { click_target_ = "view:wheel"; }, [this] { return view_on_ && view_mode_ == "wheel" && busy_.empty(); }, ""},
+      {kPanelDrive, [this] { click_target_ = "view:close"; }, [this] { return !view_on_; }, ""},
+      {kPanelDrive, [this] { click_target_ = "viewport:action"; }, [this] { return view_on_; }, ""},
+      {-1, [this] { click_target_ = "tab:传感器"; }, [this] { return panel_ == kPanelRig; }, ""},
+      {-1, [this] { click_target_ = "nav:数据采集"; }, [this] { return panel_ == kPanelCollect; }, ""},
       // Tiny capture (3 frames of a single small camera) to show live stats;
       // the tour output folder is deleted by the caller afterwards.
       {kPanelCollect, [this] {
@@ -669,7 +702,7 @@ void App::TourTick() {
     return;
   }
   TourStep& s = (*tour_)[tour_i_];
-  panel_ = s.panel;
+  if (s.panel >= 0) panel_ = s.panel;  // < 0: a click step that changes the page itself
   if (!started) {
     if (tour_i_ == 0 && frame_ % 20 != 0) return;
     s.action();
@@ -691,6 +724,27 @@ void App::TourTick() {
     if (!s.shot.empty()) shot_name_ = s.shot + "_TIMEOUT";
     ++tour_i_;
     started = false;
+  }
+}
+
+void App::TourClick() {
+  if (click_target_.empty()) return;
+  ImVec2 c;
+  if (!ui::FindTarget(click_target_, &c)) {
+    if (++click_phase_ > 120) {
+      Log("TOUR click target missing: " + click_target_, "error");
+      click_target_.clear();
+      click_phase_ = 0;
+    }
+    return;
+  }
+  ImGuiIO& io = ImGui::GetIO();
+  switch (click_phase_++) {
+    case 0: io.AddMousePosEvent(c.x, c.y); break;
+    case 2: io.AddMouseButtonEvent(ImGuiMouseButton_Left, true); break;
+    case 4: io.AddMouseButtonEvent(ImGuiMouseButton_Left, false); break;
+    case 6: io.AddMousePosEvent(-FLT_MAX, -FLT_MAX); click_target_.clear(); click_phase_ = 0; break;
+    default: break;
   }
 }
 

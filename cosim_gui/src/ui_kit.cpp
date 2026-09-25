@@ -1,6 +1,7 @@
 #include "ui_kit.h"
 
 #include <algorithm>
+#include <map>
 
 #include "imgui_internal.h"
 
@@ -293,13 +294,14 @@ bool IconButton(const char* icon, const char* tooltip, const char* id) {
 bool ToolButton(const char* icon, const char* label, const ImVec4& icon_color, const char* tooltip, float height) {
   const Palette& p = g_pal;
   const float fs = ImGui::GetFontSize();
-  const bool disabled = (ImGui::GetItemFlags() & ImGuiItemFlags_Disabled) != 0;
+  const bool disabled = (ImGui::GetCurrentContext()->CurrentItemFlags & ImGuiItemFlags_Disabled) != 0;
   const ImVec2 ts = ImGui::CalcTextSize(label);
   const float pad = fs * 0.6f;
   const ImVec2 size(pad * 2 + fs * 1.3f + ts.x, height);
   const ImVec2 pos = ImGui::GetCursorScreenPos();
   ImGui::PushID(label);
   const bool clicked = ImGui::InvisibleButton("##tb", size);
+  RecordTarget(label);
   const bool hov = ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled);
   const bool act = ImGui::IsItemActive();
   ImGui::PopID();
@@ -372,6 +374,25 @@ void KpiTile(const char* label, const char* value, const char* unit, float width
     dl->AddText(ImGui::GetFont(), us, ImVec2(pos.x + width - pad - uw + fs * 0.3f, vy + big->FontSize - us - fs * 0.1f),
                 ImGui::GetColorU32(p.text_dim), unit);
   ImGui::Dummy(ImVec2(width, h));
+}
+
+namespace {
+std::map<std::string, ImVec2>& Targets() {
+  static std::map<std::string, ImVec2> t;
+  return t;
+}
+}  // namespace
+
+void RecordTarget(const std::string& name) {
+  const ImVec2 a = ImGui::GetItemRectMin(), b = ImGui::GetItemRectMax();
+  Targets()[name] = ImVec2((a.x + b.x) * 0.5f, (a.y + b.y) * 0.5f);
+}
+
+bool FindTarget(const std::string& name, ImVec2* center) {
+  auto it = Targets().find(name);
+  if (it == Targets().end()) return false;
+  *center = it->second;
+  return true;
 }
 
 bool FoldHeader(const char* icon, const char* title, bool default_open, bool force_open) {

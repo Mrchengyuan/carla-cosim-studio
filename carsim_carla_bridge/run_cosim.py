@@ -60,6 +60,8 @@ def main():
         o["carsim"]["mock"] = True
     if args.no_external_api:
         o["sync"]["use_external_api"] = False
+    if args.duration is None and not args.config:
+        o["sync"]["duration"] = 20.0   # a CLI run without --duration is a short demo
     d = st.load_dict(args.config, o)
     if not d["carsim"]["mock"] and not d["carsim"]["sim_path"]:
         ap.error("--sim (or carsim.sim_path in --config) is required unless --mock is given")

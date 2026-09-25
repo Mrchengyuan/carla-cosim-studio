@@ -555,7 +555,7 @@ void App::DrawPanelDrive() {
   ui::BeginCard(ICON_FA_CLOCK, "运行设置");
   ui::Row("仿真步长 s", "CARLA 每帧的仿真时间。CarSim 每帧内部积分 步长 / t_step 步", fs * 8);
   EditDouble(cfg_["sync"], "frame_dt", 0.005, "%.3f", 0.001, 0.5);
-  ui::Row("运行时长 s", "0 = 一直运行直到点“停止”", fs * 8);
+  ui::Row("运行时长 s", "0 = 一直运行，直到点“停止”（默认）。设了时长，到时会自动结束并停车", fs * 8);
   EditDouble(cfg_["sync"], "duration", 1.0, "%.1f", 0.0, 1e6);
   ui::Row("日志 CSV", "每帧的 CarSim / CARLA 位姿对比，空 = 不记录");
   EditString(cfg_["run"], "log_path");

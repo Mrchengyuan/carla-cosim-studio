@@ -9,7 +9,7 @@ JSON layout (all keys optional, missing ones fall back to config.py):
              "vehicle": "vehicle.tesla.model3", "spawn_index": 0},
   "carsim": {"sim_path": "", "repo_path": "../python_carsim_env", "mock": false,
              "export_names": [...], "units": {"angle": "deg", ...}},
-  "sync":   {"frame_dt": 0.02, "duration": 20.0, "reference_point": "front_axle",
+  "sync":   {"frame_dt": 0.02, "duration": 0.0, "reference_point": "front_axle",
              "z_mode": "carsim", "wheel_spin_sign": -1.0,
              "steering_wheel_max_deg": 540.0, "use_external_api": "auto"},
   "run":    {"driver": "custom", "record_dir": "", "log_path": "cosim_log.csv",
@@ -34,7 +34,8 @@ def default_dict():
         "carsim": {"sim_path": "", "repo_path": "../python_carsim_env", "mock": False,
                    "export_names": list(_defaults.EXPORT_NAMES),
                    "units": dict(_defaults.UNITS)},
-        "sync": {"frame_dt": 0.02, "duration": 20.0,
+        # duration 0 = run until stopped (or until CarSim reaches t_stop).
+        "sync": {"frame_dt": 0.02, "duration": 0.0,
                  "reference_point": _defaults.CARSIM_REFERENCE_POINT,
                  "z_mode": _defaults.Z_MODE,
                  "wheel_spin_sign": _defaults.WHEEL_SPIN_SIGN,

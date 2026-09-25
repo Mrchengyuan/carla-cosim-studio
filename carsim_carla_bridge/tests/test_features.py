@@ -150,6 +150,13 @@ def main():
         tel = c.wait_event(lambda e: e.get("event") == "telemetry" and e["data"]["t"] > 7.5, 120)["data"]
         run_until_state(c, ("finished", "error"))
         check("autopilot drives", tel["speed_kmh"] > 5.0, "%.1f km/h" % tel["speed_kmh"])
+        ego_id = next(a["id"] for a in c.call("list_actors") if a["ego"])
+        c.call("cosim_stop")
+        time.sleep(3.0)
+        import carla
+        v = carla.Client("localhost", carla_port).get_world().get_actor(ego_id).get_velocity()
+        parked = math.sqrt(v.x ** 2 + v.y ** 2 + v.z ** 2) * 3.6
+        check("stop parks the car (autopilot off, brake)", parked < 1.0, "%.1f km/h 3 s after stop" % parked)
 
         # ---- tiny collection: 3 frames, every sensor type ---------------------
         sensors = c.call("rig_build", preset="perception_gt", blueprint="vehicle.tesla.model3")

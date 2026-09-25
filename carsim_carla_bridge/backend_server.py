@@ -708,7 +708,22 @@ class Backend:
                 self.world.apply_settings(self._pre_cosim_settings)
                 self._pre_cosim_settings = None
             self.tm.set_synchronous_mode(self.world.get_settings().synchronous_mode)
+            self._park_ego()
             self._set_cosim_state(final, detail)
+
+    def _park_ego(self):
+        """Stop means stop, like the end of a CarSim run: without this the car
+        keeps the last throttle (route / manual / autopilot) or the CarSim
+        velocity handed over to PhysX, and drives or rolls on."""
+        if not self._alive(self.ego):
+            return
+        try:
+            self.ego.set_autopilot(False, self.tm.get_port())
+            self.ego.apply_control(carla.VehicleControl(throttle=0.0, steer=0.0, brake=1.0))
+            self.ego.set_target_velocity(carla.Vector3D())
+            self.ego.set_target_angular_velocity(carla.Vector3D())
+        except RuntimeError:
+            pass
 
     def _cosim_frame(self):
         try:

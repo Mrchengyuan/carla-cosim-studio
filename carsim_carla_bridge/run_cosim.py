@@ -70,6 +70,7 @@ def main():
     client.set_timeout(30.0)
     world = client.get_world()
 
+    original_settings = world.get_settings()
     anchor = world.get_map().get_spawn_points()[d["carla"]["spawn_index"]]
     vehicle = world.spawn_actor(world.get_blueprint_library().find(d["carla"]["vehicle"]), anchor)
     session = CoSimSession(world, vehicle, anchor, d)
@@ -92,11 +93,13 @@ def main():
         if tel:
             print("ran %.1f s simulated (%.2fx real time)" % (tel["t"], tel["rt_factor"]))
     finally:
-        session.stop(release_vehicle=False)
-        vehicle.destroy()
-        s = world.get_settings()
-        s.synchronous_mode, s.fixed_delta_seconds = False, None
-        world.apply_settings(s)
+        try:
+            session.stop(release_vehicle=False)
+        finally:
+            try:
+                vehicle.destroy()
+            finally:
+                world.apply_settings(original_settings)
 
 
 if __name__ == "__main__":

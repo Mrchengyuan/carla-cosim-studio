@@ -1,0 +1,198 @@
+"""Regression checks for collection and startup paths that need no CARLA server."""
+
+import copy
+import os
+import sys
+import tempfile
+import threading
+import time
+import unittest
+from types import SimpleNamespace
+from unittest import mock
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+
+from backend_server import Backend  # noqa: E402
+from collector import DataCollector  # noqa: E402
+import run_cosim  # noqa: E402
+
+
+class CollectorTests(unittest.TestCase):
+    def config(self, **overrides):
+        return {"frame_dt": 0.1, "capture_every": 1, "image_format": "jpg",
+                "max_frames": 1, "max_seconds": 0, "max_gb": 0, **overrides}
+
+    def test_rejects_names_that_overwrite_or_escape(self):
+        sensor = lambda name: {"name": name, "type": "rgb", "attributes": {"image_size_x": 1, "image_size_y": 1}}
+        for names, session in ((["cam", "cam"], ""), (["cam", "CAM"], ""),
+                               (["../outside"], ""), (["/tmp/outside"], ""),
+                               (["calib.json"], ""),
+                               (["cam"], "../outside"), (["cam"], "C:\\outside")):
+            with self.subTest(names=names, session=session):
+                c = DataCollector(None, None, [sensor(n) for n in names], self.config(session=session))
+                with self.assertRaises(ValueError):
+                    c.estimate()
+        DataCollector(None, None, [sensor("前视相机")], self.config(session="场景一")).estimate()
+
+    def test_gb_limit_counts_finished_write_before_next_frame(self):
+        with tempfile.TemporaryDirectory() as root:
+            os.mkdir(os.path.join(root, "ego"))
+            c = DataCollector(None, None, [], self.config(max_frames=0, max_gb=1e-9, labels=False))
+            c.root = root
+            c._t0 = time.time()
+            c._last_emit = 0.0
+            c._ego_state = lambda frame: {"frame": frame}
+            writing = threading.Event()
+            release = threading.Event()
+
+            def delayed_writer():
+                writing.set()
+                release.wait()
+                c._write_loop()
+
+            c.writer = threading.Thread(target=delayed_writer, daemon=True)
+            c.writer.start()
+            tick = threading.Thread(target=c.on_tick, args=(2,), daemon=True)
+            try:
+                self.assertTrue(writing.wait(1))
+                c.on_tick(1)
+                tick.start()
+                tick.join(0.05)
+                self.assertTrue(tick.is_alive(), "accepted another frame before the queued frame was written")
+                release.set()
+                tick.join(2)
+                self.assertFalse(tick.is_alive())
+                self.assertTrue(c.done)
+                self.assertEqual(c.frames, 1)
+                self.assertGreater(c.bytes, 1)
+                self.assertEqual(c.q.unfinished_tasks, 0)
+            finally:
+                release.set()
+                c.stop()
+
+    def test_far_from_gb_limit_does_not_wait_for_writer(self):
+        with tempfile.TemporaryDirectory() as root:
+            os.mkdir(os.path.join(root, "ego"))
+            c = DataCollector(None, None, [], self.config(max_frames=0, max_gb=10, labels=False))
+            c.root = root
+            c._t0 = time.time()
+            c._last_emit = 0.0
+            c._ego_state = lambda frame: {"frame": frame}
+            release = threading.Event()
+
+            def delayed_writer():
+                release.wait()
+                c._write_loop()
+
+            c.writer = threading.Thread(target=delayed_writer, daemon=True)
+            c.writer.start()
+            tick = threading.Thread(target=lambda: (c.on_tick(1), c.on_tick(2)), daemon=True)
+            try:
+                tick.start()
+                tick.join(1)
+                self.assertFalse(tick.is_alive(), "waited for the writer far from the limit")
+                self.assertEqual(c.frames, 2)
+            finally:
+                release.set()
+                c.stop()
+
+
+class BackendStartupTests(unittest.TestCase):
+    def test_invalid_collection_names_do_not_respawn_ego(self):
+        backend = Backend()
+        backend.world = object()
+        spawned = []
+        backend.cmd_spawn_ego = lambda *args: spawned.append(args)
+        cfg = {"collect": {"enabled": True}, "rig": {"sensors": [
+            {"name": "cam", "type": "rgb", "attributes": {}},
+            {"name": "cam", "type": "rgb", "attributes": {}}]}}
+        with self.assertRaisesRegex(ValueError, "重复"):
+            backend.cmd_cosim_start(cfg)
+        self.assertEqual(spawned, [])
+
+    def test_restores_previous_ego_if_reattaching_sensor_fails(self):
+        backend = Backend()
+        backend.world = object()
+        old = SimpleNamespace(type_id="vehicle.test", attributes={"color": "red"},
+                              get_transform=lambda: "old transform")
+        backend.ego = old
+        backend.anchor = "old anchor"
+        backend._alive = lambda actor: actor is not None
+        backend.sensors = {1: {"spec": {"type": "rgb"}}}
+        backend.views.specs = lambda: [{"id": "p0"}]
+        backend.cmd_spawn_ego = lambda *args: setattr(backend, "ego", object())
+
+        def fail_sensor(**kwargs):
+            raise RuntimeError("sensor failed")
+
+        backend.cmd_add_sensor = fail_sensor
+        restored = []
+
+        def restore(*args):
+            restored.append(args)
+            backend.ego = old
+
+        backend._restore_ego = restore
+        with self.assertRaisesRegex(RuntimeError, "sensor failed"):
+            backend.cmd_cosim_start()
+        self.assertIs(backend.ego, old)
+        self.assertEqual(restored[0][0], ("vehicle.test", "old transform", "old anchor"))
+        self.assertEqual(restored[0][2], [{"type": "rgb"}])
+        self.assertEqual(restored[0][3], [{"id": "p0"}])
+
+
+class CliTests(unittest.TestCase):
+    def test_restores_original_world_settings(self):
+        original = SimpleNamespace(synchronous_mode=True, fixed_delta_seconds=0.07, no_rendering_mode=True)
+        vehicle = SimpleNamespace(destroy=mock.Mock())
+
+        class World:
+            def __init__(self):
+                self.settings = copy.deepcopy(original)
+
+            def get_settings(self):
+                return copy.deepcopy(self.settings)
+
+            def apply_settings(self, settings):
+                self.settings = copy.deepcopy(settings)
+
+            def get_map(self):
+                return SimpleNamespace(get_spawn_points=lambda: ["anchor"])
+
+            def get_blueprint_library(self):
+                return SimpleNamespace(find=lambda name: name)
+
+            def spawn_actor(self, blueprint, anchor):
+                return vehicle
+
+            def tick(self):
+                pass
+
+        world = World()
+
+        class Session:
+            def __init__(self, *args):
+                self.done = False
+
+            def start(self):
+                return {"external_api": False, "reference_point": [0, 0, 0],
+                        "clock_warning": False, "t_step": 0.001, "inner_steps": 20}
+
+            def step(self):
+                self.done = True
+                return {"t": 0.02, "rt_factor": 1.0}
+
+            def stop(self, release_vehicle):
+                pass
+
+        client = SimpleNamespace(set_timeout=lambda timeout: None, get_world=lambda: world)
+        with mock.patch.object(run_cosim.carla, "Client", return_value=client), \
+                mock.patch.object(run_cosim, "CoSimSession", Session), \
+                mock.patch.object(sys, "argv", ["run_cosim.py", "--mock", "--duration", "0.02"]):
+            run_cosim.main()
+        self.assertEqual(world.settings.__dict__, original.__dict__)
+        vehicle.destroy.assert_called_once()
+
+
+if __name__ == "__main__":
+    unittest.main()

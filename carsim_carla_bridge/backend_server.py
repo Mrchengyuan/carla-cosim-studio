@@ -1029,10 +1029,19 @@ class Backend:
                 except Exception:
                     traceback.print_exc()  # report the original error, not this one
             raise
-        for spec in sensor_specs:
-            self.cmd_add_sensor(**spec)
-        if view_specs:
-            self.cmd_views_set(view_specs)
+        try:
+            for spec in sensor_specs:
+                self.cmd_add_sensor(**spec)
+            if view_specs:
+                self.cmd_views_set(view_specs)
+        except BaseException:
+            # Respawning already removed the previous ego and its attachments.
+            # A failed attachment must restore them before returning an error.
+            if old is not None:
+                self._try(lambda: self._restore_ego(old, color, sensor_specs, view_specs))
+            else:
+                self._try(self.cmd_destroy_ego)
+            raise
         self._unsent_tel = None
         self._pre_cosim_settings = w.get_settings()
         try:

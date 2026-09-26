@@ -16,7 +16,8 @@ Output layout (one folder per session):
 
 Safety: start() refuses to run when the estimated size exceeds the free disk
 space minus a reserve, and stop conditions (frames / seconds / GB) are
-enforced every frame.
+enforced every frame. Near a GB limit, queued frames are flushed before
+another one is accepted so queued writes cannot overshoot the limit.
 """
 
 import json
@@ -58,6 +59,20 @@ def camera_K(w, h, fov):
 
 
 EVENT_TYPES = ("collision", "lane_invasion")  # fire now and then, not every frame
+_WINDOWS_RESERVED = ({"CON", "PRN", "AUX", "NUL"}
+                     | {"COM%d" % i for i in range(1, 10)}
+                     | {"LPT%d" % i for i in range(1, 10)})
+_SESSION_FILES = {"ego", "labels", "calib.json", "meta.json"}
+
+
+def _check_name(name, what):
+    """Keep session and sensor names as one portable directory component."""
+    bad = '/\\:*?"<>|'
+    if (not isinstance(name, str) or not name or name in (".", "..")
+            or name != name.strip() or name.endswith(".")
+            or any(c in bad or ord(c) < 32 for c in name)
+            or name.split(".", 1)[0].upper() in _WINDOWS_RESERVED):
+        raise ValueError("%s只能是普通文件夹名，不能包含路径或系统保留字符：%r" % (what, name))
 
 
 class DataCollector:
@@ -80,6 +95,17 @@ class DataCollector:
 
     # ----------------------------------------------------------- planning
     def estimate(self):
+        if self.cfg.get("session"):
+            _check_name(self.cfg["session"], "场景名称")
+        seen = set()
+        for s in self.sensor_cfgs:
+            name = s.get("name")
+            _check_name(name, "传感器名称")
+            if name.casefold() in _SESSION_FILES:
+                raise ValueError("传感器名称与采集文件冲突：%s" % name)
+            if name.casefold() in seen:
+                raise ValueError("传感器名称重复：%s" % name)
+            seen.add(name.casefold())
         fmt = self.cfg.get("image_format", "jpg")
         per_frame = sum(rigmod.bytes_per_frame(s, fmt, self.cfg["frame_dt"]) for s in self.sensor_cfgs) + 20000  # labels + ego
         hz = 1.0 / (self.cfg["frame_dt"] * max(1, int(self.cfg.get("capture_every", 1))))
@@ -192,6 +218,26 @@ class DataCollector:
             return
         if self._frame0 is None:
             self._frame0 = frame
+        every = max(1, int(self.cfg.get("capture_every", 1)))
+        if self.cfg.get("max_gb") and frame % every == 0:
+            # Queued frames have not counted toward the limit yet. Far from it
+            # the writer runs alongside CARLA; near it, wait for the queue so
+            # queued writes cannot overshoot the limit.
+            cap = float(self.cfg["max_gb"]) * 1e9
+            pending = self.q.unfinished_tasks
+            written = self.frames - pending
+            if written > 0:
+                avg = self.bytes / written
+            else:
+                avg = sum(rigmod.bytes_per_frame(s, self.cfg.get("image_format", "jpg"), self.cfg["frame_dt"])
+                          for s in self.sensor_cfgs) + 20000
+            if self.bytes + (pending + 1) * avg >= cap:
+                self.q.join()
+            if self.bytes >= cap:
+                self.done, self.stop_reason = True, "达到容量上限"
+                self._last_frame = frame
+                self._emit_stats()
+                return
         datas = []
         for s, qq in zip(self.sensor_cfgs, self.queues):
             if s["type"] in EVENT_TYPES:
@@ -219,7 +265,6 @@ class DataCollector:
                 self.errors.append("%s: 第 %d 帧数据缺失" % (s["name"], frame))
                 d = None
             datas.append(d)
-        every = max(1, int(self.cfg.get("capture_every", 1)))
         if frame % every == 0:
             sample = (frame, datas, self._ego_state(frame), self._labels() if self.cfg.get("labels", True) else None)
             self.q.put(sample)       # blocks if the writer falls behind
@@ -301,6 +346,7 @@ class DataCollector:
         while True:
             item = self.q.get()
             if item is None:
+                self.q.task_done()
                 return
             frame, datas, ego, labels = item
             try:
@@ -362,3 +408,4 @@ class DataCollector:
             except Exception as e:
                 self.errors.append("写入第 %d 帧失败：%s" % (frame, e))
             del self.errors[:-100]
+            self.q.task_done()

@@ -30,6 +30,31 @@ CARLA_WHEELS = (
 )
 
 
+def front_axle_local(vehicle):
+    """CarSim's default origin in the CARLA vehicle frame (m): front axle
+    centreline, at ground level."""
+    # Wheel positions come back in world cm; bring them to vehicle-local m.
+    inv = np.array(vehicle.get_transform().get_inverse_matrix())
+    wheels = vehicle.get_physics_control().wheels
+    local = [inv @ np.array([w.position.x / 100.0, w.position.y / 100.0, w.position.z / 100.0, 1.0])
+             for w in wheels[:2]]
+    front_x = (local[0][0] + local[1][0]) / 2.0
+    # Ground level from the bounding box bottom, which is pure geometry;
+    # wheel heights depend on where the suspension happens to be.
+    bb = vehicle.bounding_box
+    return np.array([front_x, 0.0, bb.location.z - bb.extent.z])
+
+
+def anchor_frame(world_map, a):
+    """The CarSim global frame at CARLA transform a (a spawn point): on the
+    road there, since spawn points sit 0.5-0.7 m above it."""
+    z = a.location.z
+    wp = world_map.get_waypoint(a.location)
+    if wp is not None and abs(wp.transform.location.z - z) < 3.0:
+        z = wp.transform.location.z
+    return AnchorFrame((a.location.x, a.location.y, z), a.rotation.yaw, a.rotation.pitch, a.rotation.roll)
+
+
 class CarSimExports:
     """Name-based access to the CarSim export vector, in SI + degrees."""
 
@@ -94,16 +119,10 @@ class CarlaVehicleSync:
         self.vehicle = vehicle
         self._map = world.get_map()
         self.ex = CarSimExports(export_names or self.cfg.EXPORT_NAMES, self.cfg.UNITS)
-        a = anchor
         # CarSim's origin is on the ground (Zo = 0 on flat road); CARLA spawn
         # points sit 0.5-0.7 m above the road so cars can drop onto it. Anchor
         # the CarSim ground on the road there, or the car floats all run long.
-        z = a.location.z
-        wp = self._map.get_waypoint(a.location)
-        if wp is not None and abs(wp.transform.location.z - z) < 3.0:
-            z = wp.transform.location.z
-        self.anchor = AnchorFrame((a.location.x, a.location.y, z),
-                                  a.rotation.yaw, a.rotation.pitch, a.rotation.roll)
+        self.anchor = anchor_frame(self._map, anchor)
         self.ref_local = self._reference_point_local()
         self.wheel_radius_m = self._wheel_radii()
         self.wheel_angle = [0.0] * 4
@@ -130,17 +149,7 @@ class CarlaVehicleSync:
         ref = self.cfg.CARSIM_REFERENCE_POINT
         if ref != "front_axle":
             return np.asarray(ref, dtype=float)
-        # Wheel positions come back in world cm; bring them to vehicle-local m.
-        inv = np.array(self.vehicle.get_transform().get_inverse_matrix())
-        wheels = self.vehicle.get_physics_control().wheels
-        local = [inv @ np.array([w.position.x / 100.0, w.position.y / 100.0, w.position.z / 100.0, 1.0])
-                 for w in wheels[:2]]
-        front_x = (local[0][0] + local[1][0]) / 2.0
-        # Ground level from the bounding box bottom, which is pure geometry;
-        # wheel heights depend on where the suspension happens to be.
-        bb = self.vehicle.bounding_box
-        # CarSim origin: front axle centerline, at ground level.
-        return np.array([front_x, 0.0, bb.location.z - bb.extent.z])
+        return front_axle_local(self.vehicle)
 
     def _wheel_radii(self):
         return [w.radius / 100.0 for w in self.vehicle.get_physics_control().wheels[:4]]

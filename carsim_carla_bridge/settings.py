@@ -17,8 +17,7 @@ JSON layout (all keys optional, missing ones fall back to config.py):
   "drive":  {"dynamics": "cosim", "carla_driver": "route", "target_speed_kmh": 40.0, ...},
   "rig":    {"preset": "front_camera", "sensors": [...]},
   "collect":{"enabled": false, "out_dir": "datasets", "max_frames": 100, "max_gb": 2.0, ...},
-  "scene":  {"objects": true, "lane": true, "sensors": false, "range_m": 80.0,
-             "collision": "log", ...}
+  "scene":  {"collision": "log", "objects": ["id", "type", "rel_x", ...], "lane": [...], ...}
 }
 """
 
@@ -52,15 +51,23 @@ def default_dict():
         "drive": {"dynamics": "cosim", "carla_driver": "route", "target_speed_kmh": 40.0,
                   "destination_index": -1, "brake_scale": 1.0,
                   "tm_speed_diff_pct": 0.0, "tm_ignore_lights": False},
-        "rig": {"preset": "front_camera", "sensors": []},
+        # Sensor mounts in CarSim's vehicle frame (origin = the reference
+        # point, y left; rig.py). "carla" = an older config (car centre, y right).
+        "rig": {"preset": "front_camera", "sensors": [], "frame": "carsim"},
         # Conservative defaults: a run without an explicit limit never starts.
         "collect": {"enabled": False, "out_dir": "datasets", "session": "", "image_format": "jpg",
                     "jpg_quality": 90, "pointcloud_format": "bin", "capture_every": 1, "labels": True,
                     "label_radius": 80.0, "max_frames": 100, "max_seconds": 0.0, "max_gb": 2.0},
-        # What the control algorithm gets each frame (scene.py). collision:
-        # "log" = report and go on, "stop" = end the run, "off" = ignore.
-        "scene": {"objects": True, "map_objects": True, "lane": True, "sensors": False,
-                  "range_m": 80.0, "lane_ahead_m": 60.0, "lane_step_m": 2.0, "collision": "log"},
+        # What the control algorithm gets and the records hold (scene.py,
+        # docs/场景与数据接口.md): the selected keys only. collision: "log" =
+        # report and go on, "stop" = end the run, "off" = no check. sensors:
+        # rig sensor names handed to the algorithm. exports_all / exports:
+        # which CarSim exports the records keep (the algorithm gets them all).
+        "scene": {"collision": "log", "object_types": ["vehicle", "walker", "parked"],
+                  "ego": ["X", "Y", "Z", "Yaw", "Vx_global", "Vy_global", "Speed", "length", "width", "height"],
+                  "objects": ["id", "type", "rel_x", "rel_y", "rel_vx", "rel_vy", "dist", "gap"],
+                  "lane": ["width", "offset", "heading_err", "center_rel"],
+                  "sensors": [], "exports_all": True, "exports": []},
     }
 
 
@@ -77,7 +84,11 @@ def load_dict(path=None, override=None):
     d = default_dict()
     if path:
         with open(path, encoding="utf-8") as f:
-            _merge(d, json.load(f))
+            raw = json.load(f)
+        rig = raw.get("rig") if isinstance(raw, dict) else None
+        if isinstance(rig, dict) and rig.get("sensors") and "frame" not in rig:
+            rig["frame"] = "carla"  # written before mounts were in CarSim's frame
+        _merge(d, raw)
     if override:
         _merge(d, copy.deepcopy(override))
     return d

@@ -565,7 +565,9 @@ json App::PaneSpec(const std::string& source, int w, int h) const {
       if (t != "rgb" && t != "depth" && t != "semantic" && t != "instance" && t != "lidar" && t != "radar")
         return json();  // e.g. an IMU: nothing to show as an image
       v["kind"] = t;
-      v["mount"] = json{{"x", s.value("x", 0.0)}, {"y", s.value("y", 0.0)}, {"z", s.value("z", 0.0)}, {"pitch", s.value("pitch", 0.0)}, {"yaw", s.value("yaw", 0.0)}, {"roll", s.value("roll", 0.0)}};
+      v["mount"] = json{{"x", s.value("x", 0.0)}, {"y", s.value("y", 0.0)}, {"z", s.value("z", 0.0)}, {"pitch", s.value("pitch", 0.0)},
+                        {"yaw", s.value("yaw", 0.0)}, {"roll", s.value("roll", 0.0)}, {"frame", "carsim"},
+                        {"ref", cfg_.contains("sync") ? cfg_["sync"].value("reference_point", json("front_axle")) : json("front_axle")}};
       v["attrs"] = s.value("attributes", json::object());
       if (t == "lidar" || t == "radar") v["width"] = v["height"] = std::min(w, h);
       return v;
@@ -727,7 +729,15 @@ int Conform(json& v, const json& def) {
 
 void App::ConformConfig() {
   if (!cfg_defaults_.is_object()) return;
+  // The reference point is "front_axle" or [x, y, z]: the default's type
+  // (a string) must not replace a point set on the CarSim page.
+  json ref;
+  if (cfg_.contains("sync") && cfg_["sync"].is_object() && cfg_["sync"].contains("reference_point")) {
+    const json& r = cfg_["sync"]["reference_point"];
+    if (r.is_array() && r.size() == 3 && std::all_of(r.begin(), r.end(), [](const json& v) { return v.is_number(); })) ref = r;
+  }
   int fixed = Conform(cfg_, cfg_defaults_);
+  if (!ref.is_null()) cfg_["sync"]["reference_point"] = ref;
   // Rig sensors: objects with numbers where numbers belong.
   json& sensors = cfg_["rig"]["sensors"];
   json keep = json::array();
@@ -751,6 +761,24 @@ void App::LoadConfig(const std::string& user_path) {
   if (!j.is_object()) {
     Log("无法读取配置：" + path, "error");
     return;
+  }
+  // Configs from before rigs were in CarSim's vehicle frame (no "frame"):
+  // origin under the car centre, y right. Convert with the front axle of the
+  // selected vehicle (1.4 m ahead of the centre when it was not measured).
+  if (j.contains("rig") && j["rig"].is_object() && !j["rig"].contains("frame") && j["rig"].contains("sensors") &&
+      j["rig"]["sensors"].is_array()) {
+    const json* spec = SelectedVehicleSpec();
+    const float fx = spec ? spec->value("front_axle_x_m", 1.4f) : 1.4f;
+    for (json& s : j["rig"]["sensors"]) {
+      if (!s.is_object()) continue;
+      auto num = [&](const char* k) { return s.contains(k) && s[k].is_number() ? s[k].get<double>() : 0.0; };
+      s["x"] = std::round((num("x") - fx) * 1000.0) / 1000.0;
+      s["y"] = -num("y");
+      s["yaw"] = -num("yaw");
+      s["pitch"] = -num("pitch");
+    }
+    j["rig"]["frame"] = "carsim";
+    Log("配置里的传感器安装位置是旧格式，已换算为 CarSim 车身坐标系（原点在前轴中心，y 向左）；请检查后保存", "warn");
   }
   cfg_.merge_patch(j);
   ConformConfig();
@@ -971,6 +999,10 @@ void App::BuildTour() {
          cfg_["run"]["controller"]["entry"] = "Controller";
        }, idle, "07_drive"},
       {kPanelScene, [this] { cfg_["scene"]["collision"] = "log"; }, idle, "07b_scene_config"},
+      {kPanelScene, [this] { click_target_ = "key:objects:Speed"; }, [this] {
+         for (const json& k : cfg_["scene"]["objects"]) if (k == "Speed") return true;
+         return false;
+       }, ""},
       {kPanelCoSim, [this] {
          cfg_["carsim"]["mock"] = true;
          cfg_["sync"]["duration"] = 0.0;  // stopped below with the toolbar button
@@ -1018,9 +1050,9 @@ void App::BuildTour() {
          cfg_["sync"]["frame_dt"] = 0.1;
          cfg_["sync"]["duration"] = 0.0;
          cfg_["rig"]["sensors"] = json::array({
-             {{"name", "cam_front"}, {"type", "rgb"}, {"x", 1.5}, {"y", 0.0}, {"z", 1.6}, {"roll", 0.0}, {"pitch", 0.0}, {"yaw", 0.0},
+             {{"name", "cam_front"}, {"type", "rgb"}, {"x", 0.1}, {"y", 0.0}, {"z", 1.6}, {"roll", 0.0}, {"pitch", 0.0}, {"yaw", 0.0},
               {"attributes", {{"image_size_x", 640}, {"image_size_y", 360}, {"fov", 90.0}}}, {"enabled", true}},
-             {{"name", "lidar_top"}, {"type", "lidar"}, {"x", 0.0}, {"y", 0.0}, {"z", 1.9}, {"roll", 0.0}, {"pitch", 0.0}, {"yaw", 0.0},
+             {{"name", "lidar_top"}, {"type", "lidar"}, {"x", -1.4}, {"y", 0.0}, {"z", 1.9}, {"roll", 0.0}, {"pitch", 0.0}, {"yaw", 0.0},
               {"attributes", {{"channels", 16}, {"range", 50.0}, {"points_per_second", 100000}}}, {"enabled", true}}});
          cfg_["collect"]["session"] = "tour";
          cfg_["collect"]["enabled"] = true;

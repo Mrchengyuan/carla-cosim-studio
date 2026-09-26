@@ -209,7 +209,7 @@ class App {
   json last_tel_ = json::object();
   json last_scene_;                  // what the control algorithm got last (kept after the run ends)
   std::string scene_hover_;          // object id under the mouse in the scene table
-  bool scene_moving_only_ = false;   // scene table: only vehicles and walkers that move
+  bool scene_moving_only_ = false;   // scene tab: hide the parked cars of the map
   json collect_stats_ = json::object();
   static constexpr int kHist = 900;
   std::vector<float> h_t_, h_speed_, h_steer_fl_, h_steer_fr_, h_rt_, h_susp_[4], h_thr_, h_brk_;

@@ -1,33 +1,23 @@
-"""What the ego sees each frame, handed to the user's control algorithm.
+"""What is around the car, handed to the control algorithm and recorded.
 
     control(exports, t, dt, scene)
 
-scene is a dict (keys depend on the "scene" settings):
+Everything follows CarSim (docs/场景与数据接口.md has the full table):
+  * global frame = CarSim's global frame (origin on the spawn point, x along
+    its heading, y LEFT, z up), the frame of the exports Xo / Yo / Yaw;
+  * ego frame = CarSim's vehicle frame, origin at the CarSim reference point
+    (the point Xo / Yo describe), x forward, y left;
+  * units = the CarSim export units set on the "CarSim 动力学" page
+    (speeds km/h or m/s, angles deg or rad); lengths m.
 
-    scene["ego"]        {"speed": m/s, "length", "width", "height": m}
-    scene["objects"]    everything around the ego within range_m, nearest first:
-        {"id", "type": "vehicle" | "walker" | "static", "type_id",
-         "moving": False for parked cars and map objects,
-         "x", "y", "z": centre of the object's box,
-         "yaw": deg, "length", "width", "height": m,
-         "vx", "vy": velocity relative to the ego, m/s,
-         "speed": the object's own speed, m/s, "distance": m}
-    scene["lane"]       the ego's lane ahead:
-        {"center": [[x, y], ...] every lane_step_m up to lane_ahead_m,
-         "width": m, "offset": ego distance left of the lane centre, m,
-         "heading_error": ego heading minus lane heading, deg (+ = left),
-         "left_marking", "right_marking": CARLA marking types,
-         "speed_limit": km/h, "traffic_light": "red" | "yellow" | "green" | None,
-         "in_junction": bool}
-    scene["sensors"]    {rig sensor name: {"type", "frame", "data"}} (see _convert)
-    scene["collisions"] objects whose box overlaps the ego's box this frame
-
-Every position is in the ego frame: origin at the centre of the ego's box on
-the ground, x forward, y left, z up (right-handed, like CarSim), meters.
-The scene is the state after the previous CARLA frame, like a real sensor.
+Obstacles are CARLA vehicles and walkers, plus the parked cars that are part
+of the map, within RANGE_M of the ego. Only the keys selected in the
+"scene" settings are handed over and recorded.
 """
 
+import csv
 import math
+import os
 import queue
 import time
 
@@ -37,77 +27,120 @@ import carla
 
 import rig as rigmod
 import settings as st
+from bridge import anchor_frame, front_axle_local
 
-# Map objects that stand where a car can drive into them. Vegetation and
-# buildings are left out: tens of thousands of them, with boxes far larger
-# than the part that reaches the road.
-MAP_VEHICLES = ("Car", "Truck", "Bus", "Motorcycle", "Bicycle")
-MAP_STATIC = ("Poles", "Fences", "Walls", "GuardRail", "TrafficSigns", "TrafficLight", "Static", "Dynamic")
+RANGE_M = 50.0
+LANE_STEP_M = 2.0
 EVENT_TYPES = ("collision", "lane_invasion")
+MAP_VEHICLES = ("Car", "Truck", "Bus", "Motorcycle", "Bicycle")  # parked cars modelled into the map
+
+EGO_KEYS = ("X", "Y", "Z", "Yaw", "Vx_global", "Vy_global", "Speed", "length", "width", "height")
+OBJECT_KEYS = ("id", "type", "parked", "model", "length", "width", "height", "X", "Y", "Z", "Yaw",
+               "Vx_global", "Vy_global", "Speed", "rel_x", "rel_y", "rel_yaw", "rel_vx", "rel_vy", "dist", "gap")
+LANE_KEYS = ("width", "offset", "heading_err", "curvature", "center_rel", "center_global", "center_curvature",
+             "left_marking", "right_marking", "left_lane", "right_lane", "speed_limit", "in_junction",
+             "junction_dist", "light_state", "light_dist")
+LANE_LISTS = ("center_rel", "center_global", "center_curvature")  # not in the CSV files
+ALWAYS_OBJECT_KEYS = ("id", "type")  # needed to tell objects apart
 
 
 def _wrap(deg):
     return (deg + 180.0) % 360.0 - 180.0
 
 
-def _overlap(a, b):
-    """2D oriented boxes (cx, cy, yaw_rad, half_len, half_wid) intersect (separating axes)."""
-    ax, ay, at, al, aw = a
-    bx, by, bt, bl, bw = b
-    d = (bx - ax, by - ay)
-    for t in (at, bt):
-        u = (math.cos(t), math.sin(t))
-        v = (-u[1], u[0])
-        for axis in (u, v):
-            ra = al * abs(math.cos(at) * axis[0] + math.sin(at) * axis[1]) + aw * abs(-math.sin(at) * axis[0] + math.cos(at) * axis[1])
-            rb = bl * abs(math.cos(bt) * axis[0] + math.sin(bt) * axis[1]) + bw * abs(-math.sin(bt) * axis[0] + math.cos(bt) * axis[1])
-            if abs(d[0] * axis[0] + d[1] * axis[1]) > ra + rb:
+def _corners(cx, cy, yaw, hl, hw):
+    c, s = math.cos(yaw), math.sin(yaw)
+    return [(cx + c * a - s * b, cy + s * a + c * b) for a, b in ((hl, hw), (hl, -hw), (-hl, -hw), (-hl, hw))]
+
+
+def _overlap(pa, pb):
+    """Convex polygons intersect (separating axis test)."""
+    for poly in (pa, pb):
+        for i in range(len(poly)):
+            (x1, y1), (x2, y2) = poly[i], poly[(i + 1) % len(poly)]
+            nx, ny = y1 - y2, x2 - x1
+            a = [nx * x + ny * y for x, y in pa]
+            b = [nx * x + ny * y for x, y in pb]
+            if max(a) < min(b) or max(b) < min(a):
                 return False
     return True
 
 
-class SceneProvider:
-    """Builds the scene after every world tick. Optionally owns the rig sensors
-    (the data collector then reads their data from here instead of spawning
-    a second set)."""
+def _seg_dist(p, a, b):
+    ax, ay = a
+    dx, dy = b[0] - ax, b[1] - ay
+    t = max(0.0, min(1.0, ((p[0] - ax) * dx + (p[1] - ay) * dy) / max(1e-12, dx * dx + dy * dy)))
+    return math.hypot(p[0] - ax - t * dx, p[1] - ay - t * dy)
 
-    def __init__(self, world, ego, settings, sensor_cfgs, frame_dt):
+
+def box_gap(pa, pb):
+    """Shortest distance between two rectangles in the plane; 0 when they touch."""
+    if _overlap(pa, pb):
+        return 0.0
+    d = min(_seg_dist(p, q[i], q[(i + 1) % 4]) for p, q in ((p, pb) for p in pa) for i in range(4))
+    return min(d, min(_seg_dist(p, pa[i], pa[(i + 1) % 4]) for p in pb for i in range(4)))
+
+
+class Units:
+    """CarSim's export units (settings "carsim" -> "units")."""
+
+    def __init__(self, units):
+        units = units or {}
+        self.speed = 3.6 if units.get("speed", "km/h") == "km/h" else 1.0   # from m/s
+        self.angle = 1.0 if units.get("angle", "deg") == "deg" else math.pi / 180.0  # from deg
+
+
+class SceneProvider:
+    """Builds the scene after every world tick (all keys, CarSim frames and
+    units); view() is the selected part the algorithm gets. Also runs the
+    rig sensors the algorithm or the data collector needs (one set for both)."""
+
+    def __init__(self, world, ego, d, anchor=None, ref_local=None, sensor_cfgs=()):
+        """anchor: carla.Transform of CarSim's origin (the spawn point; the
+        ego's pose when None); ref_local: CarSim reference point in the CARLA
+        vehicle frame (front axle on the ground when None)."""
         s = st.default_dict()["scene"]
-        s.update(settings or {})
-        self.world, self.ego, self.s, self.frame_dt = world, ego, s, float(frame_dt)
-        self.sensor_cfgs = [c for c in (sensor_cfgs or []) if c.get("enabled", True)] if s["sensors"] else []
+        s.update(d.get("scene") or {})
+        self.world, self.ego, self.s = world, ego, s
+        self.frame_dt = float(d["sync"]["frame_dt"])
+        self.units = Units(d["carsim"].get("units"))
+        self.anchor_tf = None
+        self._anchor_src = anchor
+        self.ref_local = None if ref_local is None else np.asarray(ref_local, dtype=float)
+        self.sensor_cfgs = [c for c in sensor_cfgs if c.get("enabled", True)]
+        self.algo_sensors = set(s.get("sensors") or [])
         self.actors, self.queues = [], []
         self.datas, self.frame = [], None   # raw rig data of the last frame (collector)
         self.errors = []
-        self.latest = None
-        self._kinds = {}                    # actor id -> (type, type_id, bbox) or None
-        self._map = None                    # static map objects: arrays
-        self._touching = set()              # ids overlapping the ego last frame
+        self.latest = self._view = None
+        self._kinds = {}                    # actor id -> (type, model, bbox) or None
+        self._parked = []                   # map parked cars: (id, model, centre world, yaw, extent)
+        self._touching = set()
 
     # --------------------------------------------------------------- lifecycle
-    def start(self, ego_velocity=None):
+    def start(self, t=0.0, ego_velocity=None):
         w = self.world
         self.map = w.get_map()
+        src = self._anchor_src or self.ego.get_transform()
+        self.anchor = anchor_frame(self.map, src)
+        R = self.anchor.R
+        self._anchor_yaw = math.degrees(math.atan2(R[1, 0], R[0, 0]))
+        self._to_local = R.T
+        if self.ref_local is None:
+            self.ref_local = front_axle_local(self.ego)
         eb = self.ego.bounding_box
-        self._ego_box = (eb.location.x, eb.location.y, eb.extent.x, eb.extent.y, eb.extent.z)
-        if self.s["objects"] and self.s["map_objects"]:
-            rows, meta = [], []
-            for kind, labels in (("vehicle", MAP_VEHICLES), ("static", MAP_STATIC)):
-                for lab in labels:
-                    L = getattr(carla.CityObjectLabel, lab, None)
-                    if L is None:
-                        continue
-                    for o in w.get_environment_objects(L):
-                        b = o.bounding_box
-                        e = b.extent
-                        if max(e.x, e.y) > 15.0 or e.z < 0.075:
-                            continue  # merged meshes; road decals and manhole covers (1 cm high)
-                        wp = self.map.get_waypoint(b.location, project_to_road=True, lane_type=carla.LaneType.Any)
-                        if wp is not None and b.location.z - e.z - wp.transform.location.z > 2.5:
-                            continue  # overhead: street light arms, signs and lights over the road
-                        rows.append((b.location.x, b.location.y, b.location.z, b.rotation.yaw, e.x, e.y, e.z))
-                        meta.append((o.id, kind, "map." + lab))
-            self._map = (np.array(rows, dtype=np.float64).reshape(-1, 7), meta)
+        self._ego_ext = (eb.extent.x, eb.extent.y, eb.extent.z)
+        # Ego box centre in the ego frame (CarSim axes: y left).
+        self._ego_box = (eb.location.x - self.ref_local[0], -(eb.location.y - self.ref_local[1]))
+        if "parked" in (self.s.get("object_types") or []):
+            for lab in MAP_VEHICLES:
+                L = getattr(carla.CityObjectLabel, lab, None)
+                if L is None:
+                    continue
+                for o in w.get_environment_objects(L):
+                    b = o.bounding_box
+                    self._parked.append((o.id, "map." + lab, (b.location.x, b.location.y, b.location.z),
+                                         b.rotation.yaw, (b.extent.x, b.extent.y, b.extent.z)))
         bl = w.get_blueprint_library()
         for c in self.sensor_cfgs:
             bp = bl.find(rigmod.SENSOR_BLUEPRINTS[c["type"]])
@@ -116,14 +149,13 @@ class SceneProvider:
                     bp.set_attribute(k, str(v))
             if c["type"] == "lidar" and bp.has_attribute("rotation_frequency"):
                 bp.set_attribute("rotation_frequency", str(1.0 / self.frame_dt))  # one sweep per frame
-            tf = carla.Transform(carla.Location(c["x"], c["y"], c["z"]),
-                                 carla.Rotation(pitch=c["pitch"], yaw=c["yaw"], roll=c["roll"]))
+            tf = rigmod.mount_transform(c, self.ref_local)
             a = w.spawn_actor(bp, tf, attach_to=self.ego)
             q = queue.Queue()
             a.listen(q.put)
             self.actors.append(a)
             self.queues.append(q)
-        self.latest = self.update(None, ego_velocity)
+        self.update(None, t, ego_velocity)
 
     def stop(self):
         for a in self.actors:
@@ -134,92 +166,117 @@ class SceneProvider:
                 pass
         self.actors, self.queues = [], []
 
+    # --------------------------------------------------------------- frames
+    def _global(self, x, y, z):
+        """CARLA world point -> CarSim global frame (m)."""
+        p = self._to_local @ (np.array([x, y, z]) - self.anchor.origin)
+        return float(p[0]), float(-p[1]), float(p[2])
+
+    def _global_vec(self, vx, vy, vz):
+        v = self._to_local @ np.array([vx, vy, vz])
+        return float(v[0]), float(-v[1])
+
+    def _global_yaw(self, carla_yaw):
+        return _wrap(-(carla_yaw - self._anchor_yaw))
+
     # -------------------------------------------------------------- per frame
-    def update(self, frame, ego_velocity=None):
-        """Call right after world.tick() (frame = its return value).
-        ego_velocity: the ego's world velocity when CARLA does not know it
-        (co-simulation on the original CARLA teleports the car: speed 0)."""
+    def update(self, frame, t=0.0, ego_velocity=None):
+        """Call right after world.tick() (frame = its return value), t = CarSim time."""
         if frame is not None:
             self.frame, self.datas = frame, self._fetch(frame)
-        w, s = self.world, self.s
-        snap = w.get_snapshot()
+        su, au = self.units.speed, self.units.angle
+        snap = self.world.get_snapshot()
         es = snap.find(self.ego.id)
         etf = es.get_transform() if es is not None else self.ego.get_transform()
         ev = ego_velocity if ego_velocity is not None else \
             es.get_velocity() if es is not None else self.ego.get_velocity()
-        # Ego frame: box centre on the ground, x forward, y left (right-handed).
-        yaw = -math.radians(etf.rotation.yaw)
-        cy, sy = math.cos(yaw), math.sin(yaw)
-        bx, by, el, ew, eh = self._ego_box
-        ox = etf.location.x + math.cos(-yaw) * bx - math.sin(-yaw) * by
-        oy = -(etf.location.y + math.sin(-yaw) * bx + math.cos(-yaw) * by)
-        oz = etf.location.z
-        evx, evy = ev.x, -ev.y
+        rw = etf.transform(carla.Location(*map(float, self.ref_local)))  # reference point, world
+        EX, EY, EZ = self._global(rw.x, rw.y, rw.z)
+        eyaw = self._global_yaw(etf.rotation.yaw)
+        evx, evy = self._global_vec(ev.x, ev.y, ev.z)
+        ps = math.radians(eyaw)
+        cp, sp = math.cos(ps), math.sin(ps)
 
-        def to_ego(x, y):
-            dx, dy = x - ox, -y - oy
-            return cy * dx + sy * dy, -sy * dx + cy * dy
+        def rel(dx, dy):
+            return cp * dx + sp * dy, -sp * dx + cp * dy
 
-        def rel_vel(vx, vy):
-            dx, dy = vx - evx, -vy - evy
-            return cy * dx + sy * dy, -sy * dx + cy * dy
-
-        scene = {"frame": frame, "ego": {"speed": math.hypot(ev.x, ev.y), "length": 2 * el, "width": 2 * ew,
-                                         "height": 2 * eh}}
-        r = float(s["range_m"])
+        el, ew, eh = self._ego_ext
+        ego_poly = _corners(self._ego_box[0], self._ego_box[1], 0.0, el, ew)
+        scene = {"t": t, "frame": frame,
+                 "ego": {"X": EX, "Y": EY, "Z": EZ, "Yaw": eyaw * au, "Vx_global": evx * su, "Vy_global": evy * su,
+                         "Speed": math.hypot(evx, evy) * su, "length": 2 * el, "width": 2 * ew, "height": 2 * eh}}
+        types = set(self.s.get("object_types") or [])
         objs = []
-        if s["objects"]:
+
+        def add(oid, kind, parked, model, ext, c, yaw_g, vg):
+            X, Y, Z = c
+            x, y = rel(X - EX, Y - EY)
+            dist = math.hypot(x, y)
+            if dist > RANGE_M:
+                return
+            ryaw = _wrap(yaw_g - eyaw)
+            rvx, rvy = rel(vg[0] - evx, vg[1] - evy)
+            gap = box_gap(ego_poly, _corners(x, y, math.radians(ryaw), ext[0], ext[1]))
+            objs.append({"id": oid, "type": kind, "parked": parked, "model": model,
+                         "length": 2 * ext[0], "width": 2 * ext[1], "height": 2 * ext[2],
+                         "X": X, "Y": Y, "Z": Z, "Yaw": yaw_g * au,
+                         "Vx_global": vg[0] * su, "Vy_global": vg[1] * su, "Speed": math.hypot(*vg) * su,
+                         "rel_x": x, "rel_y": y, "rel_yaw": ryaw * au, "rel_vx": rvx * su, "rel_vy": rvy * su,
+                         "dist": dist, "gap": gap, "_z0": Z - ext[2] - EZ})
+
+        if types & {"vehicle", "walker"}:
             for a in snap:
                 if a.id == self.ego.id:
                     continue
                 k = self._kinds.get(a.id, False)
                 if k is False:
                     k = self._kinds[a.id] = self._kind(a.id)
-                if k is None:
+                if k is None or k[0] not in types:
                     continue
+                kind, model, bb = k
                 tf = a.get_transform()
-                kind, type_id, bb = k
                 # (transform() overwrites the point it is given: pass a copy)
-                c = tf.transform(carla.Location(bb.location.x, bb.location.y, bb.location.z))
-                x, y = to_ego(c.x, c.y)
-                dist = math.hypot(x, y)
-                if dist > r:
+                cw = tf.transform(carla.Location(bb.location.x, bb.location.y, bb.location.z))
+                if cw.distance(rw) > RANGE_M + 10.0:
                     continue
                 v = a.get_velocity()
-                vx, vy = rel_vel(v.x, v.y)
-                objs.append({"id": a.id, "type": kind, "type_id": type_id, "moving": True,
-                             "x": x, "y": y, "z": c.z - oz,
-                             "yaw": _wrap(-(tf.rotation.yaw + bb.rotation.yaw) + etf.rotation.yaw),
-                             "length": 2 * bb.extent.x, "width": 2 * bb.extent.y, "height": 2 * bb.extent.z,
-                             "vx": vx, "vy": vy, "speed": math.hypot(v.x, v.y), "distance": dist})
-            if self._map is not None and len(self._map[1]):
-                # Hundreds of map objects: all at once.
-                arr, meta = self._map
-                dx, dy = arr[:, 0] - ox, -arr[:, 1] - oy
-                xe, ye = cy * dx + sy * dy, -sy * dx + cy * dy
-                dist = np.hypot(xe, ye)
-                idx = np.nonzero(dist <= r)[0]
-                vx, vy = rel_vel(0.0, 0.0)
-                yaws = (-arr[idx, 3] + etf.rotation.yaw + 180.0) % 360.0 - 180.0
-                for i, x, y, z, yw, ex, ey, ez, dd in zip(
-                        idx.tolist(), xe[idx].tolist(), ye[idx].tolist(), (arr[idx, 2] - oz).tolist(), yaws.tolist(),
-                        arr[idx, 4].tolist(), arr[idx, 5].tolist(), arr[idx, 6].tolist(), dist[idx].tolist()):
-                    oid, kind, type_id = meta[i]
-                    objs.append({"id": oid, "type": kind, "type_id": type_id, "moving": False,
-                                 "x": x, "y": y, "z": z, "yaw": yw,
-                                 "length": 2 * ex, "width": 2 * ey, "height": 2 * ez,
-                                 "vx": vx, "vy": vy, "speed": 0.0, "distance": dd})
-            objs.sort(key=lambda o: o["distance"])
+                add(a.id, kind, False, model, (bb.extent.x, bb.extent.y, bb.extent.z),
+                    self._global(cw.x, cw.y, cw.z), self._global_yaw(tf.rotation.yaw + bb.rotation.yaw),
+                    self._global_vec(v.x, v.y, v.z))
+        for oid, model, c, yaw, ext in self._parked:
+            if math.hypot(c[0] - rw.x, c[1] - rw.y) > RANGE_M + 10.0:
+                continue
+            add(oid, "vehicle", True, model, ext, self._global(*c), self._global_yaw(yaw), (0.0, 0.0))
+        objs.sort(key=lambda o: o["dist"])
         scene["objects"] = objs
-        scene["collisions"] = self._collisions(objs, el, ew, eh)
-        if s["lane"]:
-            scene["lane"] = self._lane(etf, to_ego)
-        if self.sensor_cfgs:
-            scene["sensors"] = {c["name"]: {"type": c["type"], "frame": getattr(d, "frame", frame),
-                                            "data": self._convert(c["type"], d)}
-                                for c, d in zip(self.sensor_cfgs, self.datas or [None] * len(self.sensor_cfgs))}
-        self.latest = scene
+        scene["collisions"] = self._collisions(objs, eh)
+        for o in objs:
+            del o["_z0"]
+        if self.s.get("lane"):
+            scene["lane"] = self._lane(rw, eyaw, EX, EY, rel)
+        if any(c["name"] in self.algo_sensors for c in self.sensor_cfgs):
+            scene["sensors"] = {c["name"]: {"type": c["type"], "data": self._convert(c, d)}
+                                for c, d in zip(self.sensor_cfgs, self.datas or [None] * len(self.sensor_cfgs))
+                                if c["name"] in self.algo_sensors}
+        self.latest, self._view = scene, None
         return scene
+
+    def view(self):
+        """The selected keys of the latest scene: what the algorithm gets."""
+        if self._view is None and self.latest is not None:
+            sc, s = self.latest, self.s
+            v = {"t": sc["t"], "frame": sc["frame"],
+                 "ego": {k: sc["ego"][k] for k in s.get("ego") or () if k in sc["ego"]}}
+            keys = [k for k in OBJECT_KEYS if k in ALWAYS_OBJECT_KEYS or k in (s.get("objects") or ())]
+            v["objects"] = [{k: o[k] for k in keys} for o in sc["objects"]]
+            if "lane" in sc:
+                v["lane"] = None if sc["lane"] is None else {k: sc["lane"][k] for k in s["lane"] if k in sc["lane"]}
+            if s.get("collision", "log") != "off":
+                v["collisions"] = sc["collisions"]
+            if "sensors" in sc:
+                v["sensors"] = sc["sensors"]
+            self._view = v
+        return self._view
 
     def _kind(self, actor_id):
         a = self.world.get_actor(actor_id)
@@ -227,63 +284,76 @@ class SceneProvider:
             return None
         t = a.type_id
         if t.startswith("vehicle."):
-            kind = "vehicle"
-        elif t.startswith("walker.pedestrian"):
-            kind = "walker"
-        elif t.startswith("static.prop"):
-            kind = "static"
-        else:
-            return None
-        return kind, t, a.bounding_box
+            return "vehicle", t, a.bounding_box
+        if t.startswith("walker.pedestrian"):
+            return "walker", t, a.bounding_box
+        return None
 
-    def _collisions(self, objs, el, ew, eh):
-        """Objects whose box overlaps the ego's (the ego's pose comes from
-        CarSim, so CARLA itself never stops the car on contact)."""
+    def _collisions(self, objs, eh):
+        """Objects touching the ego's box (CarSim's car drives through them in CARLA)."""
         hits, touching = [], set()
-        ego = (0.0, 0.0, 0.0, el, ew)
         for o in objs:
-            if o["distance"] > (o["length"] + o["width"]) / 2 + el + ew:
-                continue  # cannot reach the ego's box
-            if o["z"] - o["height"] / 2 > 2 * eh or o["z"] + o["height"] / 2 < 0.05:
-                continue  # above the car (a sign arm) or flat on the ground
-            if _overlap(ego, (o["x"], o["y"], math.radians(o["yaw"]), o["length"] / 2, o["width"] / 2)):
-                touching.add(o["id"])
-                hits.append({"id": o["id"], "type": o["type"], "type_id": o["type_id"],
-                             "new": o["id"] not in self._touching})
+            if o["gap"] > 0.0 or o["_z0"] > 2 * eh:  # apart, or above the car
+                continue
+            touching.add(o["id"])
+            hits.append({"id": o["id"], "type": o["type"], "model": o["model"], "new": o["id"] not in self._touching})
         self._touching = touching
         return hits
 
-    def _lane(self, etf, to_ego):
-        wp = self.map.get_waypoint(etf.location, project_to_road=True, lane_type=carla.LaneType.Driving)
+    def _lane(self, rw, eyaw, EX, EY, rel):
+        wp = self.map.get_waypoint(rw, project_to_road=True, lane_type=carla.LaneType.Driving)
         if wp is None:
             return None
-        step, ahead = max(0.5, float(self.s["lane_step_m"])), float(self.s["lane_ahead_m"])
-        pts, cur, d = [], wp, 0.0
-        while cur is not None and d <= ahead + 1e-6:
-            pts.append(list(to_ego(cur.transform.location.x, cur.transform.location.y)))
-            nxt = cur.next(step)
+        au, su = self.units.angle, self.units.speed
+        wps, cur, d = [wp], wp, 0.0
+        while d + LANE_STEP_M <= RANGE_M + 1e-6:
+            nxt = cur.next(LANE_STEP_M)
             if not nxt:
                 break
-            # At a split, keep the branch that turns least (the lane goes on).
+            # At a split, keep the branch that turns least.
             cur = min(nxt, key=lambda n: abs(_wrap(n.transform.rotation.yaw - cur.transform.rotation.yaw)))
-            d += step
-        lx, ly = to_ego(wp.transform.location.x, wp.transform.location.y)
-        light = None
+            wps.append(cur)
+            d += LANE_STEP_M
+        glob = [self._global(p.transform.location.x, p.transform.location.y, p.transform.location.z)[:2] for p in wps]
+        yaws = [self._global_yaw(p.transform.rotation.yaw) for p in wps]
+        curv = [math.radians(_wrap(yaws[i + 1] - yaws[i])) / LANE_STEP_M for i in range(len(wps) - 1)]
+        curv.append(curv[-1] if curv else 0.0)
+        _, ly = rel(glob[0][0] - EX, glob[0][1] - EY)
+        junction = next((i * LANE_STEP_M for i, p in enumerate(wps) if p.is_junction), None)
+
+        def side(n):
+            if n is None or n.lane_type != carla.LaneType.Driving:
+                return "none"
+            return "same" if (n.lane_id > 0) == (wp.lane_id > 0) else "opposite"
+
+        def marking(m):
+            name = str(m.type)
+            return "None" if name.upper() == "NONE" else name
+
+        light, light_dist = None, None
         try:
-            if self.ego.is_at_traffic_light():
-                light = str(self.ego.get_traffic_light_state()).lower()
-                light = light if light in ("red", "yellow", "green") else None
+            lms = wp.get_landmarks_of_type(RANGE_M, "1000001", False)
+            for lm in sorted(lms, key=lambda m: m.distance):
+                tl = self.world.get_traffic_light(lm)
+                if tl is not None:
+                    state = str(tl.get_state()).lower()
+                    light, light_dist = (state if state in ("red", "yellow", "green") else None), lm.distance
+                    break
         except RuntimeError:
             pass
         try:
-            limit = float(self.ego.get_speed_limit())
+            limit = float(self.ego.get_speed_limit()) / 3.6 * su
         except RuntimeError:
             limit = None
-        return {"center": pts, "width": wp.lane_width, "offset": -ly,
-                "heading_error": _wrap(-(etf.rotation.yaw - wp.transform.rotation.yaw)),
-                "left_marking": str(wp.left_lane_marking.type), "right_marking": str(wp.right_lane_marking.type),
-                "speed_limit": limit, "traffic_light": light, "in_junction": wp.is_junction,
-                "road_id": wp.road_id, "lane_id": wp.lane_id}
+        return {"width": wp.lane_width, "offset": -ly,
+                "heading_err": _wrap(eyaw - yaws[0]) * au, "curvature": curv[0],
+                "center_rel": [list(rel(X - EX, Y - EY)) for X, Y in glob], "center_global": [list(p) for p in glob],
+                "center_curvature": curv,
+                "left_marking": marking(wp.left_lane_marking), "right_marking": marking(wp.right_lane_marking),
+                "left_lane": side(wp.get_left_lane()), "right_lane": side(wp.get_right_lane()),
+                "speed_limit": limit, "in_junction": wp.is_junction, "junction_dist": junction,
+                "light_state": light, "light_dist": light_dist}
+
 
     # ------------------------------------------------------------------ sensors
     def _fetch(self, frame):
@@ -316,34 +386,28 @@ class SceneProvider:
             datas.append(d)
         return datas
 
-    @staticmethod
-    def _convert(kind, d):
-        """numpy / dict view of a measurement, right-handed like the rest:
-        rgb HxWx3 uint8 (RGB); depth HxW float32 m; semantic HxW uint8 tag;
-        instance HxWx3 uint8 (R tag, G+B*256 object id); lidar Nx4 float32
-        [x fwd, y left, z up, intensity] in the sensor frame; radar Nx4
-        float32 [depth m, azimuth rad (+ left), altitude rad, velocity m/s];
-        imu / gnss dicts; collision / lane_invasion lists of events."""
+    def _convert(self, c, d):
+        """numpy / dict view of one measurement, CarSim axes (x forward,
+        y left, z up) and CarSim units (see docs/场景与数据接口.md 4.6)."""
         if d is None:
             return None
+        kind, su, au = c["type"], self.units.speed, self.units.angle
         if kind in rigmod.CAMERA_TYPES:
             bgra = np.frombuffer(d.raw_data, dtype=np.uint8).reshape(d.height, d.width, 4)
             if kind == "depth":
-                b = bgra.astype(np.float32)
-                return (b[:, :, 2] + b[:, :, 1] * 256.0 + b[:, :, 0] * 65536.0) / (256.0 ** 3 - 1) * 1000.0
+                return depth_m(bgra, c)
             if kind == "semantic":
                 return bgra[:, :, 2].copy()
             return np.ascontiguousarray(bgra[:, :, 2::-1])
         if kind == "lidar":
-            p = np.frombuffer(d.raw_data, dtype=np.float32).reshape(-1, 4).copy()
-            p[:, 1] *= -1.0
-            return p
+            return lidar_iso(d.raw_data)
         if kind == "radar":
-            p = np.frombuffer(d.raw_data, dtype=np.float32).reshape(-1, 4)  # velocity, azimuth, altitude, depth
-            return np.stack([p[:, 3], -p[:, 1], p[:, 2], p[:, 0]], axis=1) if len(p) else np.zeros((0, 4), np.float32)
+            return radar_iso(d.raw_data, su, au)
         if kind == "imu":
             a, g = d.accelerometer, d.gyroscope
-            return {"accel": [a.x, -a.y, a.z], "gyro": [-g.x, g.y, -g.z], "compass": d.compass}
+            return {"accel": [a.x, -a.y, a.z], "gyro": [math.degrees(-g.x) * au, math.degrees(g.y) * au,
+                                                         math.degrees(-g.z) * au],
+                    "compass": math.degrees(d.compass) * au}
         if kind == "gnss":
             return {"lat": d.latitude, "lon": d.longitude, "alt": d.altitude}
         out = []
@@ -351,37 +415,114 @@ class SceneProvider:
             e = {"frame": ev.frame}
             other = getattr(ev, "other_actor", None)
             if other is not None:
-                e["other_id"], e["other_type_id"] = other.id, other.type_id
+                e["other_id"], e["other_model"] = other.id, other.type_id
             if hasattr(ev, "crossed_lane_markings"):
                 e["markings"] = [str(m.type) for m in ev.crossed_lane_markings]
             out.append(e)
         return out
 
 
-def gui_view(scene, max_objects=60):
-    """Compact copy for the GUI: no sensor arrays, rounded numbers."""
+def depth_m(bgra, cfg):
+    """CARLA's depth encoding -> metres, clipped at the camera's max_distance."""
+    b = bgra.astype(np.float32)
+    m = (b[:, :, 2] + b[:, :, 1] * 256.0 + b[:, :, 0] * 65536.0) / (256.0 ** 3 - 1) * 1000.0
+    far = float(cfg.get("attributes", {}).get("max_distance", 0) or 0)
+    return np.minimum(m, far) if far > 0 else m
+
+
+def lidar_iso(raw):
+    """CARLA lidar buffer -> N x 4 float32 [x forward, y LEFT, z up, intensity]."""
+    p = np.frombuffer(raw, dtype=np.float32).reshape(-1, 4).copy()
+    p[:, 1] *= -1.0
+    return p
+
+
+def radar_iso(raw, speed_unit=3.6, angle_unit=1.0):
+    """CARLA radar buffer -> N x 4 float32 [distance m, azimuth (+ left),
+    elevation, radial velocity]; angles and speed in CarSim units."""
+    p = np.frombuffer(raw, dtype=np.float32).reshape(-1, 4)  # velocity, azimuth, altitude, depth (rad, m/s)
+    if not len(p):
+        return np.zeros((0, 4), np.float32)
+    return np.stack([p[:, 3], -np.degrees(p[:, 1]) * angle_unit, np.degrees(p[:, 2]) * angle_unit,
+                     p[:, 0] * speed_unit], axis=1).astype(np.float32)
+
+
+# ----------------------------------------------------------------- recording
+class Recorder:
+    """The selected scene keys and CarSim exports as CSV files, one row per
+    sample (per object in the objects file). paths: {"main", "objects",
+    "lane"}; the lane file only when scalar lane keys are selected."""
+
+    def __init__(self, paths, settings, export_names):
+        s = settings
+        self.ego_keys = [k for k in EGO_KEYS if k in (s.get("ego") or ())]
+        self.obj_keys = [k for k in OBJECT_KEYS if k in ALWAYS_OBJECT_KEYS or k in (s.get("objects") or ())]
+        self.lane_keys = [k for k in LANE_KEYS if k in (s.get("lane") or ()) and k not in LANE_LISTS]
+        self.exports = list(export_names) if s.get("exports_all", True) else \
+            [n for n in export_names if n in (s.get("exports") or ())]
+        self.files = []
+
+        def open_csv(path, header):
+            os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
+            f = open(path, "w", newline="", encoding="utf-8")
+            w = csv.writer(f)
+            w.writerow(header)
+            self.files.append(f)
+            return w
+        self.main = open_csv(paths["main"], ["t", "frame"] + ["ego_" + k for k in self.ego_keys] + self.exports)
+        self.obj = open_csv(paths["objects"], ["t", "frame"] + self.obj_keys)
+        self.lane = open_csv(paths["lane"], ["t", "frame"] + self.lane_keys) if self.lane_keys else None
+        self.paths = [f.name for f in self.files]
+
+    @staticmethod
+    def run_paths(log_path):
+        base = os.path.splitext(log_path)[0]
+        return {"main": log_path, "objects": base + "_objects.csv", "lane": base + "_lane.csv"}
+
+    def write(self, scene, exports):
+        t, fr = round(scene["t"], 6), scene["frame"]
+        e = scene["ego"]
+        self.main.writerow([t, fr] + [e.get(k) for k in self.ego_keys] + [exports.get(n) for n in self.exports])
+        for o in scene["objects"]:
+            self.obj.writerow([t, fr] + [o.get(k) for k in self.obj_keys])
+        if self.lane is not None and scene.get("lane"):
+            self.lane.writerow([t, fr] + [scene["lane"].get(k) for k in self.lane_keys])
+
+    def selected_exports(self, exports):
+        return {n: exports.get(n) for n in self.exports}
+
+    def close(self):
+        for f in self.files:
+            try:
+                f.close()
+            except OSError:
+                pass
+        self.files = []
+
+
+def gui_view(scene, ego_box=(0.0, 0.0), max_objects=60):
+    """Compact copy for the GUI: every object key (the display does not
+    depend on the selection), no sensor arrays, rounded numbers. ego_box:
+    centre of the ego's box in the ego frame (the origin is the reference point)."""
     if not scene:
         return None
-    r = lambda v: round(float(v), 2)
-    objs = scene.get("objects", [])
-    # Every moving object first (a parked car or pole nearby must not push a
-    # car further away out of the GUI's list), then the nearest static ones.
-    moving = [o for o in objs if o["moving"]][:max_objects]
-    keep = moving + [o for o in objs if not o["moving"]][:max_objects - len(moving)]
-    keep.sort(key=lambda o: o["distance"])
-    out = {"objects": [{"id": o["id"], "type": o["type"], "type_id": o["type_id"], "moving": o["moving"],
-                        "x": r(o["x"]), "y": r(o["y"]), "yaw": r(o["yaw"]), "length": r(o["length"]),
-                        "width": r(o["width"]), "vx": r(o["vx"]), "vy": r(o["vy"]), "speed": r(o["speed"]),
-                        "distance": r(o["distance"])} for o in keep],
-           "n_objects": len(scene.get("objects", [])),
-           "ego": {k: r(v) for k, v in scene["ego"].items()},
+    r = lambda v: round(float(v), 2) if isinstance(v, (int, float)) and not isinstance(v, bool) else v
+    objs = scene["objects"]
+    # Moving objects first (parked cars nearby must not push a car further
+    # away out of the list), then the nearest parked ones.
+    keep = [o for o in objs if not o["parked"]][:max_objects]
+    keep += [o for o in objs if o["parked"]][:max_objects - len(keep)]
+    keep.sort(key=lambda o: o["dist"])
+    out = {"objects": [{k: (o[k] if k == "id" else r(o[k])) for k in OBJECT_KEYS} for o in keep],
+           "n_objects": len(objs),
+           "ego": dict({k: r(v) for k, v in scene["ego"].items()}, box_x=r(ego_box[0]), box_y=r(ego_box[1])),
            "collisions": scene.get("collisions", [])}
     lane = scene.get("lane")
     if lane:
-        out["lane"] = {k: v for k, v in lane.items() if k != "center"}
-        out["lane"]["center"] = [[r(p[0]), r(p[1])] for p in lane["center"]]
+        out["lane"] = {k: r(v) for k, v in lane.items() if k not in LANE_LISTS}
+        out["lane"]["center_rel"] = [[r(p[0]), r(p[1])] for p in lane["center_rel"]]
     if "sensors" in scene:
-        out["sensors"] = {n: {"type": v["type"], "frame": v["frame"],
+        out["sensors"] = {n: {"type": v["type"],
                               "shape": list(getattr(v["data"], "shape", ())) or (len(v["data"]) if isinstance(v["data"], list) else None)}
                           for n, v in scene["sensors"].items()}
     return out

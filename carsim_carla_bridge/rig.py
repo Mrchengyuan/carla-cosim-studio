@@ -1,8 +1,10 @@
 """Sensor rigs: presets fitted to the vehicle, plus per-sensor data estimates.
 
-A rig is a list of sensors, each with a mount pose in the CARLA vehicle frame
-(origin = actor origin at ground level under the car centre; x forward,
-y right, z up; meters and degrees) and blueprint attributes.
+A rig is a list of sensors, each with a mount pose in CarSim's vehicle frame
+(origin = the CarSim reference point, by default the front axle centre on
+the ground; x forward, y LEFT, z up; meters and degrees; yaw + = to the left,
+pitch + = nose down, as in CarSim) and blueprint attributes. mount_transform()
+turns a mount into the CARLA transform relative to the vehicle.
 
 Presets are written against the vehicle's bounding box so they land in a
 sensible place on any car: "roof" = top of the box, "front" = front bumper.
@@ -25,7 +27,36 @@ SENSOR_BLUEPRINTS = {
 CAMERA_TYPES = ("rgb", "depth", "semantic", "instance")
 
 
+FRONT_AXLE_X = 1.4  # m ahead of the actor origin when the vehicle was not measured
+
+
+def preset_reference(spec=None, reference_point="front_axle"):
+    """CarSim reference point in the CARLA vehicle frame (x forward, y right), m."""
+    if reference_point != "front_axle":
+        return [float(v) for v in reference_point]
+    return [float((spec or {}).get("front_axle_x_m", FRONT_AXLE_X)), 0.0, 0.0]
+
+
+def to_carsim(s, ref):
+    """A mount in the CARLA vehicle frame -> CarSim's vehicle frame (copy)."""
+    s = dict(s)
+    s["x"], s["y"], s["z"] = (round(float(s["x"]) - ref[0], 3), round(-(float(s["y"]) - ref[1]), 3),
+                              round(float(s["z"]) - ref[2], 3))
+    s["yaw"], s["pitch"] = -float(s.get("yaw", 0.0)) + 0.0, -float(s.get("pitch", 0.0)) + 0.0
+    return s
+
+
+def mount_transform(s, ref):
+    """carla.Transform (relative to the vehicle) of a mount in CarSim's vehicle
+    frame; ref = the CarSim reference point in the CARLA vehicle frame."""
+    import carla
+    return carla.Transform(carla.Location(ref[0] + float(s["x"]), ref[1] - float(s["y"]), ref[2] + float(s["z"])),
+                           carla.Rotation(pitch=-float(s["pitch"]), yaw=-float(s["yaw"]), roll=float(s["roll"])))
+
+
 def default_attrs(kind):
+    if kind == "depth":
+        return {"image_size_x": 1600, "image_size_y": 900, "fov": 70.0, "max_distance": 100.0}
     if kind in CAMERA_TYPES:
         return {"image_size_x": 1600, "image_size_y": 900, "fov": 70.0}
     if kind == "lidar":
@@ -60,8 +91,15 @@ PRESETS = {
 }
 
 
-def build_preset(name, spec=None):
-    """Resolve a preset for a vehicle with the given spec (from vehicle_specs)."""
+def build_preset(name, spec=None, reference_point="front_axle"):
+    """Resolve a preset for a vehicle with the given spec (from vehicle_specs),
+    in CarSim's vehicle frame."""
+    ref = preset_reference(spec, reference_point)
+    return [to_carsim(s, ref) for s in _build_preset_carla(name, spec)]
+
+
+def _build_preset_carla(name, spec):
+    """The preset in the CARLA vehicle frame (origin under the car centre, y right)."""
     L, W, H = _dims(spec)
     roof = H + 0.05            # just above the roof
     front = L / 2.0            # front bumper
@@ -115,10 +153,11 @@ def build_preset(name, spec=None):
 # ---------------------------------------------------------------- estimates
 # Bytes per frame for planning disk space. Ratios measured from a 3-frame
 # 640x360 capture in Town10HD (tests/test_features.py): RGB JPEG q90 0.108,
-# depth PNG 0.18, semantic 0.016, instance 0.022 (bytes per pixel channel);
+# semantic 0.016, instance 0.022 (bytes per pixel channel); depth is float32
+# metres (.npy), 4 bytes per pixel;
 # ~50 % of lidar rays return a point in urban scenes. The collector reports
 # the real rate while running.
-BYTES_PER_PX3 = {"rgb_jpg": 0.108, "rgb_png": 0.45, "depth": 0.18, "semantic": 0.016, "instance": 0.022}
+BYTES_PER_PX3 = {"rgb_jpg": 0.108, "rgb_png": 0.45, "depth": 4.0 / 3.0, "semantic": 0.016, "instance": 0.022}
 LIDAR_HIT_RATIO = 0.5
 
 

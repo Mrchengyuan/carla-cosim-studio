@@ -1015,7 +1015,8 @@ void App::DrawDock(float w, float h) {
       DrawVehicleState();
       ImGui::EndTabItem();
     }
-    const int n_hits = last_scene_.is_object() && last_scene_.contains("collisions") ? static_cast<int>(last_scene_["collisions"].size()) : 0;
+    const int n_hits = last_scene_.is_object() && last_scene_.contains("collisions") && last_scene_["collisions"].is_array()
+                         ? static_cast<int>(last_scene_["collisions"].size()) : 0;
     const std::string scene_label = n_hits ? std::string(ICON_FA_CUBES "  场景  (碰撞)###scene") : std::string(ICON_FA_CUBES "  场景###scene");
     const bool scene_open = ImGui::BeginTabItem(scene_label.c_str(), nullptr, flags(3));
     ui::RecordTarget("dock:scene");
@@ -1197,25 +1198,25 @@ std::string JId(const json& o) {
 }
 
 ImVec4 SceneColor(const json& o) {
-  const std::string t = o.value("type", std::string());
-  if (t == "walker") return ImVec4(1.00f, 0.62f, 0.25f, 1);
-  if (t == "vehicle") return o.value("moving", true) ? ImVec4(0.35f, 0.65f, 1.00f, 1) : ImVec4(0.45f, 0.55f, 0.70f, 1);
-  return ImVec4(0.62f, 0.64f, 0.68f, 1);
+  if (o.value("type", std::string()) == "walker") return ImVec4(1.00f, 0.62f, 0.25f, 1);
+  return o.value("parked", false) ? ImVec4(0.55f, 0.58f, 0.64f, 1) : ImVec4(0.35f, 0.65f, 1.00f, 1);
 }
 
 }  // namespace
 
-// What the control algorithm got in its last frame: a bird's-eye view around
-// the ego (x forward = up, y left = left) and the list of objects.
+// The obstacles and lane around the ego, in CarSim's frames: a bird's-eye
+// view (x forward = up, y left = left) and the list of objects.
 void App::DrawSceneTab() {
   const ui::Palette& p = ui::Colors();
   const float fs = ImGui::GetFontSize();
   const json& sc = last_scene_;
   if (!sc.is_object() || !sc.contains("objects")) {
-    ImGui::TextColored(p.text_dim, "运行后显示控制算法每一帧收到的周围目标（车、行人、障碍物）和前方车道。");
-    ImGui::TextColored(p.text_dim, "算法里把 control 写成 4 个参数 control(exports, t, dt, scene) 就能用，见“场景信息”页。");
+    ImGui::TextColored(p.text_dim, "运行后显示自车 50 m 内的车辆、行人和停放车辆，以及前方车道（CarSim 坐标系和单位）。");
+    ImGui::TextColored(p.text_dim, "控制算法收到哪些量在“场景信息”页勾选；算法里写 control(exports, t, dt, scene) 就能用。");
     return;
   }
+  const json units = cfg_.contains("carsim") ? cfg_["carsim"].value("units", json::object()) : json::object();
+  const std::string su = units.value("speed", std::string("km/h")), au = units.value("angle", std::string("deg"));
   const ImVec2 avail = ImGui::GetContentRegionAvail();
   const float bev = std::max(fs * 8.0f, std::min(avail.y, avail.x * 0.4f));
   ImGui::BeginChild("scene_bev", ImVec2(bev, avail.y));
@@ -1225,21 +1226,24 @@ void App::DrawSceneTab() {
   ImGui::BeginChild("scene_list", ImVec2(0, avail.y));
   const json& objs = sc["objects"];
   const int total = sc.value("n_objects", static_cast<int>(objs.size()));
-  std::string head = Fmt("算法这一帧收到 %d 个目标", total);
+  std::string head = Fmt("50 m 内 %d 个障碍物", total);
   if (total > static_cast<int>(objs.size())) head += Fmt("（下表是最近的 %d 个）", static_cast<int>(objs.size()));
   if (sc.contains("lane") && sc["lane"].is_object()) {
     const json& ln = sc["lane"];
-    head += Fmt("  ·  车道宽 %.1f m，偏离中心 %+.2f m，航向差 %+.1f°", JNum(ln, "width"), JNum(ln, "offset"), JNum(ln, "heading_error"));
-    if (ln.contains("speed_limit") && ln["speed_limit"].is_number()) head += Fmt("，限速 %.0f", JNum(ln, "speed_limit"));
-    const std::string light = ln.value("traffic_light", json()).is_string() ? ln["traffic_light"].get<std::string>() : "";
-    if (!light.empty()) head += light == "red" ? "，红灯" : light == "yellow" ? "，黄灯" : "，绿灯";
+    head += Fmt("  ·  车道宽 %.1f m，偏离中心 %+.2f m，航向偏差 %+.1f %s", JNum(ln, "width"), JNum(ln, "offset"),
+                JNum(ln, "heading_err"), au.c_str());
+    if (ln.contains("speed_limit") && ln["speed_limit"].is_number()) head += Fmt("，限速 %.0f %s", JNum(ln, "speed_limit"), su.c_str());
+    const std::string light = ln.contains("light_state") && ln["light_state"].is_string() ? ln["light_state"].get<std::string>() : "";
+    if (!light.empty())
+      head += Fmt("，前方%s %.0f m", light == "red" ? "红灯" : light == "yellow" ? "黄灯" : "绿灯", JNum(ln, "light_dist"));
     if (ln.value("in_junction", false)) head += "，路口内";
   }
   ImGui::TextColored(p.text_dim, "%s", head.c_str());
-  ImGui::Checkbox("只看行驶的车辆和行人", &scene_moving_only_);
+  ImGui::Checkbox("隐藏停放车辆", &scene_moving_only_);
   ui::RecordTarget("scene:moving_only");
   if (sc.contains("sensors") && sc["sensors"].is_object() && !sc["sensors"].empty()) {
-    std::string s = "传感器：";
+    ImGui::SameLine(0, fs);
+    std::string s = "给算法的传感器：";
     for (auto& kv : sc["sensors"].items()) {
       const json& v = kv.value();
       std::string shape;
@@ -1252,26 +1256,29 @@ void App::DrawSceneTab() {
   }
   if (sc.contains("collisions") && sc["collisions"].is_array() && !sc["collisions"].empty()) {
     std::string s = ICON_FA_CAR_BURST "  碰撞：";
-    for (const json& c : sc["collisions"]) s += c.value("type_id", std::string()) + "  ";
+    for (const json& c : sc["collisions"]) s += c.value("model", std::string()) + "  ";
     ImGui::TextColored(p.danger, "%s", s.c_str());
   }
   std::string hover;
   const ImGuiTableFlags tf = ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInnerH | ImGuiTableFlags_ScrollY |
                              ImGuiTableFlags_SizingStretchProp;
-  if (ImGui::BeginTable("scene_objs", 8, tf, ImVec2(0, ImGui::GetContentRegionAvail().y))) {
+  const std::string c_vx = "rel_vx " + su, c_vy = "rel_vy " + su, c_sp = "Speed " + su;
+  if (ImGui::BeginTable("scene_objs", 10, tf, ImVec2(0, ImGui::GetContentRegionAvail().y))) {
     ImGui::TableSetupScrollFreeze(0, 1);
-    ImGui::TableSetupColumn("类型", 0, 0.8f);
-    ImGui::TableSetupColumn("名称", 0, 2.4f);
-    ImGui::TableSetupColumn("x m", 0, 1.0f);
-    ImGui::TableSetupColumn("y m", 0, 1.0f);
-    ImGui::TableSetupColumn("距离 m", 0, 1.0f);
-    ImGui::TableSetupColumn("相对 vx", 0, 1.0f);
-    ImGui::TableSetupColumn("相对 vy", 0, 1.0f);
-    ImGui::TableSetupColumn("速度 km/h", 0, 1.1f);
+    ImGui::TableSetupColumn("id", 0, 0.9f);
+    ImGui::TableSetupColumn("类型", 0, 0.9f);
+    ImGui::TableSetupColumn("model", 0, 2.2f);
+    ImGui::TableSetupColumn("rel_x m", 0, 1.0f);
+    ImGui::TableSetupColumn("rel_y m", 0, 1.0f);
+    ImGui::TableSetupColumn("dist m", 0, 1.0f);
+    ImGui::TableSetupColumn("gap m", 0, 1.0f);
+    ImGui::TableSetupColumn(c_vx.c_str(), 0, 1.2f);
+    ImGui::TableSetupColumn(c_vy.c_str(), 0, 1.2f);
+    ImGui::TableSetupColumn(c_sp.c_str(), 0, 1.2f);
     ImGui::TableHeadersRow();
     ImFont* mono = ui::GetFonts().mono;
     for (const json& o : objs) {
-      if (scene_moving_only_ && !o.value("moving", false)) continue;
+      if (scene_moving_only_ && o.value("parked", false)) continue;
       const std::string id = JId(o);
       ImGui::TableNextRow();
       if (id == scene_hover_) ImGui::TableSetBgColor(ImGuiTableBgTarget_RowBg1, ImGui::GetColorU32(ui::WithAlpha(p.accent, 0.25f)));
@@ -1280,20 +1287,18 @@ void App::DrawSceneTab() {
                         ImGuiSelectableFlags_SpanAllColumns | ImGuiSelectableFlags_AllowOverlap);
       if (ImGui::IsItemHovered()) hover = id;
       ImGui::SameLine(0, 0);
-      const std::string t = o.value("type", std::string());
-      ImGui::TextColored(SceneColor(o), "%s", t == "walker" ? "行人" : t == "vehicle" ? (o.value("moving", true) ? "车辆" : "停放车辆") : "障碍物");
+      ImGui::TextColored(p.text_dim, "%s", id.size() > 8 ? (id.substr(0, 6) + "…").c_str() : id.c_str());
       ImGui::TableSetColumnIndex(1);
-      std::string name = o.value("type_id", std::string());
-      if (name.rfind("map.", 0) == 0) name = "地图 " + name.substr(4);
-      ImGui::TextUnformatted(name.c_str());
+      const bool walker = o.value("type", std::string()) == "walker";
+      ImGui::TextColored(SceneColor(o), "%s", walker ? "行人" : o.value("parked", false) ? "停放车辆" : "车辆");
+      ImGui::TableSetColumnIndex(2);
+      ImGui::TextUnformatted(o.value("model", std::string()).c_str());
       if (mono) ImGui::PushFont(mono);
-      const char* keys[] = {"x", "y", "distance", "vx", "vy"};
-      for (int k = 0; k < 5; ++k) {
-        ImGui::TableSetColumnIndex(2 + k);
-        ImGui::Text("%+7.1f", JNum(o, keys[k]));
+      const char* keys[] = {"rel_x", "rel_y", "dist", "gap", "rel_vx", "rel_vy", "Speed"};
+      for (int k = 0; k < 7; ++k) {
+        ImGui::TableSetColumnIndex(3 + k);
+        ImGui::Text(k == 2 || k == 3 || k == 6 ? "%7.1f" : "%+7.1f", JNum(o, keys[k]));
       }
-      ImGui::TableSetColumnIndex(7);
-      ImGui::Text("%6.1f", JNum(o, "speed") * 3.6);
       if (mono) ImGui::PopFont();
     }
     ImGui::EndTable();
@@ -1310,32 +1315,30 @@ void App::DrawSceneBev(const json& sc, ImVec2 size) {
   const ImVec2 e(o.x + size.x, o.y + size.y);
   dl->AddRectFilled(o, e, ImGui::GetColorU32(ImVec4(0.05f, 0.06f, 0.07f, 1)), 3.0f);
   dl->PushClipRect(o, e, true);
-  const double range = cfg_.contains("scene") ? std::max(10.0, cfg_["scene"].value("range_m", 80.0)) : 80.0;
-  // Ego a little below the centre: more room ahead than behind.
+  const double range = 50.0;
+  const bool rad = cfg_.contains("carsim") && cfg_["carsim"].value("units", json::object()).value("angle", std::string("deg")) == "rad";
+  const double to_rad = rad ? 1.0 : 3.14159265 / 180.0;
+  // Origin = CarSim reference point, a little below the centre: more room ahead.
   const ImVec2 ego(o.x + size.x * 0.5f, o.y + size.y * 0.62f);
   const float k = static_cast<float>(std::min(size.x * 0.5, size.y * 0.62) / range);
   auto to = [&](double x, double y) { return ImVec2(ego.x - static_cast<float>(y) * k, ego.y - static_cast<float>(x) * k); };
-  for (int r = 10; r <= range; r += 10) {
-    const bool major = r % 50 == 0;
-    dl->AddCircle(ego, r * k, ImGui::GetColorU32(ImVec4(1, 1, 1, major ? 0.10f : 0.045f)), 64);
-  }
-  if (sc.contains("lane") && sc["lane"].is_object() && sc["lane"].contains("center")) {
+  for (int r = 10; r <= range; r += 10)
+    dl->AddCircle(ego, r * k, ImGui::GetColorU32(ImVec4(1, 1, 1, r % 50 == 0 ? 0.10f : 0.045f)), 64);
+  if (sc.contains("lane") && sc["lane"].is_object() && sc["lane"].contains("center_rel")) {
     const json& ln = sc["lane"];
     const double half = JNum(ln, "width", 3.5) * 0.5;
-    std::vector<ImVec2> c, l, r;
     std::vector<std::pair<double, double>> pts;
-    for (const json& q : ln["center"])
+    for (const json& q : ln["center_rel"])
       if (q.is_array() && q.size() >= 2) pts.emplace_back(appui::NumAt(q, 0), appui::NumAt(q, 1));
+    std::vector<ImVec2> c, l, r;
     for (size_t i = 0; i < pts.size(); ++i) {
-      const double x = pts[i].first, y = pts[i].second;
-      // Lane edges: half the width to each side, normal to the local direction.
       const size_t i0 = i + 1 < pts.size() ? i : (i ? i - 1 : 0), i1 = std::min(i0 + 1, pts.size() - 1);
       double dx = pts[i1].first - pts[i0].first, dy = pts[i1].second - pts[i0].second;
       const double n = std::max(1e-6, std::sqrt(dx * dx + dy * dy));
       dx /= n; dy /= n;
-      c.push_back(to(x, y));
-      l.push_back(to(x - dy * half, y + dx * half));
-      r.push_back(to(x + dy * half, y - dx * half));
+      c.push_back(to(pts[i].first, pts[i].second));
+      l.push_back(to(pts[i].first - dy * half, pts[i].second + dx * half));
+      r.push_back(to(pts[i].first + dy * half, pts[i].second - dx * half));
     }
     if (c.size() > 1) {
       dl->AddPolyline(l.data(), static_cast<int>(l.size()), ImGui::GetColorU32(ImVec4(1, 1, 1, 0.30f)), 0, 1.2f);
@@ -1343,8 +1346,8 @@ void App::DrawSceneBev(const json& sc, ImVec2 size) {
       dl->AddPolyline(c.data(), static_cast<int>(c.size()), ImGui::GetColorU32(ui::WithAlpha(p.warning, 0.8f)), 0, 1.6f);
     }
   }
-  auto box = [&](double x, double y, double yaw_deg, double len, double wid, ImU32 fill, ImU32 edge, float thick) {
-    const double a = yaw_deg * 3.14159265 / 180.0, ca = std::cos(a), sa = std::sin(a);
+  auto box = [&](double x, double y, double yaw, double len, double wid, ImU32 fill, ImU32 edge, float thick) {
+    const double ca = std::cos(yaw), sa = std::sin(yaw);
     const double hl = std::max(0.15, len * 0.5), hw = std::max(0.15, wid * 0.5);
     ImVec2 q[4];
     const double cs[4][2] = {{hl, hw}, {hl, -hw}, {-hl, -hw}, {-hl, hw}};
@@ -1355,30 +1358,32 @@ void App::DrawSceneBev(const json& sc, ImVec2 size) {
   std::vector<std::string> hit_ids;
   if (sc.contains("collisions") && sc["collisions"].is_array())
     for (const json& c : sc["collisions"]) hit_ids.push_back(JId(c));
+  const double spd = cfg_.contains("carsim") && cfg_["carsim"].value("units", json::object()).value("speed", std::string("km/h")) == "km/h" ? 3.6 : 1.0;
   for (const json& ob : sc["objects"]) {
+    if (scene_moving_only_ && ob.value("parked", false)) continue;
     const std::string id = JId(ob);
     const bool hit = std::find(hit_ids.begin(), hit_ids.end(), id) != hit_ids.end();
     const bool hov = id == scene_hover_;
     const ImVec4 col = hit ? p.danger : SceneColor(ob);
-    box(JNum(ob, "x"), JNum(ob, "y"), JNum(ob, "yaw"), JNum(ob, "length"), JNum(ob, "width"),
+    box(JNum(ob, "rel_x"), JNum(ob, "rel_y"), JNum(ob, "rel_yaw") * to_rad, JNum(ob, "length"), JNum(ob, "width"),
         ImGui::GetColorU32(ui::WithAlpha(col, hov ? 0.75f : 0.35f)), ImGui::GetColorU32(hov ? ImVec4(1, 1, 1, 1) : col),
         hov ? 2.5f : 1.2f);
-    // Moving objects: a short arrow of their velocity relative to the ego (1 s ahead).
-    if (ob.value("moving", false) && std::hypot(JNum(ob, "vx"), JNum(ob, "vy")) > 0.3) {
-      const ImVec2 a = to(JNum(ob, "x"), JNum(ob, "y"));
-      const ImVec2 b = to(JNum(ob, "x") + JNum(ob, "vx"), JNum(ob, "y") + JNum(ob, "vy"));
-      dl->AddLine(a, b, ImGui::GetColorU32(ui::WithAlpha(col, 0.9f)), 1.3f);
-    }
+    // Velocity relative to the ego, 1 s ahead.
+    const double vx = JNum(ob, "rel_vx") / spd, vy = JNum(ob, "rel_vy") / spd;
+    if (!ob.value("parked", false) && std::hypot(vx, vy) > 0.3)
+      dl->AddLine(to(JNum(ob, "rel_x"), JNum(ob, "rel_y")), to(JNum(ob, "rel_x") + vx, JNum(ob, "rel_y") + vy),
+                  ImGui::GetColorU32(ui::WithAlpha(col, 0.9f)), 1.3f);
   }
   const json eg = sc.value("ego", json::object());
-  box(0, 0, 0, JNum(eg, "length", 4.7), JNum(eg, "width", 2.0), ImGui::GetColorU32(ImVec4(1, 1, 1, 0.85f)),
+  box(JNum(eg, "box_x"), JNum(eg, "box_y"), 0, JNum(eg, "length", 4.7), JNum(eg, "width", 2.0), ImGui::GetColorU32(ImVec4(1, 1, 1, 0.85f)),
       ImGui::GetColorU32(hit_ids.empty() ? ImVec4(1, 1, 1, 1) : p.danger), 2.0f);
+  dl->AddCircleFilled(ego, 3.0f, ImGui::GetColorU32(p.accent));  // CarSim reference point
   dl->PopClipRect();
   const float ls = fs * 0.78f;
   dl->AddText(ImGui::GetFont(), ls, ImVec2(o.x + fs * 0.4f, o.y + fs * 0.3f), ImGui::GetColorU32(kHudDim),
-              Fmt("俯视 · 车头朝上 · 圆环 10 m · 范围 %.0f m", range).c_str());
-  const char* legend[] = {"车辆", "行人", "障碍物", "车道中心"};
-  const ImVec4 lc[] = {ImVec4(0.35f, 0.65f, 1.00f, 1), ImVec4(1.00f, 0.62f, 0.25f, 1), ImVec4(0.62f, 0.64f, 0.68f, 1), p.warning};
+              "俯视 · x 向前（上）· y 向左 · 圆环 10 m · 蓝点 = 参考点");
+  const char* legend[] = {"车辆", "行人", "停放车辆", "车道中心"};
+  const ImVec4 lc[] = {ImVec4(0.35f, 0.65f, 1.00f, 1), ImVec4(1.00f, 0.62f, 0.25f, 1), ImVec4(0.55f, 0.58f, 0.64f, 1), p.warning};
   float lx = o.x + fs * 0.4f;
   for (int i = 0; i < 4; ++i) {
     dl->AddRectFilled(ImVec2(lx, e.y - fs * 1.0f), ImVec2(lx + ls * 0.7f, e.y - fs * 1.0f + ls * 0.7f), ImGui::GetColorU32(lc[i]), 1.0f);

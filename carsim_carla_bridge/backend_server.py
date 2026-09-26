@@ -999,7 +999,13 @@ class Backend:
         c = d["carla"]
         col_cfg = dict(d["collect"])
         col_cfg["frame_dt"] = d["sync"]["frame_dt"]
-        sensors = d["rig"]["sensors"] or rigmod.build_preset(d["rig"]["preset"], self.spec_cache.get(c["vehicle"]))
+        col_cfg["units"] = d["carsim"]["units"]  # radar speeds / angles are saved in CarSim's units
+        spec = self.spec_cache.get(c["vehicle"])
+        sensors = d["rig"]["sensors"] or rigmod.build_preset(d["rig"]["preset"], spec, d["sync"]["reference_point"])
+        if d["rig"]["sensors"] and d["rig"].get("frame") == "carla":  # an older config
+            ref = rigmod.preset_reference(spec, d["sync"]["reference_point"])
+            sensors = [rigmod.to_carsim(s, ref) for s in sensors]
+        d["rig"]["frame"] = "carsim"
         d["rig"]["sensors"] = sensors  # the scene's sensors for the algorithm are the same rig
         if col_cfg["enabled"]:
             # Validate limits / disk space before touching the world.
@@ -1056,7 +1062,7 @@ class Backend:
             cosim = d["drive"]["dynamics"] == "cosim"
             autopilot = not cosim and d["drive"]["carla_driver"] == "autopilot"
             self.session = CoSimSession(w, self.ego, self.anchor, d) if cosim else \
-                CarlaDriveSession(w, self.ego, d, self._need_tm() if autopilot else None)
+                CarlaDriveSession(w, self.ego, d, self._need_tm() if autopilot else None, self.anchor)
         except BaseException:
             # Never leave the world in sync mode with nobody ticking it.
             pre, self._pre_cosim_settings = self._pre_cosim_settings, None
@@ -1068,8 +1074,10 @@ class Backend:
             if col_cfg["enabled"]:
                 sc = self.session.scene
                 self.collector = coll.DataCollector(w, self.ego, sensors, col_cfg,
-                                                    extra_state=self.session.carsim_state, emit=self.emit,
-                                                    shared=sc if sc is not None and sc.sensor_cfgs else None)
+                                                    emit=self.emit,
+                                                    shared=sc if sc is not None and sc.sensor_cfgs else None,
+                                                    scene=sc, exports=self.session.exports, ref_local=sc.ref_local,
+                                                    export_names=self.session.export_names())
                 info["collect"] = self.collector.start()
                 self._log("数据采集开始：%d 个传感器 → %s（预计 %.1f MB/s）" % (
                     len(self.collector.sensor_cfgs), info["collect"]["root"], info["collect"]["estimate"]["mb_per_s"]))
@@ -1127,11 +1135,12 @@ class Backend:
     def cmd_rig_presets(self):
         return [{"id": k, "name": v} for k, v in rigmod.PRESETS.items()]
 
-    def cmd_rig_build(self, preset, blueprint=""):
+    def cmd_rig_build(self, preset, blueprint="", reference_point="front_axle"):
+        """A preset fitted to the vehicle, in CarSim's vehicle frame."""
         spec = None
         if blueprint and self.world is not None:
             spec = self.spec_cache.get(blueprint) or self.cmd_vehicle_specs([blueprint]).get(blueprint)
-        return rigmod.build_preset(preset, spec)
+        return rigmod.build_preset(preset, spec, reference_point)
 
     def cmd_rig_estimate(self, sensors, collect=None, frame_dt=0.1):
         cfg = dict(st.default_dict()["collect"])
@@ -1224,7 +1233,7 @@ class Backend:
         try:
             tel = self.session.step()
             for hit in tel.get("collisions", []):
-                self._log("碰撞：撞到 %s（id %s），t = %.2f s" % (hit["type_id"], hit["id"], tel["t"]), "warn")
+                self._log("碰撞：撞到 %s（id %s），t = %.2f s" % (hit["model"], hit["id"], tel["t"]), "warn")
             if self.collector is not None:
                 self.collector.on_tick(tel["world_frame"])
                 if self.collector.done:

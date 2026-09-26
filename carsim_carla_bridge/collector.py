@@ -11,8 +11,11 @@ Output layout (one folder per session):
         meta.json               map, weather, rig, settings, conventions
         calib.json              per sensor: extrinsic (sensor->ego 4x4) + camera K
         <sensor_name>/<frame>.jpg|png|bin|npy|csv
-        labels/<frame>.json     3D boxes (ego frame) + 2D boxes per camera
-        ego/<frame>.json        pose, velocity, acceleration, control, CarSim state
+        labels/<frame>.json     3D boxes (CARLA ego frame), for the KITTI / nuScenes export
+        ego/<frame>.json        CARLA pose, velocity, acceleration, control, imu / gnss
+        frames/<frame>.json     CarSim time, the selected CarSim exports and scene keys
+                                (ego, obstacles, lane, collisions; CarSim frames and units)
+        frames.csv, objects.csv, lane.csv   the same for every sample, one table each
 
 Safety: start() refuses to run when the estimated size exceeds the free disk
 space minus a reserve, and stop conditions (frames / seconds / GB) are
@@ -62,7 +65,7 @@ EVENT_TYPES = ("collision", "lane_invasion")  # fire now and then, not every fra
 _WINDOWS_RESERVED = ({"CON", "PRN", "AUX", "NUL"}
                      | {"COM%d" % i for i in range(1, 10)}
                      | {"LPT%d" % i for i in range(1, 10)})
-_SESSION_FILES = {"ego", "labels", "calib.json", "meta.json"}
+_SESSION_FILES = {"ego", "labels", "frames", "calib.json", "meta.json", "frames.csv", "objects.csv", "lane.csv"}
 
 
 def _check_name(name, what):
@@ -76,12 +79,20 @@ def _check_name(name, what):
 
 
 class DataCollector:
-    def __init__(self, world, ego, sensors, cfg, extra_state=None, emit=None, shared=None):
+    def __init__(self, world, ego, sensors, cfg, extra_state=None, emit=None, shared=None,
+                 scene=None, exports=None, export_names=(), ref_local=None):
         """sensors: rig sensor dicts; cfg: collect settings; extra_state():
-        dict merged into ego/<frame>.json (e.g. CarSim exports); shared: a
-        scene.SceneProvider that already runs these sensors (its .frame /
-        .datas are read instead of spawning a second set)."""
+        dict merged into ego/<frame>.json; shared: a scene.SceneProvider that
+        already runs these sensors (its .frame / .datas are read instead of
+        spawning a second set); scene: the run's SceneProvider, exports():
+        the CarSim exports of the step, export_names: their names (for
+        frames/ and the CSV files); ref_local: the CarSim reference point in the
+        CARLA vehicle frame (sensor mounts are relative to it; front axle when None)."""
+        self.ref_local = ref_local
         self.shared = shared
+        self.scene, self.exports = scene, exports or (lambda: {})
+        self.export_names = list(export_names)
+        self.recorder = None
         self.world, self.ego, self.cfg = world, ego, cfg
         self.sensor_cfgs = [s for s in sensors if s.get("enabled", True)]
         self.extra_state = extra_state or (lambda: {})
@@ -143,10 +154,24 @@ class DataCollector:
             self.root = "%s_%d" % (base_root, k)
         os.makedirs(os.path.join(self.root, "labels"), exist_ok=True)
         os.makedirs(os.path.join(self.root, "ego"), exist_ok=True)
+        if self.scene is not None:
+            import scene as scn
+            os.makedirs(os.path.join(self.root, "frames"), exist_ok=True)
+            self.recorder = scn.Recorder({"main": os.path.join(self.root, "frames.csv"),
+                                          "objects": os.path.join(self.root, "objects.csv"),
+                                          "lane": os.path.join(self.root, "lane.csv")},
+                                         self.scene.s, self.export_names)
 
         bl = self.world.get_blueprint_library()
+        if self.ref_local is None:
+            from bridge import front_axle_local
+            self.ref_local = front_axle_local(self.ego)
+        ref = [float(v) for v in self.ref_local]
         calib = {"ego_frame": "CARLA vehicle frame: origin at ground under the car centre, "
-                              "x forward, y right, z up (left-handed), meters",
+                              "x forward, y right, z up (left-handed), meters (extrinsic_sensor_to_ego)",
+                 "mount_frame": "CarSim vehicle frame: origin at the CarSim reference point, x forward, y LEFT, "
+                                "z up, meters; yaw + = left, pitch + = nose down, deg (mount)",
+                 "reference_point_in_ego_frame": ref,
                  "sensors": {}}
         for s in self.sensor_cfgs:
             bp = bl.find(rigmod.SENSOR_BLUEPRINTS[s["type"]])
@@ -158,8 +183,7 @@ class DataCollector:
                 # One full sweep per captured frame.
                 bp.set_attribute("rotation_frequency", str(1.0 / c["frame_dt"]))
                 attrs["rotation_frequency"] = 1.0 / c["frame_dt"]
-            tf = carla.Transform(carla.Location(s["x"], s["y"], s["z"]),
-                                 carla.Rotation(pitch=s["pitch"], yaw=s["yaw"], roll=s["roll"]))
+            tf = rigmod.mount_transform(s, ref)
             if self.shared is None:
                 actor = self.world.spawn_actor(bp, tf, attach_to=self.ego)
                 qq = queue.Queue()
@@ -181,11 +205,13 @@ class DataCollector:
                                                      ("cloudiness", "precipitation", "sun_altitude_angle", "fog_density", "wetness")},
                 "ego_blueprint": self.ego.type_id, "collect": c, "rig": self.sensor_cfgs,
                 "started": time.strftime("%Y-%m-%d %H:%M:%S"),
-                "formats": {"lidar_bin": "float32 [x, y, z, intensity] in the lidar frame (CARLA axes)",
-                            "depth_png": "raw CARLA encoding: depth_m = (R + G*256 + B*65536) / (256^3 - 1) * 1000",
+                "conventions": "carsim", "units": c.get("units") or {"speed": "km/h", "angle": "deg"},
+                "formats": {"lidar_bin": "float32 N x 4 [x forward, y left, z up, intensity] in the lidar frame (CarSim axes)",
+                            "depth_npy": "float32 H x W, metres, clipped at the camera's max_distance",
                             "semantic_png": "R channel = CARLA semantic tag",
                             "instance_png": "R = semantic tag, G + B*256 = object id",
-                            "radar": "rows of [velocity m/s, azimuth rad, altitude rad, depth m]"}}
+                            "radar": "rows of [distance m, azimuth (+ left), elevation, radial velocity], "
+                                     "angles and speed in the CarSim units above"}}
         with open(os.path.join(self.root, "meta.json"), "w", encoding="utf-8") as f:
             json.dump(meta, f, indent=2, ensure_ascii=False)
         # Raw frames waiting for the writer: at most ~1 GB of them (the nuScenes
@@ -213,6 +239,9 @@ class DataCollector:
             self.q.put(None)
             self.writer.join()
             self.writer = None
+        if self.recorder is not None:
+            self.recorder.close()
+            self.recorder = None
         self._emit_stats(force=True)
 
     # --------------------------------------------------------------- tick
@@ -275,12 +304,26 @@ class DataCollector:
                 d = None
             datas.append(d)
         if frame % every == 0:
-            sample = (frame, datas, self._ego_state(frame), self._labels() if self.cfg.get("labels", True) else None)
+            sample = (frame, datas, self._ego_state(frame), self._labels() if self.cfg.get("labels", True) else None,
+                      self._frame_record(frame))
             self.q.put(sample)       # blocks if the writer falls behind
             self.frames += 1
         self._last_frame = frame
         self._check_limits()
         self._emit_stats()
+
+    def _frame_record(self, frame):
+        """frames/<frame>.json: the selected scene keys and CarSim exports, the
+        same frame as the sensor data."""
+        if self.recorder is None:
+            return None
+        v = self.scene.view()
+        if v is None or v.get("frame") != frame:
+            self.errors.append("第 %d 帧场景数据缺失" % frame)
+            return None
+        rec = {k: v[k] for k in ("t", "frame", "ego", "objects", "lane", "collisions") if k in v}
+        rec["exports"] = self.recorder.selected_exports(self.exports())
+        return rec
 
     def _check_limits(self):
         c = self.cfg
@@ -344,6 +387,8 @@ class DataCollector:
 
     # ----------------------------------------------------------------- writer
     def _write_loop(self):
+        import scene as scn
+        units = scn.Units(self.cfg.get("units"))
         fmt = self.cfg.get("image_format", "jpg")
         quality = int(self.cfg.get("jpg_quality", 90))
         pc_fmt = self.cfg.get("pointcloud_format", "bin")
@@ -357,7 +402,7 @@ class DataCollector:
             if item is None:
                 self.q.task_done()
                 return
-            frame, datas, ego, labels = item
+            frame, datas, ego, labels, rec = item
             try:
                 for s, d in zip(self.sensor_cfgs, datas):
                     if d is None:
@@ -369,21 +414,24 @@ class DataCollector:
                         rgb = np.ascontiguousarray(bgra[:, :, 2::-1])
                         if Image is None:
                             continue
-                        if k == "rgb" and fmt == "jpg":
+                        if k == "depth":
+                            path = base + ".npy"
+                            np.save(path, scn.depth_m(bgra, s))
+                        elif k == "rgb" and fmt == "jpg":
                             path = base + ".jpg"
                             Image.fromarray(rgb).save(path, quality=quality)
                         else:  # depth / segmentation must stay lossless
                             path = base + ".png"
                             Image.fromarray(rgb).save(path)
                     elif k == "lidar":
-                        pts = np.frombuffer(d.raw_data, dtype=np.float32).reshape(-1, 4)
+                        pts = scn.lidar_iso(d.raw_data)
                         path = base + (".npy" if pc_fmt == "npy" else ".bin")
                         if pc_fmt == "npy":
                             np.save(path, pts)
                         else:
                             pts.tofile(path)
                     elif k == "radar":
-                        pts = np.frombuffer(d.raw_data, dtype=np.float32).reshape(-1, 4)
+                        pts = scn.radar_iso(d.raw_data, units.speed, units.angle)
                         path = base + ".csv"
                         np.savetxt(path, pts, delimiter=",", fmt="%.4f")
                     elif k == "imu":
@@ -406,7 +454,9 @@ class DataCollector:
                             ego.setdefault("events", []).append(rec)
                         continue
                     self.bytes += os.path.getsize(path)
-                for sub, obj in (("ego", ego), ("labels", labels)):
+                if rec is not None:
+                    self.recorder.write(rec, rec["exports"])
+                for sub, obj in (("ego", ego), ("labels", labels), ("frames", rec)):
                     if obj is None:
                         continue
                     path = os.path.join(self.root, sub, "%06d.json" % frame)

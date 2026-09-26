@@ -6,6 +6,11 @@ CARLA (world, ego, sensor actors): x forward, y right, z up -- left-handed.
 KITTI velodyne: x forward, y left, z up.  KITTI camera: x right, y down, z forward.
 nuScenes global / ego / lidar / radar: right-handed, z up; camera: x right, y down, z forward.
 F flips y (CARLA <-> right-handed); C maps CARLA camera axes to OpenCV camera axes.
+
+Sessions with meta "conventions": "carsim" store lidar points with y left and
+radar rows as [distance, azimuth + left, elevation, radial velocity] in CarSim
+units, and depth as .npy metres; the loaders below hand CARLA axes and SI
+units to the rest of this module either way.
 """
 
 import glob
@@ -126,6 +131,10 @@ class Session:
         self.sensors = self.calib["sensors"]
         self.frames = sorted(int(os.path.basename(p)[:-5]) for p in glob.glob(os.path.join(glob.escape(self.root), "ego", "*.json")))
         self.extrinsic = {n: np.array(s["extrinsic_sensor_to_ego"]) for n, s in self.sensors.items()}
+        self.carsim = self.meta.get("conventions") == "carsim"
+        u = self.meta.get("units") or {}
+        self._speed = 3.6 if u.get("speed", "km/h") == "km/h" else 1.0
+        self._angle = math.pi / 180.0 if u.get("angle", "deg") == "deg" else 1.0  # to rad
 
     def file(self, sensor, frame):
         hits = glob.glob(os.path.join(glob.escape(self.root), glob.escape(sensor), "%06d.*" % frame))
@@ -147,7 +156,11 @@ class Session:
         p = self.file(sensor, frame)
         if p is None:
             return np.zeros((0, 4), np.float32)
-        return np.load(p) if p.endswith(".npy") else np.fromfile(p, dtype=np.float32).reshape(-1, 4)
+        pts = np.load(p) if p.endswith(".npy") else np.fromfile(p, dtype=np.float32).reshape(-1, 4)
+        if self.carsim:
+            pts = pts.copy()
+            pts[:, 1] *= -1.0  # saved with y left
+        return pts
 
     def radar_points(self, sensor, frame):
         """Radar detections as (x, y, z, velocity) in the radar frame (CARLA axes)."""
@@ -155,7 +168,10 @@ class Session:
         if p is None or os.path.getsize(p) == 0:
             return np.zeros((0, 4), np.float32)
         d = np.loadtxt(p, delimiter=",", ndmin=2)
-        vel, az, alt, dep = d[:, 0], d[:, 1], d[:, 2], d[:, 3]
+        if self.carsim:  # [distance, azimuth + left, elevation, velocity], CarSim units
+            dep, az, alt, vel = d[:, 0], -d[:, 1] * self._angle, d[:, 2] * self._angle, d[:, 3] / self._speed
+        else:
+            vel, az, alt, dep = d[:, 0], d[:, 1], d[:, 2], d[:, 3]
         return np.stack([dep * np.cos(alt) * np.cos(az), dep * np.cos(alt) * np.sin(az), dep * np.sin(alt), vel], 1)
 
     def to_ego(self, sensor, pts):
@@ -209,11 +225,14 @@ def render_frame(ses, frame, sensor, max_w=960, boxes=True):
         path = ses.file(sensor, frame)
         if path is None:
             raise ValueError("%s 第 %d 帧没有数据" % (sensor, frame))
-        img = np.array(Image.open(path).convert("RGB"))
+        img = None if path.endswith(".npy") else np.array(Image.open(path).convert("RGB"))
         if kind == "semantic":
             img = PALETTE[img[:, :, 0]]
         elif kind == "depth":
-            d = (img[:, :, 0] + img[:, :, 1] * 256.0 + img[:, :, 2] * 65536.0) / (256 ** 3 - 1) * 1000.0
+            if img is None:  # metres
+                d = np.load(path)
+            else:  # older sessions: CARLA's RGB encoding
+                d = (img[:, :, 0] + img[:, :, 1] * 256.0 + img[:, :, 2] * 65536.0) / (256 ** 3 - 1) * 1000.0
             v = np.clip(np.log(np.maximum(d, 0.1)) / math.log(1000.0), 0, 1)
             img = np.repeat((v * 255).astype(np.uint8)[:, :, None], 3, 2)
         elif kind == "instance":

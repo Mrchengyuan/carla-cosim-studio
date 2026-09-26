@@ -194,5 +194,44 @@ class CliTests(unittest.TestCase):
         vehicle.destroy.assert_called_once()
 
 
+class RigFrameTests(unittest.TestCase):
+    def test_old_config_is_marked_carla_frame(self):
+        import json
+        import settings
+        with tempfile.TemporaryDirectory() as root:
+            path = os.path.join(root, "old.json")
+            with open(path, "w") as f:
+                json.dump({"rig": {"sensors": [{"name": "cam", "type": "rgb", "x": 1.5, "y": 0.2, "z": 1.6,
+                                                "roll": 0, "pitch": -10, "yaw": 30}]}}, f)
+            self.assertEqual(settings.load_dict(path)["rig"]["frame"], "carla")
+            self.assertEqual(settings.load_dict()["rig"]["frame"], "carsim")
+
+    def test_carsim_mount_round_trip(self):
+        import rig
+        ref = [1.45, 0.0, 0.02]
+        carla_mount = {"name": "cam", "type": "rgb", "x": 1.5, "y": 0.3, "z": 1.6, "roll": 2.0, "pitch": -10.0, "yaw": 30.0}
+        cs = rig.to_carsim(carla_mount, ref)
+        # y right 0.3 -> y left -0.3; yaw 30 (right) -> -30; pitch -10 (down in CARLA) -> +10 (down in CarSim)
+        self.assertAlmostEqual(cs["x"], 0.05)
+        self.assertAlmostEqual(cs["y"], -0.3)
+        self.assertAlmostEqual(cs["yaw"], -30.0)
+        self.assertAlmostEqual(cs["pitch"], 10.0)
+        tf = rig.mount_transform(cs, ref)
+        self.assertAlmostEqual(tf.location.x, 1.5, places=5)
+        self.assertAlmostEqual(tf.location.y, 0.3, places=5)
+        self.assertAlmostEqual(tf.location.z, 1.6, places=5)
+        self.assertAlmostEqual(tf.rotation.yaw, 30.0, places=4)
+        self.assertAlmostEqual(tf.rotation.pitch, -10.0, places=4)
+        self.assertAlmostEqual(tf.rotation.roll, 2.0, places=4)
+
+    def test_presets_in_carsim_frame(self):
+        import rig
+        spec = {"length_m": 4.8, "width_m": 2.0, "height_m": 1.5, "front_axle_x_m": 1.5}
+        nus = {s["name"]: s for s in rig.build_preset("nuscenes", spec)}
+        self.assertGreater(nus["radar_front_left"]["y"], 0.0)            # left = +y
+        self.assertGreater(nus["cam_front_left"]["yaw"], 0.0)            # looking left = +yaw
+        self.assertAlmostEqual(nus["radar_front"]["x"], 2.4 - 1.5)       # bumper relative to the front axle
+
+
 if __name__ == "__main__":
     unittest.main()

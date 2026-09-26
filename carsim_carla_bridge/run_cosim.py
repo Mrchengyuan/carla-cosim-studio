@@ -91,7 +91,7 @@ def main():
         while not session.done:
             tel = session.step()
             for hit in tel.get("collisions", []):
-                print("collision at t=%.2f s with %s (id %s)" % (tel["t"], hit["type_id"], hit["id"]))
+                print("collision at t=%.2f s with %s (id %s)" % (tel["t"], hit["model"], hit["id"]))
         if getattr(session, "end_reason", ""):
             print("stopped:", session.end_reason)
         if tel:

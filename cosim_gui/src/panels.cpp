@@ -568,79 +568,181 @@ void App::DrawPanelDrive() {
   EditDouble(cfg_["sync"], "frame_dt", 0.005, "%.3f", 0.001, 0.5);
   ui::Row("运行时长 s", "0 = 一直运行，直到点“停止”（默认）。设了时长，到时会自动结束并停车", fs * 8);
   EditDouble(cfg_["sync"], "duration", 1.0, "%.1f", 0.0, 1e6);
-  ui::Row("日志 CSV", "每帧的 CarSim / CARLA 位姿对比，空 = 不记录");
+  ui::Row("运行记录 CSV", "每个采样时刻的自车状态和 CarSim 导出变量；旁边另写 _objects.csv（障碍物）和 _lane.csv（车道）。"
+                          "记录哪些量在“场景信息”页勾选，采样周期在“数据采集”页设置；空 = 不记录");
   EditString(cfg_["run"], "log_path");
   ui::EndCard();
 }
 
 // --------------------------------------------------------------------------
-// What the control algorithm gets each frame besides the CarSim exports.
+// What the control algorithm gets each frame besides the CarSim exports, and
+// what the records keep: the selected keys only (docs/场景与数据接口.md).
+namespace {
+
+struct KeyDef {
+  const char* key;
+  const char* desc;
+};
+
+const KeyDef kEgoKeys[] = {
+    {"X", "位置 X（= CarSim Xo）"}, {"Y", "位置 Y（= Yo，左为正）"}, {"Z", "位置 Z"}, {"Yaw", "航向角"},
+    {"Vx_global", "全局速度 x 分量"}, {"Vy_global", "全局速度 y 分量"}, {"Speed", "车速"},
+    {"length", "车长"}, {"width", "车宽"}, {"height", "车高"}};
+const KeyDef kObjectKeys[] = {
+    {"parked", "是否地图里的停放车辆"}, {"model", "具体车型 / 行人模型"},
+    {"length", "长"}, {"width", "宽"}, {"height", "高"},
+    {"X", "全局位置 X"}, {"Y", "全局位置 Y"}, {"Z", "全局位置 Z"}, {"Yaw", "全局航向角"},
+    {"Vx_global", "全局速度 x 分量"}, {"Vy_global", "全局速度 y 分量"}, {"Speed", "目标自身速度"},
+    {"rel_x", "相对位置 x（前为正）"}, {"rel_y", "相对位置 y（左为正）"}, {"rel_yaw", "相对航向"},
+    {"rel_vx", "相对速度 x（负 = 在靠近）"}, {"rel_vy", "相对速度 y"},
+    {"dist", "中心距离"}, {"gap", "包围盒间距（接触为 0）"}};
+const KeyDef kLaneKeys[] = {
+    {"width", "车道宽度"}, {"offset", "偏离车道中心（左为正）"}, {"heading_err", "航向偏差（左为正）"},
+    {"curvature", "当前位置曲率"}, {"center_rel", "前方中心线点（自车坐标系）"},
+    {"center_global", "前方中心线点（全局坐标系）"}, {"center_curvature", "中心线各点曲率"},
+    {"left_marking", "左车道线类型"}, {"right_marking", "右车道线类型"},
+    {"left_lane", "左侧相邻车道"}, {"right_lane", "右侧相邻车道"}, {"speed_limit", "限速"},
+    {"in_junction", "是否在路口内"}, {"junction_dist", "到下一个路口的距离"},
+    {"light_state", "前方红绿灯状态"}, {"light_dist", "到红绿灯停止线的距离"}};
+
+bool InList(const json& arr, const std::string& k) {
+  if (!arr.is_array()) return false;
+  for (const json& v : arr)
+    if (v.is_string() && v.get<std::string>() == k) return true;
+  return false;
+}
+
+void SetInList(json& arr, const std::string& k, bool on) {
+  if (!arr.is_array()) arr = json::array();
+  json out = json::array();
+  for (const json& v : arr)
+    if (!(v.is_string() && v.get<std::string>() == k)) out.push_back(v);
+  if (on) out.push_back(k);
+  arr = out;
+}
+
+// A group of key checkboxes in two columns; "全选" / "全不选" on top.
+void KeyChecklist(const char* id, json& arr, const KeyDef* defs, size_t n) {
+  ImGui::PushID(id);
+  if (ImGui::SmallButton("全选")) for (size_t i = 0; i < n; ++i) SetInList(arr, defs[i].key, true);
+  ImGui::SameLine();
+  if (ImGui::SmallButton("全不选")) for (size_t i = 0; i < n; ++i) SetInList(arr, defs[i].key, false);
+  if (ImGui::BeginTable("keys", 2, ImGuiTableFlags_SizingStretchSame)) {
+    for (size_t i = 0; i < n; ++i) {
+      ImGui::TableNextColumn();
+      bool on = InList(arr, defs[i].key);
+      if (ImGui::Checkbox(defs[i].key, &on)) SetInList(arr, defs[i].key, on);
+      ui::RecordTarget(std::string("key:") + id + ":" + defs[i].key);
+      if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", defs[i].desc);
+      ImGui::SameLine();
+      ImGui::TextColored(ui::Colors().text_dim, "%s", defs[i].desc);
+    }
+    ImGui::EndTable();
+  }
+  ImGui::PopID();
+}
+
+}  // namespace
+
 void App::DrawPanelScene() {
   if (!cfg_.contains("scene")) { ImGui::TextDisabled("等待后端返回配置 ..."); return; }
   const ui::Palette& p = ui::Colors();
   const float fs = ImGui::GetFontSize();
   json& sc = cfg_["scene"];
-  auto check = [&](const char* key, const char* label, const char* help) {
-    bool v = sc.value(key, false);
-    if (ImGui::Checkbox(Fmt("%s##%s", label, key).c_str(), &v)) sc[key] = v;
-    if (help) { ImGui::SameLine(); ui::HelpMarker(help); }
-  };
+  const json units = cfg_.contains("carsim") ? cfg_["carsim"].value("units", json::object()) : json::object();
+  const std::string su = units.value("speed", std::string("km/h")), au = units.value("angle", std::string("deg"));
 
-  ui::BeginCard(ICON_FA_CUBES, "每帧交给控制算法");
+  ui::BeginCard(ICON_FA_CIRCLE_INFO, "说明");
+  ui::DimWrapped("这里勾选的量会每帧交给控制算法 control(exports, t, dt, scene)，并写进运行记录和数据采集；没勾的量都没有。"
+                 "坐标系、单位一律按 CarSim：全局坐标系原点在出生点，自车坐标系原点在 CarSim 参考点，x 向前、y 向左（左为正）；"
+                 "速度 %s、角度 %s（跟随“CarSim 动力学”页的导出单位），长度 m。每个量的定义见 docs/场景与数据接口.md。",
+                 su.c_str(), au.c_str());
+  ui::EndCard();
+
   ImGui::BeginDisabled(Running());
-  check("objects", "周围目标", "交通流的车辆、行人，以及用 CARLA 生成的其他车辆和道具。位置、尺寸、朝向、相对速度都是 CARLA 的真值");
-  ImGui::Indent(fs * 1.5f);
-  ImGui::BeginDisabled(!sc.value("objects", true));
-  check("map_objects", "包括地图里的静态物体", "停着的车、摩托车、自行车，电线杆、护栏、围墙、路牌、垃圾桶等。树木、建筑、贴地的井盖和头顶上的路灯臂不算");
-  ImGui::EndDisabled();
-  ImGui::Unindent(fs * 1.5f);
-  check("lane", "前方车道", "车道中心线的点、车道宽、自车偏离车道中心的距离和航向差、限速、信号灯");
-  check("sensors", "传感器数据", "“传感器套件”里的全部传感器，每帧的图像 / 点云 / 雷达以 numpy 数组给出。每帧都要等数据，传感器越多越慢；同时采集数据时两者共用同一套传感器");
-  float range = sc.value("range_m", 80.0f);
-  ui::Row("目标范围 m", "离自车多远以内的目标交给算法", fs * 10);
-  if (ImGui::SliderFloat("##range", &range, 20, 200, "%.0f")) sc["range_m"] = range;
-  float ahead = sc.value("lane_ahead_m", 60.0f);
-  ui::Row("车道前视 m", "车道中心线给到前方多远（每 2 m 一个点）", fs * 10);
-  if (ImGui::SliderFloat("##ahead", &ahead, 10, 200, "%.0f")) sc["lane_ahead_m"] = ahead;
-  ImGui::EndDisabled();
+  ui::BeginCard(ICON_FA_CAR, "障碍物（自车 50 m 内，由近到远）");
+  json& types = sc["object_types"];
+  static const KeyDef kTypes[] = {{"vehicle", "行驶的车辆"}, {"walker", "行人"}, {"parked", "地图里的停放车辆"}};
+  for (const auto& t : kTypes) {
+    bool on = InList(types, t.key);
+    if (ImGui::Checkbox(t.desc, &on)) SetInList(types, t.key, on);
+    ImGui::SameLine(0, fs * 1.2f);
+  }
+  ImGui::NewLine();
+  ui::DimWrapped("每个障碍物始终带 id（整次运行不变）和 type（vehicle / walker）。");
+  KeyChecklist("objects", sc["objects"], kObjectKeys, sizeof(kObjectKeys) / sizeof(kObjectKeys[0]));
+  ui::EndCard();
+
+  ui::BeginCard(ICON_FA_ROAD, "车道（全不选 = 不给车道信息）");
+  KeyChecklist("lane", sc["lane"], kLaneKeys, sizeof(kLaneKeys) / sizeof(kLaneKeys[0]));
+  ui::EndCard();
+
+  ui::BeginCard(ICON_FA_CAR_SIDE, "自车");
+  KeyChecklist("ego", sc["ego"], kEgoKeys, sizeof(kEgoKeys) / sizeof(kEgoKeys[0]));
+  ui::EndCard();
+
+  ui::BeginCard(ICON_FA_SATELLITE_DISH, "传感器数据（给算法）");
+  const json& rig = RigSensors();
+  if (rig.empty()) ui::DimWrapped("“传感器套件”里还没有传感器。");
+  for (const json& s : rig) {
+    const std::string name = s.value("name", std::string());
+    bool on = InList(sc["sensors"], name);
+    if (ImGui::Checkbox(Fmt("%s##sen", name.c_str()).c_str(), &on)) SetInList(sc["sensors"], name, on);
+    ImGui::SameLine();
+    ImGui::TextColored(p.text_dim, "%s", s.value("type", std::string()).c_str());
+  }
+  ui::DimWrapped("勾选的传感器每帧以 numpy 数组给算法（每帧要等数据，会变慢）。数据采集时“传感器套件”里启用的传感器全部保存。");
+  ui::EndCard();
+
+  ui::BeginCard(ICON_FA_LIST, "记录哪些 CarSim 导出变量");
+  bool all = sc.value("exports_all", true);
+  if (ImGui::Checkbox("全部导出变量", &all)) sc["exports_all"] = all;
+  if (!all && cfg_.contains("carsim")) {
+    const json names = cfg_["carsim"].value("export_names", json::array());
+    if (ImGui::BeginTable("exps", 4, ImGuiTableFlags_SizingStretchSame)) {
+      for (const json& n : names) {
+        if (!n.is_string()) continue;
+        ImGui::TableNextColumn();
+        const std::string k = n.get<std::string>();
+        bool on = InList(sc["exports"], k);
+        if (ImGui::Checkbox(Fmt("%s##exp", k.c_str()).c_str(), &on)) SetInList(sc["exports"], k, on);
+      }
+      ImGui::EndTable();
+    }
+  }
+  ui::DimWrapped("只影响运行记录和数据采集；控制算法的 exports 始终是全部导出变量。");
   ui::EndCard();
 
   ui::BeginCard(ICON_FA_CAR_BURST, "碰撞");
   ui::DimWrapped("联合仿真时车的位置由 CarSim 决定，CARLA 里撞上东西车也不会停，会直接穿过去。"
-                 "这里用包围盒判断自车是否碰到了周围目标。");
+                 "这里用包围盒判断自车是否碰到了车辆、行人或停放车辆。");
   const std::string col = sc.value("collision", std::string("log"));
   const float w = ImGui::GetContentRegionAvail().x;
-  ImGui::BeginDisabled(Running());
   if (ChoiceCard("col_stop", ICON_FA_CIRCLE_STOP, "停止运行", "一碰到就结束这次运行，提示撞到了什么、在第几秒。", col == "stop", w))
     sc["collision"] = "stop";
   if (ChoiceCard("col_log", ICON_FA_LIST, "记录并继续", "在输出里记下每次碰撞，运行照常进行。", col == "log", w))
     sc["collision"] = "log";
   if (ChoiceCard("col_off", ICON_FA_BAN, "不检测", "不判断碰撞。", col == "off", w))
     sc["collision"] = "off";
-  ImGui::EndDisabled();
   ui::EndCard();
+  ImGui::EndDisabled();
 
   ui::BeginCard(ICON_FA_CODE, "在控制算法里使用");
-  ui::DimWrapped("把 control 写成 4 个参数就会收到 scene；只写 3 个参数的算法照旧运行。坐标都在自车坐标系："
-                 "原点在自车中心的地面，x 向前、y 向左，单位 m、m/s。");
   static const char* kCode =
       "def control(self, exports, t, dt, scene):\n"
-      "    for o in scene[\"objects\"]:       # 由近到远\n"
-      "        o[\"type\"]        # vehicle / walker / static\n"
-      "        o[\"x\"], o[\"y\"]   # 目标中心位置 m\n"
-      "        o[\"vx\"], o[\"vy\"] # 相对自车的速度 m/s\n"
-      "        o[\"length\"], o[\"width\"], o[\"distance\"]\n"
-      "    lane = scene[\"lane\"]  # center, width, offset, ...\n"
-      "    cam = scene[\"sensors\"][\"cam_front\"][\"data\"]  # numpy\n"
+      "    for o in scene[\"objects\"]:        # 由近到远\n"
+      "        o[\"rel_x\"], o[\"rel_y\"]        # 相对位置 m（前、左为正）\n"
+      "        o[\"rel_vx\"], o[\"gap\"]         # 相对速度、包围盒间距\n"
+      "    lane = scene.get(\"lane\")         # 勾选了车道量时才有\n"
+      "    ego = scene[\"ego\"]               # ego[\"X\"] = CarSim 的 Xo\n"
       "    return [油门, 制动, 方向盘角]";
   ImGui::PushStyleColor(ImGuiCol_ChildBg, p.field);
-  const float code_h = ImGui::GetTextLineHeight() * 9.6f + fs;
-  ImGui::BeginChild("scene_code", ImVec2(0, code_h), ImGuiChildFlags_Borders);
+  ImGui::BeginChild("scene_code", ImVec2(0, ImGui::GetTextLineHeight() * 7.6f + fs), ImGuiChildFlags_Borders);
   ImGui::TextUnformatted(kCode);  // (the mono font has no Chinese glyphs)
   ImGui::EndChild();
   ImGui::PopStyleColor();
-  ui::DimWrapped("完整示例：controllers/scene_controller.py（沿车道行驶，前方有车或障碍物就跟车、停车）。"
-                 "运行时底部“场景”标签显示算法这一帧收到的目标。");
+  ui::DimWrapped("完整示例：controllers/scene_controller.py（沿车道行驶，前方有车或行人就跟车、停车）。"
+                 "运行时底部“场景”标签显示算法这一帧收到的障碍物。");
   if (ui::Button(ICON_FA_CUBES, "打开“场景”标签")) {
     log_open_ = true;
     dock_tab_select_ = 3;
@@ -812,10 +914,13 @@ void App::DrawPanelCollect() {
   ImGui::BeginDisabled(Running());
   if (ImGui::Checkbox("##en", &en)) {
     c["enabled"] = en;
-    // A 50 Hz co-sim step would mean 5x the data of a typical 10 Hz dataset.
-    if (en && cfg_["sync"].value("frame_dt", 0.1) < 0.05 - 1e-9) {
-      cfg_["sync"]["frame_dt"] = 0.1;
-      Log("采集已开启：采集频率设为 10 Hz（常见数据集的频率），可在下面修改", "warn");
+    // Sampling every 0.02 s would mean 5x the data of a typical 10 Hz dataset.
+    // The simulation step (= control period) stays as it is.
+    const double dt = std::max(1e-3, cfg_["sync"].value("frame_dt", 0.02));
+    if (en && c.value("capture_every", 1) * dt < 0.05 - 1e-9) {
+      c["capture_every"] = std::max(1, static_cast<int>(std::lround(0.1 / dt)));
+      Log(Fmt("采集已开启：采样周期设为 %.2f s（常见数据集约 10 Hz），仿真步长不变，可在下面修改",
+              c.value("capture_every", 1) * dt), "warn");
     }
     RefreshDisk();
   }
@@ -829,17 +934,19 @@ void App::DrawPanelCollect() {
   ui::EndCard();
 
   ui::BeginCard(ICON_FA_SLIDERS, "采集内容与格式");
-  const double dt = cfg_["sync"].value("frame_dt", 0.1);
-  float hz = static_cast<float>(1.0 / std::max(1e-3, dt));
-  ui::Row("采集频率 Hz", "每一帧所有传感器同时采样（同一时间戳）。同时决定仿真步长 = 1 / 频率", fs * 10);
-  if (ImGui::SliderFloat("##hz", &hz, 1, 50, "%.0f Hz")) cfg_["sync"]["frame_dt"] = 1.0 / std::max(1.0f, hz);
-  if (hz > 20.5f) {
+  const double dt = std::max(1e-3, cfg_["sync"].value("frame_dt", 0.02));
+  int every = std::max(1, c.value("capture_every", 1));
+  float period = static_cast<float>(every * dt);
+  ui::Row("采样周期 s", "所有数据（传感器、CarSim 变量、障碍物、车道）在同一帧同时采样。取仿真步长的整数倍，"
+                       "不能比仿真步长短；运行记录也用这个周期。控制算法仍然每帧调用", fs * 8);
+  if (ImGui::InputFloat("##period", &period, static_cast<float>(dt), static_cast<float>(dt * 5), "%.3f"))
+    c["capture_every"] = every = std::max(1, static_cast<int>(std::lround(period / dt)));
+  ImGui::SetCursorPosX(ImGui::GetCursorPosX() + ui::LabelWidth());
+  ImGui::TextColored(p.text_dim, "= 每 %d 帧一次，%.1f Hz（仿真步长 %.3f s，在“驾驶模式”页设置）", every, 1.0 / (every * dt), dt);
+  if (1.0 / (every * dt) > 20.5) {
     ImGui::SetCursorPosX(ImGui::GetCursorPosX() + ui::LabelWidth());
-    ImGui::TextColored(p.warning, ICON_FA_TRIANGLE_EXCLAMATION "  %.0f Hz 数据量很大；KITTI / nuScenes 等数据集一般用 10 Hz", hz);
+    ImGui::TextColored(p.warning, ICON_FA_TRIANGLE_EXCLAMATION "  %.0f Hz 数据量很大；KITTI / nuScenes 等数据集一般用 10 Hz", 1.0 / (every * dt));
   }
-  int every = c.value("capture_every", 1);
-  ui::Row("每 N 帧存一次", "仿真频率高但不需要每帧都存时用，例如 20 Hz 仿真、每 2 帧存 = 10 Hz 数据", fs * 8);
-  if (ImGui::InputInt("##every", &every)) c["capture_every"] = std::max(1, every);
   std::string imf = c.value("image_format", std::string("jpg"));
   const std::vector<std::string> imfs = {"jpg", "png"}, imfn = {"JPG（小，约 1/4 大小）", "PNG（无损）"};
   ui::Row("RGB 图像格式", "深度、语义、实例图始终是无损 PNG", fs * 14);
@@ -901,8 +1008,12 @@ void App::DrawPanelCollect() {
                      : t == "radar" ? "000123.csv" : (t == "imu" || t == "gnss") ? "写入 ego/*.json" : "000123.png";
     line(t == "lidar" ? ICON_FA_CIRCLE_NODES : t == "radar" ? ICON_FA_WIFI : ICON_FA_CAMERA, s.value("name", std::string()) + "/", note);
   }
-  if (labels) line(ICON_FA_TAGS, "labels/", "000123.json  3D 框、类别、ID、速度");
-  line(ICON_FA_CAR, "ego/", "000123.json  位姿、速度、加速度、控制量、CarSim 状态");
+  line(ICON_FA_FILE_CODE, "frames/", "000123.json  同一帧的 CarSim 导出变量、自车、障碍物、车道（“场景信息”页勾选的量）");
+  line(ICON_FA_TABLE, "frames.csv", "每个采样帧一行：自车状态 + CarSim 导出变量");
+  line(ICON_FA_TABLE, "objects.csv", "每个采样帧的每个障碍物一行");
+  line(ICON_FA_TABLE, "lane.csv", "每个采样帧一行：车道信息（勾选了车道量时）");
+  if (labels) line(ICON_FA_TAGS, "labels/", "000123.json  3D 框（CARLA 坐标，导出 KITTI / nuScenes 用）");
+  line(ICON_FA_CAR, "ego/", "000123.json  CARLA 坐标下的位姿、速度、IMU / GNSS（导出用）");
   ui::EndCard();
 }
 

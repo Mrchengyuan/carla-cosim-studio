@@ -28,7 +28,14 @@ _STOPS = np.array([[40, 90, 255], [0, 210, 255], [60, 220, 90], [255, 220, 40], 
 _LUT = np.stack([np.interp(np.linspace(0, 4, 256), np.arange(5), _STOPS[:, c]) for c in range(3)], 1).astype(np.uint8)
 
 
-def _transform(m):
+def _transform(m, vehicle=None):
+    """Mount -> carla.Transform. A rig sensor's mount ("frame": "carsim") is in
+    CarSim's vehicle frame, relative to the reference point "ref"."""
+    if m.get("frame") == "carsim" and vehicle is not None:
+        from bridge import front_axle_local
+        ref = m.get("ref", "front_axle")
+        ref_local = front_axle_local(vehicle) if ref == "front_axle" else [float(v) for v in ref]
+        return rigmod.mount_transform(m, ref_local)
     return carla.Transform(carla.Location(float(m.get("x", 0)), float(m.get("y", 0)), float(m.get("z", 0))),
                            carla.Rotation(pitch=float(m.get("pitch", 0)), yaw=float(m.get("yaw", 0)),
                                           roll=float(m.get("roll", 0))))
@@ -134,11 +141,11 @@ class ViewStreamer:
             attrs["image_size_x"], attrs["image_size_y"] = w, h
             if not mount and "fov" not in (spec.get("attrs") or {}):
                 attrs["fov"] = 60 if spec.get("mode") == "wheel" else 90
-            tf = _transform(mount) if mount else CAMERA_MOUNTS.get(spec.get("mode", "chase"), CAMERA_MOUNTS["chase"])
+            tf = _transform(mount, vehicle) if mount else CAMERA_MOUNTS.get(spec.get("mode", "chase"), CAMERA_MOUNTS["chase"])
         else:
             if kind == "lidar":
                 attrs.setdefault("rotation_frequency", 10.0)
-            tf = _transform(mount or default_mount(kind, vehicle))
+            tf = _transform(mount or default_mount(kind, vehicle), vehicle)
         for k, val in attrs.items():
             if bp.has_attribute(k):
                 bp.set_attribute(k, str(val))

@@ -23,7 +23,7 @@ CarSim 负责全部车辆动力学计算，CARLA 负责场景、渲染和传感�
 | `bridge.py` | `CarlaVehicleSync`：把 CarSim 导出向量转换成 CARLA 状态并下发 |
 | `coords.py` | ISO 8855 ↔ UE 坐标 / 欧拉角 / 角速度换算 |
 | `config.py` | **需要按你的 .sim 修改**：导出变量顺序、单位、参考点 |
-| `scene.py` | 每帧交给控制算法的 `scene`：周围目标、前方车道、传感器数据、碰撞判断（`control(exports, t, dt, scene)`） |
+| `scene.py` | 每帧交给控制算法的 `scene`（车辆、行人、停放车辆，前方车道，传感器数据，碰撞判断；CarSim 坐标系和单位；只给勾选的量）和运行记录 CSV（`control(exports, t, dt, scene)`，定义见 `docs/场景与数据接口.md`） |
 | `mock_carsim.py` | 没有 CarSim 时用的替身（运动学自行车模型），接口与 `CarSimEnv` 相同 |
 | `tests/test_coords.py` | 坐标换算单元测试（与 `carla.Transform.get_matrix()` 对照） |
 | `tests/check_wheels.py` | 用车轮骨骼姿态实测转向 / 转角的正负号 |

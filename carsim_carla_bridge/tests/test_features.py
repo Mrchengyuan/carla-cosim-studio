@@ -183,6 +183,12 @@ def main():
         check("ego state + imu", "imu" in ego and "pose" in ego, sorted(ego)[:6])
         labels = json.load(open(sorted(glob.glob(os.path.join(root, "labels", "*.json")))[-1]))
         check("labels file", "objects" in labels, "%d objects" % len(labels["objects"]))
+        depth = __import__("numpy").load(sorted(glob.glob(os.path.join(root, "cam_depth", "*.npy")))[-1])
+        check("depth in metres, clipped at max_distance", depth.dtype.name == "float32" and 0 < depth.max() <= 100.0 + 1e-3
+              and depth.shape == (360, 640), "%s max %.1f m" % (depth.shape, depth.max()))
+        m, ref, E = calib["sensors"]["cam_rgb"]["mount"], calib["reference_point_in_ego_frame"], calib["sensors"]["cam_rgb"]["extrinsic_sensor_to_ego"]
+        check("mounts in CarSim's vehicle frame", abs(E[0][3] - (ref[0] + m["x"])) < 1e-3 and abs(E[1][3] - (ref[1] - m["y"])) < 1e-3
+              and 1.2 < ref[0] < 1.7, "mount x %.2f + front axle %.2f = %.2f" % (m["x"], ref[0], E[0][3]))
         pts = os.path.getsize(sorted(glob.glob(os.path.join(root, "lidar_top", "*.bin")))[-1])
         check("lidar full sweep", pts > 200000, "%.0f KB/frame" % (pts / 1024))
         sizes = {n: sum(os.path.getsize(p) for p in glob.glob(os.path.join(root, n, "*"))) / 3 / 1024

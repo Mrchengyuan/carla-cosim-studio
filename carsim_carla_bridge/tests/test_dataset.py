@@ -153,10 +153,11 @@ def main():
         c.call("spawn_ego", blueprint="vehicle.tesla.model3", spawn_index=3)
         parked = _park_car_ahead(carla_port)  # one object the KITTI camera always sees whole
         c.call("spawn_traffic", vehicles=30, walkers=10, seed=2, safe=True)
-        sensors = [sensor("cam_front", "rgb", 1.5, 0.0, 1.6, image_size_x=800, image_size_y=450, fov=90.0),
-                   sensor("cam_front_semantic", "semantic", 1.5, 0.0, 1.6, image_size_x=800, image_size_y=450, fov=90.0),
-                   sensor("lidar_top", "lidar", 0.0, 0.0, 1.9, channels=32, range=60.0, points_per_second=300000),
-                   sensor("radar_front", "radar", 2.3, 0.0, 0.6, range=80.0)]
+        # Mounts in CarSim's vehicle frame (origin = front axle on the ground, y left).
+        sensors = [sensor("cam_front", "rgb", 0.1, 0.0, 1.6, image_size_x=800, image_size_y=450, fov=90.0),
+                   sensor("cam_front_semantic", "semantic", 0.1, 0.0, 1.6, image_size_x=800, image_size_y=450, fov=90.0),
+                   sensor("lidar_top", "lidar", -1.4, 0.0, 1.9, channels=32, range=60.0, points_per_second=300000),
+                   sensor("radar_front", "radar", 0.9, 0.0, 0.6, range=80.0)]
         cfg = c.call("default_config")
         cfg["drive"].update({"dynamics": "carla", "carla_driver": "autopilot", "tm_ignore_lights": True})
         cfg["sync"].update({"frame_dt": 0.1, "duration": 0.0})

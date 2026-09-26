@@ -278,5 +278,65 @@ class RecordTests(unittest.TestCase):
         self.assertEqual(settings.sample_every(d), 3)
 
 
+class ViewAndExportTests(unittest.TestCase):
+    def test_tilted_sensor_points_in_live_bird_view(self):
+        import carla
+        import numpy as np
+        from views import ViewStreamer
+        m = carla.Transform(carla.Location(1.0, 0.3, 2.0), carla.Rotation(pitch=30.0, yaw=20.0, roll=10.0))
+        p = carla.Location(10.0, 1.0, 0.5)
+        want = m.transform(carla.Location(p.x, p.y, p.z))
+        lidar = SimpleNamespace(raw_data=np.array([[p.x, p.y, p.z, 0.0]], np.float32).tobytes())
+        got = ViewStreamer._points(None, {"kind": "lidar", "mount": m}, lidar)[0]
+        self.assertAlmostEqual(got[0], want.x, places=4)
+        self.assertAlmostEqual(got[1], want.y, places=4)
+        self.assertAlmostEqual(got[2], want.z - m.location.z, places=4)  # height above the sensor
+        az, alt, dep = 0.2, 0.1, 12.0
+        q = carla.Location(dep * np.cos(alt) * np.cos(az), dep * np.cos(alt) * np.sin(az), dep * np.sin(alt))
+        want = m.transform(carla.Location(q.x, q.y, q.z))
+        radar = SimpleNamespace(raw_data=np.array([[-3.0, az, alt, dep]], np.float32).tobytes())
+        got = ViewStreamer._points(None, {"kind": "radar", "mount": m}, radar)[0]
+        self.assertAlmostEqual(got[0], want.x, places=3)
+        self.assertAlmostEqual(got[1], want.y, places=3)
+        self.assertAlmostEqual(got[2], -3.0, places=5)
+
+    def test_kitti_stereo_skips_frames_without_the_right_image(self):
+        import numpy as np
+        from PIL import Image
+        import dataset as dsmod
+        with tempfile.TemporaryDirectory() as root:
+            ses_dir = os.path.join(root, "s")
+            for sub in ("ego", "labels", "cam_left", "cam_right", "lidar"):
+                os.makedirs(os.path.join(ses_dir, sub))
+            K = [[320.0, 0.0, 320.0], [0.0, 320.0, 180.0], [0.0, 0.0, 1.0]]
+            def ext(y):
+                return [[1, 0, 0, 1.5], [0, 1, 0, y], [0, 0, 1, 1.6], [0, 0, 0, 1]]
+            attrs = {"image_size_x": 640, "image_size_y": 360, "fov": 90.0}
+            calib = {"sensors": {
+                "cam_left": {"type": "rgb", "K": K, "extrinsic_sensor_to_ego": ext(0.0), "attributes": attrs},
+                "cam_right": {"type": "rgb", "K": K, "extrinsic_sensor_to_ego": ext(0.54), "attributes": attrs},  # CARLA y right
+                "lidar": {"type": "lidar", "extrinsic_sensor_to_ego": ext(0.0), "attributes": {}}}}
+            with open(os.path.join(ses_dir, "calib.json"), "w") as f:
+                json.dump(calib, f)
+            with open(os.path.join(ses_dir, "meta.json"), "w") as f:
+                json.dump({"map": "Town10HD_Opt", "started": "x", "conventions": "carsim"}, f)
+            img = Image.fromarray(np.zeros((360, 640, 3), np.uint8))
+            for frame in (1, 2):
+                with open(os.path.join(ses_dir, "ego", "%06d.json" % frame), "w") as f:
+                    json.dump({"frame": frame}, f)
+                img.save(os.path.join(ses_dir, "cam_left", "%06d.jpg" % frame))
+                np.zeros((4, 4), np.float32).tofile(os.path.join(ses_dir, "lidar", "%06d.bin" % frame))
+            img.save(os.path.join(ses_dir, "cam_right", "000001.jpg"))  # frame 2 lacks the right image
+            out = os.path.join(root, "kitti")
+            res = dsmod.export_kitti(dsmod.Session(ses_dir), out, camera="cam_left", lidar="lidar", min_lidar_pts=1)
+            n2 = len(os.listdir(os.path.join(out, "training", "image_2")))
+            n3 = len(os.listdir(os.path.join(out, "training", "image_3")))
+            with open(os.path.join(out, "ImageSets", "train.txt")) as f:
+                train = f.read().split()
+            self.assertEqual((res["frames"], n2, n3, len(train)), (1, 1, 1, 1))
+            self.assertEqual(res["stereo_right"], "cam_right")
+            self.assertIn("缺图", res.get("warning", ""))
+
+
 if __name__ == "__main__":
     unittest.main()

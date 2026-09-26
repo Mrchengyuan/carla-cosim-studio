@@ -190,19 +190,24 @@ class ViewStreamer:
                    "rgb": base64.b64encode(np.ascontiguousarray(rgb).tobytes()).decode("ascii")})
 
     def _points(self, v, data):
+        """Points in the vehicle frame (x, y) with the colour value: height above
+        the sensor (lidar) or radial velocity (radar). The full mount pose, so a
+        pitched or rolled sensor lands where CARLA puts its points."""
         m = v["mount"]
-        yaw = math.radians(m.rotation.yaw)
         if v["kind"] == "lidar":
             p = np.frombuffer(data.raw_data, dtype=np.float32).reshape(-1, 4)
-            x, y, z = p[:, 0], p[:, 1], p[:, 2]
-            val = z  # colour by height relative to the sensor
+            xyz = p[:, :3].astype(np.float64)
+            val = None
         else:
             d = np.frombuffer(data.raw_data, dtype=np.float32).reshape(-1, 4)  # velocity, azimuth, altitude, depth
-            vel, az, alt, dep = d[:, 0], d[:, 1], d[:, 2], d[:, 3]
-            x, y = dep * np.cos(alt) * np.cos(az), dep * np.cos(alt) * np.sin(az)
+            vel, az, alt, dep = (d[:, i].astype(np.float64) for i in range(4))
+            xyz = np.stack([dep * np.cos(alt) * np.cos(az), dep * np.cos(alt) * np.sin(az), dep * np.sin(alt)], 1)
             val = vel
-        c, s = math.cos(yaw), math.sin(yaw)
-        return np.stack([m.location.x + c * x - s * y, m.location.y + s * x + c * y, val], 1)
+        M = np.array(m.get_matrix())  # sensor -> vehicle
+        veh = xyz @ M[:3, :3].T + M[:3, 3]
+        if val is None:
+            val = veh[:, 2] - m.location.z  # colour by height relative to the sensor
+        return np.stack([veh[:, 0], veh[:, 1], val], 1)
 
     def _render(self, v, data):
         kind = v["kind"]

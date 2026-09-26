@@ -406,14 +406,17 @@ def export_kitti(ses, out, camera=None, lidar=None, min_lidar_pts=1, progress=No
     tilted = abs(float(mount.get("pitch", 0.0))) > 3.0 or abs(float(mount.get("roll", 0.0))) > 3.0
     W = int(ses.sensors[camera]["attributes"]["image_size_x"])
     H = int(ses.sensors[camera]["attributes"]["image_size_y"])
-    ids, pairs, n_obj = [], [], 0
+    ids, pairs, n_obj, no_right = [], [], 0, 0
     for idx, frame in enumerate(ses.frames):
         name = "%06d" % len(ids)  # contiguous KITTI indices even if a frame is skipped
         src = ses.file(camera, frame)
         if src is None or ses.file(lidar, frame) is None:
             continue  # without its lidar sweep every object would be filtered out: a false "empty road"
+        if right is not None and ses.file(right, frame) is None:
+            no_right += 1  # a stereo sample needs both images
+            continue
         _copy_image(src, os.path.join(tr, "image_2", name), ".png")
-        if right is not None and ses.file(right, frame) is not None:
+        if right is not None:
             _copy_image(ses.file(right, frame), os.path.join(tr, "image_3", name), ".png")
         pts = ses.lidar_points(lidar, frame).astype(np.float32).copy()
         pts_ego = ses.to_ego(lidar, pts)
@@ -480,9 +483,12 @@ def export_kitti(ses, out, camera=None, lidar=None, min_lidar_pts=1, progress=No
                 % (ses.root, camera, "，%s -> image_3（双目，P3 含基线）" % right if right else "", lidar, min_lidar_pts))
     res = {"format": "kitti", "out": os.path.abspath(out), "frames": len(ids), "objects": n_obj,
            "camera": camera, "lidar": lidar, "stereo_right": right}
+    if no_right:
+        res["warning"] = "双目右相机 %s 缺图的 %d 帧没有导出（双目样本需要左右两张图）" % (right, no_right)
     if tilted:
-        res["warning"] = ("相机 %s 有俯仰或侧倾：KITTI 的朝向角 ry 定义在相机 y 轴上，倾斜相机的朝向只是近似"
-                          "（位置已按真实竖直方向计算）。训练 KITTI 模型建议用水平安装的相机" % camera)
+        tilt = ("相机 %s 有俯仰或侧倾：KITTI 的朝向角 ry 定义在相机 y 轴上，倾斜相机的朝向只是近似"
+                "（位置已按真实竖直方向计算）。训练 KITTI 模型建议用水平安装的相机" % camera)
+        res["warning"] = res["warning"] + "；" + tilt if "warning" in res else tilt
     return res
 
 

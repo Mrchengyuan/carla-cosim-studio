@@ -701,13 +701,28 @@ void App::DrawViewport(float w, float h) {
     ImGui::PushStyleColor(ImGuiCol_Text, kHudText);
     ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 0.0f);
     static const char* kModes[] = {"chase", "hood", "wheel", "top"};
-    static const char* kNames[] = {ICON_FA_CAR_REAR " 跟车", ICON_FA_EYE " 车头", ICON_FA_CIRCLE_DOT " 前轮", ICON_FA_ARROWS_TO_EYE " 俯视"};
+    static const char* kIcons[] = {ICON_FA_CAR_REAR, ICON_FA_EYE, ICON_FA_CIRCLE_DOT, ICON_FA_ARROWS_TO_EYE};
+    static const char* kTexts[] = {"跟车", "车头", "前轮", "俯视"};
+    static const char* kLayoutIcons[] = {ICON_FA_SQUARE, ICON_FA_TABLE_COLUMNS, ICON_FA_TABLE_CELLS_LARGE};
+    static const char* kLayoutTexts[] = {"单画面", "1+3", "2×2"};
+    // The bar must stay inside the main pane: over a side pane it would cover
+    // that pane's source picker (small windows, 2 x 2). Icons only when the
+    // full labels do not fit; the names show as tooltips.
+    const float pad = ImGui::GetStyle().FramePadding.x * 2 + ImGui::GetStyle().ItemSpacing.x;
+    float full = bar_h + fs * 1.3f;  // close button and gaps
+    for (int i = 0; i < 4; ++i) full += ImGui::CalcTextSize(Fmt("%s %s", kIcons[i], kTexts[i]).c_str()).x + pad;
+    for (int i = 0; i < 3; ++i) full += ImGui::CalcTextSize(Fmt("%s %s", kLayoutIcons[i], kLayoutTexts[i]).c_str()).x + pad;
+    const bool compact = full > mw - fs * 1.2f;
+    auto label = [&](const char* icon, const char* text, const char* id) {
+      return compact ? Fmt("%s##%s", icon, id) : Fmt("%s %s##%s", icon, text, id);
+    };
     for (int i = 0; i < 4; ++i) {
       if (i) ImGui::SameLine();
       const bool on = view_on_ && view_rig_sensor_.empty() && view_mode_ == kModes[i];
       if (on) ImGui::PushStyleColor(ImGuiCol_Button, ui::WithAlpha(p.accent, 0.85f));
       ImGui::BeginDisabled(!busy_.empty());
-      const bool pressed = ImGui::Button(kNames[i], ImVec2(0, bar_h));
+      const bool pressed = ImGui::Button(label(kIcons[i], kTexts[i], kModes[i]).c_str(), ImVec2(compact ? bar_h : 0, bar_h));
+      if (compact && ImGui::IsItemHovered()) ImGui::SetTooltip("%s", kTexts[i]);
       ui::RecordTarget(std::string("view:") + kModes[i]);
       if (pressed) {
         view_mode_ = kModes[i];
@@ -729,8 +744,7 @@ void App::DrawViewport(float w, float h) {
       if (ImGui::IsItemHovered()) ImGui::SetTooltip("关闭画面（节省带宽）");
     }
     // Layout: single view, one large + three small, 2 x 2.
-    ImGui::SameLine(0, fs * 0.8f);
-    static const char* kLayouts[] = {ICON_FA_SQUARE " 单画面", ICON_FA_TABLE_COLUMNS " 1+3", ICON_FA_TABLE_CELLS_LARGE " 2×2"};
+    ImGui::SameLine(0, fs * (compact ? 0.4f : 0.8f));
     static const char* kLayoutTips[] = {"只显示主相机", "主相机 + 三个小视图（语义、点云、深度等，可点标签更换）",
                                         "四宫格：主相机 + 三个视图"};
     for (int i = 0; i < 3; ++i) {
@@ -738,7 +752,8 @@ void App::DrawViewport(float w, float h) {
       const bool on = view_layout_ == i;
       if (on) ImGui::PushStyleColor(ImGuiCol_Button, ui::WithAlpha(p.accent, 0.85f));
       ImGui::BeginDisabled(!busy_.empty());
-      const bool pressed = ImGui::Button(kLayouts[i], ImVec2(0, bar_h));
+      const bool pressed = ImGui::Button(label(kLayoutIcons[i], kLayoutTexts[i], Fmt("layout%d", i).c_str()).c_str(),
+                                         ImVec2(compact ? bar_h : 0, bar_h));
       ui::RecordTarget(Fmt("layout:%d", i));
       if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", kLayoutTips[i]);
       if (pressed && view_layout_ != i) {
@@ -749,6 +764,7 @@ void App::DrawViewport(float w, float h) {
       ImGui::EndDisabled();
       if (on) ImGui::PopStyleColor();
     }
+    const float bar_end = ImGui::GetItemRectMax().x;  // right end of the camera bar
     ImGui::PopStyleVar();
     ImGui::PopStyleColor(5);
     // Camera caption (top-right)
@@ -756,8 +772,10 @@ void App::DrawViewport(float w, float h) {
       const std::string cap = Fmt("%s  %d×%d  ·  %d 帧", view_rig_sensor_.empty() ? "主车相机" : view_rig_sensor_.c_str(),
                                   view_w_, view_h_, view_frames_);
       const ImVec2 cs = ImGui::CalcTextSize(cap.c_str());
-      const float top = multi ? mo.y + fs * 3.0f : mo.y + fs * 0.6f;  // below the camera bar when panes are narrow
-      const ImVec2 a(me.x - cs.x - fs * 1.6f, top);
+      // Next to the camera bar when it fits, below it otherwise (narrow panes).
+      const float left = me.x - cs.x - fs * 1.6f;
+      const float top = multi || left < bar_end + fs * 0.5f ? mo.y + fs * 3.0f : mo.y + fs * 0.6f;
+      const ImVec2 a(left, top);
       HudPanel(dl, a, ImVec2(me.x - fs * 0.6f, a.y + bar_h));
       dl->AddText(ImVec2(a.x + fs * 0.5f, a.y + (bar_h - fs) * 0.5f), ImGui::GetColorU32(kHudDim), cap.c_str());
     }

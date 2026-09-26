@@ -980,9 +980,10 @@ void App::DrawPanelCollect() {
 
   ui::BeginCard(ICON_FA_SLIDERS, "采集内容与格式");
   // Stored in seconds: changing the simulation step keeps the sampling period.
+  // 0 = every capture_every frames (every frame by default), whatever the step.
   const double dt = std::max(1e-3, cfg_["sync"].value("frame_dt", 0.02));
-  if (c.value("sample_period", 0.0) <= 0) c["sample_period"] = std::max(1, c.value("capture_every", 1)) * dt;
-  int every = std::max(1, static_cast<int>(std::lround(c.value("sample_period", dt) / dt)));
+  const double sp = c.value("sample_period", 0.0);
+  int every = sp > 0 ? std::max(1, static_cast<int>(std::lround(sp / dt))) : std::max(1, c.value("capture_every", 1));
   float period = static_cast<float>(every * dt);
   ui::Row("采样周期 s", "所有数据（传感器、CarSim 变量、障碍物、车道）在同一帧同时采样。取仿真步长的整数倍，"
                        "不能比仿真步长短；运行记录也用这个周期。控制算法仍然每帧调用", fs * 8);
@@ -993,10 +994,12 @@ void App::DrawPanelCollect() {
   }
   ImGui::SetCursorPosX(ImGui::GetCursorPosX() + ui::LabelWidth());
   ImGui::TextColored(p.text_dim, "= 每 %d 帧一次，%.1f Hz（仿真步长 %.3f s，在“驾驶模式”页设置）", every, 1.0 / (every * dt), dt);
-  if (std::fabs(every * dt - c.value("sample_period", 0.0)) > 1e-6) {
+  if (sp > 0 && std::fabs(every * dt - sp) > 1e-6) {
     ImGui::SetCursorPosX(ImGui::GetCursorPosX() + ui::LabelWidth());
-    ImGui::TextColored(p.warning, ICON_FA_TRIANGLE_EXCLAMATION "  设定 %.3f s 不是仿真步长的整数倍，实际按 %.3f s 采样",
-                       c.value("sample_period", 0.0), every * dt);
+    if (sp < dt)
+      ImGui::TextColored(p.warning, ICON_FA_TRIANGLE_EXCLAMATION "  设定 %.3f s 比仿真步长短，实际每帧采样（%.3f s）", sp, dt);
+    else
+      ImGui::TextColored(p.warning, ICON_FA_TRIANGLE_EXCLAMATION "  设定 %.3f s 不是仿真步长的整数倍，实际按 %.3f s 采样", sp, every * dt);
   }
   if (1.0 / (every * dt) > 20.5) {
     ImGui::SetCursorPosX(ImGui::GetCursorPosX() + ui::LabelWidth());

@@ -82,6 +82,8 @@ void SectionCaption(const char* text);
 // Click targets for the --tour self-test: widgets record where they are so
 // the tour can press them with real mouse events.
 void RecordTarget(const std::string& name);
+// The target the scripted tour is about to click: RecordTarget scrolls it into view.
+void SetTourTarget(const std::string& name);
 bool FindTarget(const std::string& name, ImVec2* center);
 
 bool FoldHeader(const char* icon, const char* title, bool default_open = true, bool force_open = false);

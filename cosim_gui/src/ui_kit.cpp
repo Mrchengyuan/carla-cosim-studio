@@ -392,9 +392,26 @@ std::map<std::string, ImVec2>& Targets() {
 }
 }  // namespace
 
+namespace {
+std::string g_tour_target;
+}
+
+void SetTourTarget(const std::string& name) { g_tour_target = name; }
+
 void RecordTarget(const std::string& name) {
   const ImVec2 a = ImGui::GetItemRectMin(), b = ImGui::GetItemRectMax();
   Targets()[name] = ImVec2((a.x + b.x) * 0.5f, (a.y + b.y) * 0.5f);
+  if (name == g_tour_target) {
+    // Like a user scrolling to it: a target outside the visible part of its
+    // window (small screens) would be clicked "through" something else.
+    // (ScrollToRectEx also scrolls the parent windows: cards are child windows.)
+    ImGuiWindow* w = ImGui::GetCurrentWindow();
+    for (ImGuiWindow* p = w; p; p = (p->Flags & ImGuiWindowFlags_ChildWindow) ? p->ParentWindow : nullptr)
+      if (a.y < p->ClipRect.Min.y || b.y > p->ClipRect.Max.y) {
+        ImGui::ScrollToRectEx(w, ImRect(a, b), ImGuiScrollFlags_KeepVisibleCenterY);
+        break;
+      }
+  }
 }
 
 bool FindTarget(const std::string& name, ImVec2* center) {

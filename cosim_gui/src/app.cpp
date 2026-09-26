@@ -1169,6 +1169,7 @@ void App::TourTick() {
 }
 
 void App::TourClick() {
+  ui::SetTourTarget(click_target_);
   if (click_target_.empty()) return;
   ImVec2 c;
   if (!ui::FindTarget(click_target_, &c)) {

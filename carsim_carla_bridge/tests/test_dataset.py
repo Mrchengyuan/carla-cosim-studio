@@ -155,6 +155,8 @@ def main():
         c.call("spawn_traffic", vehicles=30, walkers=10, seed=2, safe=True)
         # Mounts in CarSim's vehicle frame (origin = front axle on the ground, y left).
         sensors = [sensor("cam_front", "rgb", 0.1, 0.0, 1.6, image_size_x=800, image_size_y=450, fov=90.0),
+                   # stereo partner 0.54 m to the right (y left = negative)
+                   sensor("cam_front_right", "rgb", 0.1, -0.54, 1.6, image_size_x=800, image_size_y=450, fov=90.0),
                    sensor("cam_front_semantic", "semantic", 0.1, 0.0, 1.6, image_size_x=800, image_size_y=450, fov=90.0),
                    sensor("lidar_top", "lidar", -1.4, 0.0, 1.9, channels=32, range=60.0, points_per_second=300000),
                    sensor("radar_front", "radar", 0.9, 0.0, 0.6, range=80.0)]
@@ -188,6 +190,12 @@ def main():
         check("kitti export", e["ok"], e.get("result") or e.get("error"))
         if e["ok"]:
             kitti_checks(kout, 5)
+            p3 = next(l for l in open(glob.glob(os.path.join(glob.escape(kout), "training", "calib", "*.txt"))[0]) if l.startswith("P3:"))
+            p3 = [float(v) for v in p3.split()[1:]]
+            n3 = len(glob.glob(os.path.join(glob.escape(kout), "training", "image_3", "*.png")))
+            check("KITTI stereo: P3 baseline, image_3", e["result"].get("stereo_right") == "cam_front_right"
+                  and abs(p3[3] + p3[0] * 0.54) < 1e-3 and n3 == e["result"]["frames"],
+                  "P3 tx %.2f (= -fx*b %.2f), %d right images" % (p3[3], -p3[0] * 0.54, n3))
         try:
             c.call("dataset_export", root=root, format="kitti", out=kout)
             check("export refuses a non-empty output folder", False)

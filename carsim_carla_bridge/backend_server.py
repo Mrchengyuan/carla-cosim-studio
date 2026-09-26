@@ -74,6 +74,7 @@ class Backend:
         self._probe = None         # the car vehicle_specs is measuring right now
         self.views = ViewStreamer(lambda msg: self.emit(msg))  # live views of the GUI viewport
         self.collector = None
+        self._pending_walkers = []  # walker controllers to start after the run's next frame
         self._unsent_tel = None    # last telemetry frame not sent to the GUI yet
         self._ego_missing = (0, set())  # (ego id, world frames whose snapshot lacks it)
         self.task = None           # (what the worker is doing, since when), for the "busy" heartbeat
@@ -109,22 +110,26 @@ class Backend:
         CARLA 0.9.16 crashes ("close: Bad file descriptor") after a few hundred
         connections that close right away. Local Linux: the kernel's socket
         table; local Windows: netstat, only right after a call timed out;
-        another host: a call that timed out is taken as the answer (None: can't tell)."""
+        another host: a call that timed out is taken as the answer (None: can't tell).
+        The listening socket (Linux: inode, Windows: process id) seen right after
+        connecting is remembered: another one on the port later is not our
+        CARLA (it was restarted, or another program took the port)."""
         host, port = self.carla_addr
         if host not in ("localhost", "127.0.0.1", "::1"):
             return None if not now else False
         if os.path.exists("/proc/net/tcp") and getattr(self, "_proc_sees_carla", True):
             want = ":%04X" % port
+            owners = set()
             for table in ("/proc/net/tcp", "/proc/net/tcp6"):
                 try:
                     with open(table) as f:
                         for line in f.readlines()[1:]:
                             cols = line.split()
                             if cols[1].endswith(want) and cols[3] == "0A":  # 0A = LISTEN
-                                return True
-                except OSError:
+                                owners.add(cols[9])  # socket inode
+                except (OSError, IndexError):
                     pass
-            return False
+            return self._same_listener(owners)
         if os.name == "nt" and now:
             try:
                 out = subprocess.run(["netstat", "-ano", "-p", "TCP"], capture_output=True, text=True, timeout=10).stdout
@@ -132,12 +137,23 @@ class Backend:
                 return None
             # The state column is localized (e.g. "ABHÖREN"); a listening socket is
             # the one without a foreign address.
+            owners = set()
             for line in out.splitlines():
                 cols = line.split()
                 if len(cols) >= 3 and cols[1].endswith(":%d" % port) and cols[2] in ("0.0.0.0:0", "[::]:0", "*:*"):
-                    return True
-            return False
+                    owners.add(cols[-1])  # process id
+            return self._same_listener(owners)
         return None
+
+    def _same_listener(self, owners):
+        """Listening on our port, by the listener seen when we connected?"""
+        if not owners:
+            return False
+        known = getattr(self, "_carla_listener", None)
+        if known is None:  # right after connecting: that is our CARLA
+            self._carla_listener = set(owners)
+            return True
+        return bool(owners & known)
 
     def _check_carla(self, now=False):
         """Every 2 s (or right after a CARLA call timed out): is the server still
@@ -309,13 +325,22 @@ class Backend:
         self.ego = self.anchor = None
         self.ego_autopilot = False
 
+    def _run_active(self):
+        return self.session is not None and self.cosim_state in ("running", "paused")
+
     def _tick_or_wait(self, n=1):
+        """Let the world advance n frames. False when a run is active: only the
+        run may tick then (an extra tick would move CARLA a frame ahead of
+        CarSim); what waited for the tick happens with the run's next frame."""
         w = self._need_world()
         for _ in range(n):
             if w.get_settings().synchronous_mode:
+                if self._run_active():
+                    return False
                 w.tick()
             else:
                 w.wait_for_tick(5.0)
+        return True
 
     # --------------------------------------------------------------- server
     def cmd_ping(self):
@@ -343,7 +368,8 @@ class Backend:
         # Docker / WSL2 setups can hide a live CARLA from /proc/net/tcp: then
         # only time-outs tell that it is gone.
         self._proc_sees_carla = True
-        self._proc_sees_carla = self._carla_listening() is not False
+        self._carla_listener = None  # the next look at the port records this CARLA's socket
+        self._proc_sees_carla = self._carla_listening(now=os.name == "nt") is not False
         s = self.world.get_settings()
         if s.synchronous_mode and not we_ticked:
             # A backend killed during a run leaves the world in synchronous mode
@@ -540,6 +566,7 @@ class Backend:
                     spec["wheelbase_m"] = round((local[0][0] + local[1][0]) / 2 - (local[2][0] + local[3][0]) / 2, 3)
                     spec["track_m"] = round(abs(local[1][1] - local[0][1]), 3)
                     spec["front_axle_x_m"] = round((local[0][0] + local[1][0]) / 2, 3)
+                    spec["front_axle_z_m"] = round(bb.location.z - bb.extent.z, 3)  # ground, as bridge.front_axle_local
                 self.spec_cache[vid] = result[vid] = spec
             finally:
                 self._probe = None
@@ -736,16 +763,24 @@ class Backend:
             self.traffic["walkers"].append(body)
             self.traffic["controllers"].append(ctrl)
             m += 1
-        self._tick_or_wait(1)
-        for c in self.traffic["controllers"]:
+        # Walker controllers start once their bodies are in the world (next frame).
+        new = [(c, 1.0 + rng.random()) for c in self.traffic["controllers"][len(self.traffic["controllers"]) - m:]]
+        if self._tick_or_wait(1):
+            self._start_walkers(new)
+        else:
+            self._pending_walkers += new  # during a run: after the run's next frame
+        self._log("已生成交通：车辆 %d，行人 %d" % (n, m))
+        return {"vehicles": len(self.traffic["vehicles"]), "walkers": len(self.traffic["walkers"])}
+
+    def _start_walkers(self, ctrls):
+        w = self.world
+        for c, speed in ctrls:
             try:
                 c.start()
                 c.go_to_location(w.get_random_location_from_navigation())
-                c.set_max_speed(1.0 + rng.random())
+                c.set_max_speed(speed)
             except RuntimeError:
                 pass
-        self._log("已生成交通：车辆 %d，行人 %d" % (n, m))
-        return {"vehicles": len(self.traffic["vehicles"]), "walkers": len(self.traffic["walkers"])}
 
     def cmd_clear_traffic(self):
         if self.world is None:
@@ -757,9 +792,11 @@ class Backend:
                 pass
         ids = [a.id for k in ("controllers", "walkers", "vehicles") for a in self.traffic[k]]
         if ids:
+            # During a run the run's next frame applies it (no extra tick).
             self.client.apply_batch_sync([carla.command.DestroyActor(i) for i in ids],
-                                         self.world.get_settings().synchronous_mode)
+                                         self.world.get_settings().synchronous_mode and not self._run_active())
         self.traffic = {"vehicles": [], "walkers": [], "controllers": []}
+        self._pending_walkers = []
         if not self.ego_autopilot and self.cosim_state not in ("running", "paused"):
             self._release_tm()  # nothing left for it to drive (see _need_tm)
         return True
@@ -999,14 +1036,11 @@ class Backend:
         c = d["carla"]
         col_cfg = dict(d["collect"])
         col_cfg["frame_dt"] = d["sync"]["frame_dt"]
+        col_cfg["capture_every"] = d["collect"]["capture_every"] = st.sample_every(d)
         col_cfg["units"] = d["carsim"]["units"]  # radar speeds / angles are saved in CarSim's units
-        spec = self.spec_cache.get(c["vehicle"])
-        sensors = d["rig"]["sensors"] or rigmod.build_preset(d["rig"]["preset"], spec, d["sync"]["reference_point"])
-        if d["rig"]["sensors"] and d["rig"].get("frame") == "carla":  # an older config
-            ref = rigmod.preset_reference(spec, d["sync"]["reference_point"])
-            sensors = [rigmod.to_carsim(s, ref) for s in sensors]
-        d["rig"]["frame"] = "carsim"
-        d["rig"]["sensors"] = sensors  # the scene's sensors for the algorithm are the same rig
+        rp = d["sync"]["reference_point"]
+        # Sizes only (for the estimate); the mounts are fixed after the spawn below.
+        sensors = d["rig"]["sensors"] or rigmod.build_preset(d["rig"]["preset"], self.spec_cache.get(c["vehicle"]), rp)
         if col_cfg["enabled"]:
             # Validate limits / disk space before touching the world.
             est = coll.DataCollector(w, None, sensors, col_cfg).estimate()
@@ -1041,6 +1075,16 @@ class Backend:
                 self.cmd_add_sensor(**spec)
             if view_specs:
                 self.cmd_views_set(view_specs)
+            # Presets and older configs (CARLA frame) relative to this car's
+            # measured reference point: the one the sensors are mounted on.
+            ego_spec = rigmod.spec_of(self.ego)
+            ref = rigmod.preset_reference(ego_spec, rp)
+            if not d["rig"]["sensors"]:
+                sensors = rigmod.build_preset(d["rig"]["preset"], ego_spec, ref)
+            elif d["rig"].get("frame") == "carla":
+                sensors = [rigmod.to_carsim(s, ref) for s in d["rig"]["sensors"]]
+            d["rig"]["frame"] = "carsim"
+            d["rig"]["sensors"] = sensors  # the scene's sensors for the algorithm are the same rig
         except BaseException:
             # Respawning already removed the previous ego and its attachments.
             # A failed attachment must restore them before returning an error.
@@ -1142,10 +1186,20 @@ class Backend:
             spec = self.spec_cache.get(blueprint) or self.cmd_vehicle_specs([blueprint]).get(blueprint)
         return rigmod.build_preset(preset, spec, reference_point)
 
+    def cmd_rig_to_carsim(self, sensors, blueprint="", reference_point="front_axle"):
+        """Mounts of an older config (CARLA frame: car centre, y right) in CarSim's
+        vehicle frame, with the measured front axle of the vehicle."""
+        spec = None
+        if blueprint and self.world is not None:
+            spec = self.spec_cache.get(blueprint) or self.cmd_vehicle_specs([blueprint]).get(blueprint)
+        ref = rigmod.preset_reference(spec, reference_point)
+        return [rigmod.to_carsim(s, ref) for s in sensors]
+
     def cmd_rig_estimate(self, sensors, collect=None, frame_dt=0.1):
         cfg = dict(st.default_dict()["collect"])
         cfg.update(collect or {})
         cfg["frame_dt"] = float(frame_dt)
+        cfg["capture_every"] = st.sample_every({"collect": cfg, "sync": {"frame_dt": frame_dt}})
         c = coll.DataCollector(None, None, sensors, cfg)
         est = c.estimate()
         est["per_sensor"] = [{"name": s["name"], "mb_per_frame": rigmod.bytes_per_frame(s, cfg["image_format"], cfg["frame_dt"]) / 1e6}
@@ -1232,6 +1286,9 @@ class Backend:
             return
         try:
             tel = self.session.step()
+            if self._pending_walkers:
+                pending, self._pending_walkers = self._pending_walkers, []
+                self._start_walkers(pending)
             for hit in tel.get("collisions", []):
                 self._log("碰撞：撞到 %s（id %s），t = %.2f s" % (hit["model"], hit["id"], tel["t"]), "warn")
             if self.collector is not None:

@@ -1,10 +1,12 @@
 // Talks to backend_server.py: newline-delimited JSON over TCP.
-// Requests are asynchronous; replies and pushed events are queued by a reader
-// thread and dispatched on the UI thread in Poll(), so callbacks may touch UI
-// state freely.
+// Requests are asynchronous: a writer thread sends them (the UI never waits on
+// the socket, even when the backend stops reading); replies and pushed events
+// are queued by a reader thread and dispatched on the UI thread in Poll(), so
+// callbacks may touch UI state freely.
 #pragma once
 
 #include <atomic>
+#include <condition_variable>
 #include <deque>
 #include <functional>
 #include <map>
@@ -37,6 +39,7 @@ class BackendClient {
 
  private:
   void ReaderLoop(plat::Socket s);
+  void WriterLoop(plat::Socket s);
   void FailPending(const std::string& why);
 
   plat::Socket sock_ = plat::kInvalidSocket;
@@ -46,5 +49,8 @@ class BackendClient {
   std::deque<json> inbox_;
   std::map<int, Callback> pending_;
   int next_id_ = 1;
-  std::mutex send_mu_;
+  std::thread writer_;
+  std::mutex out_mu_;
+  std::condition_variable out_cv_;
+  std::deque<std::pair<int, std::string>> outbox_;  // (request id, line) not sent yet
 };

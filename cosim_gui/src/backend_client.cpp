@@ -9,16 +9,23 @@ bool BackendClient::Connect(const std::string& host, int port, std::string& err)
   if (sock_ == plat::kInvalidSocket) return false;
   connected_ = true;
   reader_ = std::thread(&BackendClient::ReaderLoop, this, sock_);  // its own copy: Disconnect() resets sock_
+  writer_ = std::thread(&BackendClient::WriterLoop, this, sock_);
   return true;
 }
 
 void BackendClient::Disconnect() {
   connected_ = false;
+  out_cv_.notify_all();
   if (sock_ != plat::kInvalidSocket) {
-    plat::CloseSocket(sock_);
+    plat::CloseSocket(sock_);  // also ends a send that is blocked
     sock_ = plat::kInvalidSocket;
   }
   if (reader_.joinable()) reader_.join();
+  if (writer_.joinable()) writer_.join();
+  {
+    std::lock_guard<std::mutex> lock(out_mu_);
+    outbox_.clear();  // their requests get the error reply below
+  }
   {
     // Events the old connection left unread must not reach the next one
     // (telemetry of a dead run, a stale ego or state).
@@ -53,11 +60,37 @@ void BackendClient::Request(const std::string& cmd, json args, Callback cb) {
   // Invalid UTF-8 (e.g. a non-ASCII path from the Windows ANSI code page) is
   // replaced instead of throwing.
   std::string line = req.dump(-1, ' ', false, json::error_handler_t::replace) + "\n";
-  std::lock_guard<std::mutex> lock(send_mu_);
-  if (!plat::SendAll(sock_, line)) {
-    connected_ = false;
-    std::lock_guard<std::mutex> lock2(mu_);
-    inbox_.push_back({{"id", id}, {"ok", false}, {"error", "发送失败，后端已断开"}});
+  {
+    std::lock_guard<std::mutex> lock(out_mu_);
+    // A backend that stopped reading: do not pile up requests without end.
+    if (outbox_.size() < 500) {
+      outbox_.emplace_back(id, std::move(line));
+      out_cv_.notify_one();
+      return;
+    }
+  }
+  std::lock_guard<std::mutex> lock(mu_);
+  inbox_.push_back({{"id", id}, {"ok", false}, {"error", "后端没有响应，请求未发送"}});
+}
+
+void BackendClient::WriterLoop(plat::Socket sock) {
+  while (true) {
+    std::pair<int, std::string> item;
+    {
+      std::unique_lock<std::mutex> lock(out_mu_);
+      out_cv_.wait(lock, [this] { return !outbox_.empty() || !connected_; });
+      if (!connected_) return;
+      item = std::move(outbox_.front());
+      outbox_.pop_front();
+    }
+    if (!plat::SendAll(sock, item.second)) {
+      if (connected_.exchange(false)) {
+        FailPending("发送失败，后端已断开");
+        std::lock_guard<std::mutex> lock(mu_);
+        inbox_.push_back({{"event", "disconnected"}});
+      }
+      return;
+    }
   }
 }
 
@@ -96,8 +129,8 @@ void BackendClient::ReaderLoop(plat::Socket sock) {
     buf.erase(0, start);
     searched = buf.size();
   }
-  if (connected_) {
-    connected_ = false;
+  if (connected_.exchange(false)) {  // (not both this and the writer)
+    out_cv_.notify_all();
     FailPending("与后端的连接已断开");
     std::lock_guard<std::mutex> lock(mu_);
     inbox_.push_back({{"event", "disconnected"}});

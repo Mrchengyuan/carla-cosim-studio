@@ -24,8 +24,10 @@ class Controller:
     def reset(self):
         pass
 
+    KMH = 3.6             # 速度单位换算：CarSim 导出单位是 km/h 时为 3.6；改成 m/s 时改为 1.0
+
     def control(self, exports, t, dt, scene):
-        v = exports["Vx"] / 3.6  # m/s（CarSim 的 Vx 是 km/h）
+        v = exports["Vx"] / self.KMH  # m/s
         lane = scene.get("lane")
         center = lane.get("center_rel") if lane else None
 
@@ -50,7 +52,7 @@ class Controller:
         if lead is not None:
             gap = lead["gap"]
             want = self.MIN_GAP + self.TIME_GAP * v
-            a_follow = 0.4 * (gap - want) + 0.9 * lead["rel_vx"] / 3.6
+            a_follow = 0.4 * (gap - want) + 0.9 * lead["rel_vx"] / self.KMH
             a_cmd = min(a_cmd, a_follow)
             if gap < self.MIN_GAP * 0.5:
                 a_cmd = min(a_cmd, -6.0)

@@ -34,7 +34,17 @@ def preset_reference(spec=None, reference_point="front_axle"):
     """CarSim reference point in the CARLA vehicle frame (x forward, y right), m."""
     if reference_point != "front_axle":
         return [float(v) for v in reference_point]
-    return [float((spec or {}).get("front_axle_x_m", FRONT_AXLE_X)), 0.0, 0.0]
+    spec = spec or {}
+    return [float(spec.get("front_axle_x_m", FRONT_AXLE_X)), 0.0, float(spec.get("front_axle_z_m", 0.0))]
+
+
+def spec_of(vehicle):
+    """The rig-relevant part of a vehicle spec, measured on a spawned vehicle."""
+    from bridge import front_axle_local
+    bb = vehicle.bounding_box
+    ref = front_axle_local(vehicle)
+    return {"length_m": 2 * bb.extent.x, "width_m": 2 * bb.extent.y, "height_m": 2 * bb.extent.z,
+            "front_axle_x_m": float(ref[0]), "front_axle_z_m": float(ref[2])}
 
 
 def to_carsim(s, ref):

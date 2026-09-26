@@ -763,23 +763,9 @@ void App::LoadConfig(const std::string& user_path) {
     return;
   }
   // Configs from before rigs were in CarSim's vehicle frame (no "frame"):
-  // origin under the car centre, y right. Convert with the front axle of the
-  // selected vehicle (1.4 m ahead of the centre when it was not measured).
-  if (j.contains("rig") && j["rig"].is_object() && !j["rig"].contains("frame") && j["rig"].contains("sensors") &&
-      j["rig"]["sensors"].is_array()) {
-    const json* spec = SelectedVehicleSpec();
-    const float fx = spec ? spec->value("front_axle_x_m", 1.4f) : 1.4f;
-    for (json& s : j["rig"]["sensors"]) {
-      if (!s.is_object()) continue;
-      auto num = [&](const char* k) { return s.contains(k) && s[k].is_number() ? s[k].get<double>() : 0.0; };
-      s["x"] = std::round((num("x") - fx) * 1000.0) / 1000.0;
-      s["y"] = -num("y");
-      s["yaw"] = -num("yaw");
-      s["pitch"] = -num("pitch");
-    }
-    j["rig"]["frame"] = "carsim";
-    Log("配置里的传感器安装位置是旧格式，已换算为 CarSim 车身坐标系（原点在前轴中心，y 向左）；请检查后保存", "warn");
-  }
+  // mark them; the backend converts them with the measured vehicle once CARLA
+  // is connected (see Frame()), the same way as for a run or the command line.
+  if (j.contains("rig") && j["rig"].is_object() && !j["rig"].contains("frame")) j["rig"]["frame"] = "carla";
   cfg_.merge_patch(j);
   ConformConfig();
   cfg_path_ = path;
@@ -999,8 +985,21 @@ void App::BuildTour() {
          cfg_["run"]["controller"]["entry"] = "Controller";
        }, idle, "07_drive"},
       {kPanelScene, [this] { cfg_["scene"]["collision"] = "log"; }, idle, "07b_scene_config"},
-      {kPanelScene, [this] { click_target_ = "key:objects:Speed"; }, [this] {
+      {kPanelScene, [this] {
+         // The clicks below tick these: start from unticked whatever the config said.
+         for (auto [arr, key] : {std::pair<json*, const char*>{&cfg_["scene"]["objects"], "Speed"},
+                                 {&cfg_["scene"]["record"]["objects"], "model"}}) {
+           json keep = json::array();
+           for (const json& k : *arr) if (k != key) keep.push_back(k);
+           *arr = keep;
+         }
+         click_target_ = "key:objects:Speed";
+       }, [this] {
          for (const json& k : cfg_["scene"]["objects"]) if (k == "Speed") return true;
+         return false;
+       }, ""},
+      {kPanelScene, [this] { click_target_ = "rec:objects:model"; }, [this] {
+         for (const json& k : cfg_["scene"]["record"]["objects"]) if (k == "model") return true;
          return false;
        }, ""},
       {kPanelCoSim, [this] {

@@ -1,6 +1,7 @@
 """Regression checks for collection and startup paths that need no CARLA server."""
 
 import copy
+import json
 import os
 import sys
 import tempfile
@@ -231,6 +232,50 @@ class RigFrameTests(unittest.TestCase):
         self.assertGreater(nus["radar_front_left"]["y"], 0.0)            # left = +y
         self.assertGreater(nus["cam_front_left"]["yaw"], 0.0)            # looking left = +yaw
         self.assertAlmostEqual(nus["radar_front"]["x"], 2.4 - 1.5)       # bumper relative to the front axle
+
+
+class RecordTests(unittest.TestCase):
+    def test_event_sensor_does_not_lose_the_frame(self):
+        import scene as scn
+        with tempfile.TemporaryDirectory() as root:
+            for sub in ("ego", "frames", "labels"):
+                os.mkdir(os.path.join(root, sub))
+            os.mkdir(os.path.join(root, "lane_inv"))
+            cfg = {"frame_dt": 0.1, "capture_every": 2, "max_frames": 0, "max_gb": 0, "labels": False}
+            c = DataCollector(None, None, [{"name": "lane_inv", "type": "lane_invasion"}], cfg)
+            c.root, c._t0, c._last_emit = root, time.time(), 0.0
+            c.recorder = scn.Recorder({"main": os.path.join(root, "frames.csv"), "objects": os.path.join(root, "objects.csv"),
+                                       "lane": os.path.join(root, "lane.csv")},
+                                      {"record": {"ego": ["X"], "objects": [], "lane": []}}, ["Xo"])
+            ev = lambda f: SimpleNamespace(frame=f, crossed_lane_markings=[SimpleNamespace(type="Solid")])
+            rec = {"t": 0.2, "frame": 2, "ego": {"X": 1.0}, "objects": [], "exports": {"Xo": 1.0}}
+            c._ego_state = lambda frame: {"frame": frame}
+            c._frame_record = lambda frame: dict(rec, frame=frame)
+            c.writer = threading.Thread(target=c._write_loop, daemon=True)
+            c.writer.start()
+            c.shared = SimpleNamespace(frame=None, datas=[])
+            for frame, events in ((1, [ev(1)]), (2, [ev(2)])):
+                c.shared.frame, c.shared.datas = frame, [events]
+                c.on_tick(frame)
+            c.stop()  # waits for the writer, closes the CSV files
+            self.assertTrue(os.path.exists(os.path.join(root, "frames", "000002.json")))
+            with open(os.path.join(root, "ego", "000002.json")) as f:
+                ego = json.load(f)
+            self.assertEqual([e["frame"] for e in ego["events"]], [1, 2])  # frame 1's event kept
+            with open(os.path.join(root, "frames.csv")) as f:
+                self.assertIn("2,1.0,1.0", f.read())
+
+    def test_sample_period_in_seconds(self):
+        import settings
+        d = settings.default_dict()
+        d["sync"]["frame_dt"] = 0.02
+        d["collect"]["sample_period"] = 0.1
+        self.assertEqual(settings.sample_every(d), 5)
+        d["sync"]["frame_dt"] = 0.05  # changing the step keeps the period
+        self.assertEqual(settings.sample_every(d), 2)
+        d["collect"]["sample_period"] = 0.0
+        d["collect"]["capture_every"] = 3
+        self.assertEqual(settings.sample_every(d), 3)
 
 
 if __name__ == "__main__":

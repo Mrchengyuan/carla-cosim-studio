@@ -23,6 +23,7 @@ enforced every frame. Near a GB limit, queued frames are flushed before
 another one is accepted so queued writes cannot overshoot the limit.
 """
 
+import copy
 import json
 import math
 import os
@@ -101,6 +102,7 @@ class DataCollector:
         self.q = queue.Queue(maxsize=48)
         self.writer = None
         self.frames = self.bytes = 0
+        self._events = {}  # event-sensor index -> events since the last saved frame
         self.errors = []
         self.done = False
         self.stop_reason = ""
@@ -303,6 +305,13 @@ class DataCollector:
                 self.errors.append("%s: 第 %d 帧数据缺失" % (s["name"], frame))
                 d = None
             datas.append(d)
+        # Events of the frames in between go with the next saved frame.
+        for i, s in enumerate(self.sensor_cfgs):
+            if s["type"] in EVENT_TYPES and i < len(datas):
+                self._events[i] = self._events.get(i, []) + list(datas[i] or [])
+                datas[i] = None
+                if frame % every == 0:
+                    datas[i], self._events[i] = self._events[i] or None, []
         if frame % every == 0:
             sample = (frame, datas, self._ego_state(frame), self._labels() if self.cfg.get("labels", True) else None,
                       self._frame_record(frame))
@@ -317,11 +326,12 @@ class DataCollector:
         same frame as the sensor data."""
         if self.recorder is None:
             return None
-        v = self.scene.view()
+        v = self.scene.record_view()
         if v is None or v.get("frame") != frame:
             self.errors.append("第 %d 帧场景数据缺失" % frame)
             return None
-        rec = {k: v[k] for k in ("t", "frame", "ego", "objects", "lane", "collisions") if k in v}
+        # A copy: the writer thread must not share dicts with the running simulation.
+        rec = copy.deepcopy({k: v[k] for k in ("t", "frame", "ego", "objects", "lane", "collisions") if k in v})
         rec["exports"] = self.recorder.selected_exports(self.exports())
         return rec
 
@@ -412,15 +422,15 @@ class DataCollector:
                     if k in rigmod.CAMERA_TYPES:
                         bgra = np.frombuffer(d.raw_data, dtype=np.uint8).reshape(d.height, d.width, 4)
                         rgb = np.ascontiguousarray(bgra[:, :, 2::-1])
-                        if Image is None:
-                            continue
-                        if k == "depth":
+                        if k == "depth":  # (no Pillow needed)
                             path = base + ".npy"
                             np.save(path, scn.depth_m(bgra, s))
+                        elif Image is None:
+                            continue
                         elif k == "rgb" and fmt == "jpg":
                             path = base + ".jpg"
                             Image.fromarray(rgb).save(path, quality=quality)
-                        else:  # depth / segmentation must stay lossless
+                        else:  # segmentation must stay lossless
                             path = base + ".png"
                             Image.fromarray(rgb).save(path)
                     elif k == "lidar":
@@ -443,15 +453,15 @@ class DataCollector:
                         continue
                     else:  # event sensors: every event of this frame
                         for ev in d:
-                            rec = {"sensor": s["name"], "frame": ev.frame}
+                            e = {"sensor": s["name"], "frame": ev.frame}
                             other = getattr(ev, "other_actor", None)
                             if other is not None:
-                                rec["other_actor"] = {"id": other.id, "type_id": other.type_id}
+                                e["other_actor"] = {"id": other.id, "type_id": other.type_id}
                             if hasattr(ev, "normal_impulse"):
-                                rec["normal_impulse"] = _vec(ev.normal_impulse)
+                                e["normal_impulse"] = _vec(ev.normal_impulse)
                             if hasattr(ev, "crossed_lane_markings"):
-                                rec["crossed_lane_markings"] = [str(m.type) for m in ev.crossed_lane_markings]
-                            ego.setdefault("events", []).append(rec)
+                                e["crossed_lane_markings"] = [str(m.type) for m in ev.crossed_lane_markings]
+                            ego.setdefault("events", []).append(e)
                         continue
                     self.bytes += os.path.getsize(path)
                 if rec is not None:

@@ -16,7 +16,8 @@ namespace {
 constexpr float kPi = 3.14159265f;
 
 // Same numbers as rig.py (measured from a 3-frame capture in Town10HD).
-double BytesPerFrame(const json& s, const std::string& image_format) {
+// dt: the simulation step; collected lidar sweeps once per frame (points_per_second x dt).
+double BytesPerFrame(const json& s, const std::string& image_format, double dt) {
   const std::string k = s.value("type", std::string());
   const json& a = s.contains("attributes") ? s["attributes"] : json::object();
   if (k == "rgb" || k == "depth" || k == "semantic" || k == "instance") {
@@ -25,7 +26,7 @@ double BytesPerFrame(const json& s, const std::string& image_format) {
     if (k == "depth") return px3 * 4.0 / 3.0;  // float32 metres (.npy)
     return px3 * (k == "semantic" ? 0.016 : 0.022);
   }
-  if (k == "lidar") return a.value("points_per_second", 56000.0) / std::max(1.0, a.value("rotation_frequency", 10.0)) * 0.5 * 16;
+  if (k == "lidar") return a.value("points_per_second", 56000.0) * dt * 0.5 * 16;
   if (k == "radar") return a.value("points_per_second", 1500.0) / 10.0 * 32;
   return 200;
 }
@@ -60,15 +61,17 @@ const char* TypeName(const std::string& t) {
 }
 
 // CarSim reference point (origin of the rig's CarSim vehicle frame) in the
-// CARLA vehicle frame the drawings use: x forward, y RIGHT, m.
-struct Ref { float x, y; };
+// CARLA vehicle frame the drawings use: x forward, y RIGHT, z up, m. Same as
+// rig.preset_reference in the backend (front axle: z = 0, on the ground).
+struct Ref { float x, y, z; };
 
 Ref RefPoint(const json& cfg, const json* spec) {
   if (cfg.contains("sync") && cfg["sync"].contains("reference_point")) {
     const json& r = cfg["sync"]["reference_point"];
-    if (r.is_array() && r.size() >= 2) return {static_cast<float>(appui::NumAt(r, 0)), static_cast<float>(appui::NumAt(r, 1))};
+    if (r.is_array() && r.size() >= 3)
+      return {static_cast<float>(appui::NumAt(r, 0)), static_cast<float>(appui::NumAt(r, 1)), static_cast<float>(appui::NumAt(r, 2))};
   }
-  return {spec ? spec->value("front_axle_x_m", 1.4f) : 1.4f, 0.0f};
+  return {spec ? spec->value("front_axle_x_m", 1.4f) : 1.4f, 0.0f, spec ? spec->value("front_axle_z_m", 0.0f) : 0.0f};
 }
 
 json DefaultSensor(const std::string& type, const std::string& name, const json* spec, Ref ref) {
@@ -76,10 +79,10 @@ json DefaultSensor(const std::string& type, const std::string& name, const json*
   const double H = spec ? spec->value("height_m", 1.5) : 1.5;
   json a = json::object();
   double x = L * 0.15, z = H * 0.92;
-  if (type == "rgb" || type == "depth" || type == "semantic" || type == "instance")
+  if (type == "rgb" || type == "depth" || type == "semantic" || type == "instance") {
     a = {{"image_size_x", 1280}, {"image_size_y", 720}, {"fov", 90.0}};
-  if (type == "depth") a["max_distance"] = 100.0;
-  else if (type == "lidar") {
+    if (type == "depth") a["max_distance"] = 100.0;
+  } else if (type == "lidar") {
     a = {{"channels", 32}, {"range", 100.0}, {"points_per_second", 600000}, {"rotation_frequency", 10.0},
          {"upper_fov", 10.0}, {"lower_fov", -30.0}};
     x = 0.0;
@@ -93,14 +96,15 @@ json DefaultSensor(const std::string& type, const std::string& name, const json*
     z = H * 0.5;
   }
   // Positions above are relative to the car centre: to CarSim's vehicle frame.
-  return {{"name", name}, {"type", type}, {"x", std::round((x - ref.x) * 100.0) / 100.0}, {"y", ref.y}, {"z", z}, {"roll", 0.0}, {"pitch", 0.0},
+  return {{"name", name}, {"type", type}, {"x", std::round((x - ref.x) * 100.0) / 100.0}, {"y", ref.y},
+          {"z", std::round((z - ref.z) * 100.0) / 100.0}, {"roll", 0.0}, {"pitch", 0.0},
           {"yaw", 0.0}, {"attributes", a}, {"enabled", true}};
 }
 
 struct Dims { float L, W, H, wb, track, r, fx; };
 
 Dims VehicleDims(const json* s) {
-  Dims d{4.8f, 2.0f, 1.5f, 2.9f, 1.6f, 0.35f, 1.5f};
+  Dims d{4.8f, 2.0f, 1.5f, 2.9f, 1.6f, 0.35f, 1.4f};  // fx as rig.FRONT_AXLE_X
   if (!s) return d;
   d.L = s->value("length_m", d.L);
   d.W = s->value("width_m", d.W);
@@ -250,7 +254,7 @@ void App::DrawPanelRig() {
       else
         ImGui::TextColored(p.text_dim, "-");
       ImGui::TableSetColumnIndex(6);
-      ImGui::Text("%.2f", BytesPerFrame(s, imf) / 1e6);
+      ImGui::Text("%.2f", BytesPerFrame(s, imf, cfg_["sync"].value("frame_dt", 0.02)) / 1e6);
     }
     ImGui::EndTable();
   }
@@ -398,14 +402,14 @@ void App::DrawRigSideView(float w, float h) {
     dl->AddCircleFilled(to_px(wx, d.r), d.r * scale, ImGui::GetColorU32(ImVec4(0.2f, 0.2f, 0.22f, 1)));
     dl->AddCircle(to_px(wx, d.r), d.r * scale * 0.55f, edge, 0, 1.2f);
   }
-  dl->AddCircleFilled(to_px(ref.x, 0), 3.5f, ImGui::GetColorU32(ImVec4(0.30f, 0.62f, 1.0f, 1)));  // reference point
+  dl->AddCircleFilled(to_px(ref.x, ref.z), 3.5f, ImGui::GetColorU32(ImVec4(0.30f, 0.62f, 1.0f, 1)));  // reference point
   for (int i = 0; i < static_cast<int>(sensors.size()); ++i) {
     json& s = sensors[static_cast<size_t>(i)];
     if (!s.value("enabled", true)) continue;
     const std::string t = s.value("type", std::string());
     const ImVec4 col = TypeColor(t);
     const bool sel = i == rig_sel_;
-    const float cx = s.value("x", 0.0f), sx = cx + ref.x, sz = s.value("z", 0.0f);
+    const float cx = s.value("x", 0.0f), sx = cx + ref.x, cz = s.value("z", 0.0f), sz = cz + ref.z;
     const ImVec2 pp = to_px(sx, sz);
     const bool camera = t == "rgb" || t == "depth" || t == "semantic" || t == "instance";
     if (camera && std::fabs(std::fabs(s.value("yaw", 0.0f)) - 90.0f) > 20.0f) {
@@ -432,9 +436,9 @@ void App::DrawRigSideView(float w, float h) {
     if (ImGui::IsItemActive() && ImGui::IsMouseDragging(0, 0.0f) && !Running()) {
       const ImVec2 dd = ImGui::GetIO().MouseDelta;
       s["x"] = std::round((cx + dd.x / scale) * 100.0f) / 100.0f;
-      s["z"] = std::round(std::max(0.0f, sz - dd.y / scale) * 100.0f) / 100.0f;
+      s["z"] = std::round((std::max(0.0f, sz - dd.y / scale) - ref.z) * 100.0f) / 100.0f;  // not below the ground
     }
-    if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s  高度 %.2f m", s.value("name", std::string()).c_str(), sz);
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s  z %.2f m（离地 %.2f m）", s.value("name", std::string()).c_str(), cz, sz);
   }
   dl->PopClipRect();
   ImGui::SetCursorScreenPos(ImVec2(o.x, o.y + h + ImGui::GetStyle().ItemSpacing.y));
@@ -464,7 +468,7 @@ void App::DrawRigProperties() {
   };
   drag("x 向前 m", "x", 0.01f, -10, 10, "%.2f", "CarSim 车身坐标系：原点在 CarSim 参考点（默认前轴中心的地面）");
   drag("y 向左 m", "y", 0.01f, -5, 5, "%.2f", "左为正，右为负（和 CarSim 一样）");
-  drag("z 向上 m", "z", 0.01f, 0, 6, "%.2f", "离地高度");
+  drag("z 向上 m", "z", 0.01f, -3, 6, "%.2f", "相对参考点的高度（参考点默认在前轴中心的地面，这时就是离地高度）");
   drag("航向 °", "yaw", 0.5f, -180, 180, "%.1f", "0 = 朝前，90 = 朝左，-90 = 朝右，180 = 朝后（左为正，和 CarSim 一样）");
   drag("俯仰 °", "pitch", 0.2f, -90, 90, "%.1f", "正数 = 向下看（CarSim：俯仰正 = 低头）");
   drag("侧倾 °", "roll", 0.2f, -180, 180, "%.1f", nullptr);
@@ -557,11 +561,13 @@ void App::DrawRigEstimate(bool compact) {
   int n_on = 0;
   for (const json& s : sensors)
     if (s.value("enabled", true)) {
-      per_frame += BytesPerFrame(s, imf);
+      per_frame += BytesPerFrame(s, imf, cfg_["sync"].value("frame_dt", 0.02));
       ++n_on;
     }
   const double dt = cfg_.contains("sync") ? cfg_["sync"].value("frame_dt", 0.1) : 0.1;
-  const double hz = 1.0 / (std::max(1e-3, dt) * std::max(1, c.value("capture_every", 1)));
+  const double sp = c.value("sample_period", 0.0);
+  const int every = sp > 0 ? std::max(1, static_cast<int>(std::lround(sp / std::max(1e-3, dt)))) : std::max(1, c.value("capture_every", 1));
+  const double hz = 1.0 / (std::max(1e-3, dt) * every);
   const double mbps = per_frame * hz / 1e6;
   const int mf = c.value("max_frames", 0);
   const double ms = c.value("max_seconds", 0.0), mg = c.value("max_gb", 0.0);

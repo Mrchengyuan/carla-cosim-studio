@@ -137,6 +137,20 @@ void App::Frame() {
     auto_connect_ = false;
     ConnectCarla();
   }
+  // An old config's sensor mounts (CARLA frame): converted by the backend.
+  if (carla_connected_ && !rig_converting_ && busy_.empty() && be_.PendingCount() == 0 && !Running() &&
+      cfg_.contains("rig") && cfg_["rig"].is_object() && cfg_["rig"].value("frame", std::string("carsim")) == "carla") {
+    rig_converting_ = true;
+    Call("rig_to_carsim", {{"sensors", RigSensors()}, {"blueprint", cfg_["carla"].value("vehicle", std::string())},
+                           {"reference_point", cfg_["sync"].value("reference_point", json("front_axle"))}},
+         [this](const json& r) {
+           RigSensors() = r;
+           cfg_["rig"]["frame"] = "carsim";
+           rig_converting_ = false;
+           RefreshVehicles();  // the vehicle may have been measured
+           Log("配置里的传感器安装位置是旧格式，已按这台车的前轴位置换算为 CarSim 车身坐标系（原点在参考点，y 向左）；请检查后保存", "warn");
+         }, "正在换算旧配置的传感器安装位置 ...");
+  }
   if (recover_connect_ && be_.Connected() && busy_.empty() && be_.PendingCount() == 0) {
     recover_connect_ = false;
     ConnectCarla(true);
@@ -1287,7 +1301,9 @@ void App::DrawSceneTab() {
                         ImGuiSelectableFlags_SpanAllColumns | ImGuiSelectableFlags_AllowOverlap);
       if (ImGui::IsItemHovered()) hover = id;
       ImGui::SameLine(0, 0);
-      ImGui::TextColored(p.text_dim, "%s", id.size() > 8 ? (id.substr(0, 6) + "…").c_str() : id.c_str());
+      // Map objects have 20-digit ids: show the end, which tells them apart.
+      ImGui::TextColored(p.text_dim, "%s", id.size() > 8 ? ("…" + id.substr(id.size() - 6)).c_str() : id.c_str());
+      if (id.size() > 8 && ImGui::IsItemHovered()) ImGui::SetTooltip("id %s", id.c_str());
       ImGui::TableSetColumnIndex(1);
       const bool walker = o.value("type", std::string()) == "walker";
       ImGui::TextColored(SceneColor(o), "%s", walker ? "行人" : o.value("parked", false) ? "停放车辆" : "车辆");

@@ -384,6 +384,22 @@ def export_kitti(ses, out, camera=None, lidar=None, min_lidar_pts=1, progress=No
     def row(m):
         return " ".join("%.12e" % x for x in np.asarray(m).reshape(-1))
 
+    # Stereo: another RGB camera with the same intrinsics and orientation, to
+    # the right of this one (e.g. the KITTI preset's cam_right) is image_3 with
+    # P3 = K [I | -c], c = its centre in this camera's (rectified) frame.
+    P3, right = P, None
+    for n, sd in ses.sensors.items():
+        if n == camera or sd["type"] != "rgb" or not np.allclose(np.array(sd.get("K", K)), K, atol=1e-6):
+            continue
+        rel = cam_from_ego @ ses.extrinsic[n]  # partner -> this camera (CARLA axes)
+        if not np.allclose(rel[:3, :3], np.eye(3), atol=2e-3):
+            continue
+        c = C @ rel[:3, 3]  # KITTI camera axes: x right, y down, z forward
+        if c[0] > 0.05 and abs(c[1]) < 0.02 and abs(c[2]) < 0.02:
+            right, P3 = n, K @ np.hstack([np.eye(3), -c.reshape(3, 1)])
+            os.makedirs(os.path.join(tr, "image_3"), exist_ok=True)
+            break
+
     # The ego "down" direction in KITTI camera axes (camera y only for a level camera).
     down_cam = C @ (cam_from_ego[:3, :3] @ np.array([0.0, 0.0, -1.0]))
     mount = ses.sensors[camera].get("mount", {})
@@ -397,13 +413,16 @@ def export_kitti(ses, out, camera=None, lidar=None, min_lidar_pts=1, progress=No
         if src is None or ses.file(lidar, frame) is None:
             continue  # without its lidar sweep every object would be filtered out: a false "empty road"
         _copy_image(src, os.path.join(tr, "image_2", name), ".png")
+        if right is not None and ses.file(right, frame) is not None:
+            _copy_image(ses.file(right, frame), os.path.join(tr, "image_3", name), ".png")
         pts = ses.lidar_points(lidar, frame).astype(np.float32).copy()
         pts_ego = ses.to_ego(lidar, pts)
         pts[:, 1] *= -1.0
         pts.tofile(os.path.join(tr, "velodyne", name + ".bin"))
         with open(os.path.join(tr, "calib", name + ".txt"), "w", encoding="utf-8") as f:
-            for k in ("P0", "P1", "P2", "P3"):
+            for k in ("P0", "P1", "P2"):
                 f.write("%s: %s\n" % (k, row(P)))
+            f.write("P3: %s\n" % row(P3))
             f.write("R0_rect: %s\n" % row(np.eye(3)))
             f.write("Tr_velo_to_cam: %s\n" % row(T[:3]))
             f.write("Tr_imu_to_velo: %s\n" % row(imu[:3]))
@@ -456,11 +475,11 @@ def export_kitti(ses, out, camera=None, lidar=None, min_lidar_pts=1, progress=No
         f.write("# kitti_index carla_frame\n")
         f.write("".join("%s %d\n" % (i, fr) for i, fr in pairs))
     with open(os.path.join(out, "README_carla.txt"), "w", encoding="utf-8") as f:
-        f.write("由 CARLA CoSim Studio 从 %s 导出。\n相机 %s -> image_2，激光雷达 %s -> velodyne（y 轴已翻转为 KITTI 左手->右手约定）。\n"
+        f.write("由 CARLA CoSim Studio 从 %s 导出。\n相机 %s -> image_2%s，激光雷达 %s -> velodyne（y 轴已翻转为 KITTI 左手->右手约定）。\n"
                 "occluded 由框内激光点数估计：>=50 为 0，>=10 为 1，其余为 2；框内点数少于 %d 的目标不导出。\n"
-                % (ses.root, camera, lidar, min_lidar_pts))
+                % (ses.root, camera, "，%s -> image_3（双目，P3 含基线）" % right if right else "", lidar, min_lidar_pts))
     res = {"format": "kitti", "out": os.path.abspath(out), "frames": len(ids), "objects": n_obj,
-           "camera": camera, "lidar": lidar}
+           "camera": camera, "lidar": lidar, "stereo_right": right}
     if tilted:
         res["warning"] = ("相机 %s 有俯仰或侧倾：KITTI 的朝向角 ry 定义在相机 y 轴上，倾斜相机的朝向只是近似"
                           "（位置已按真实竖直方向计算）。训练 KITTI 模型建议用水平安装的相机" % camera)

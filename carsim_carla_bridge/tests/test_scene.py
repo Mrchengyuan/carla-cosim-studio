@@ -50,6 +50,15 @@ class Controller:
         return [0.35, 0.0, 0.0]
 '''
 
+# Drives a tight circle (more than a full turn) and records ego / CarSim yaw and the lane.
+CIRCLE = '''
+import json, os
+def control(exports, t, dt, scene):
+    with open(os.environ["SCENE_TEST_LOG"] + ".circle", "a") as f:
+        f.write(json.dumps({"yaw": scene["ego"]["Yaw"], "Yaw": exports["Yaw"], "lane": scene.get("lane") is not None}) + "\\n")
+    return [0.25, 0.0, 300.0]
+'''
+
 OLD_STYLE = '''
 def control(exports, t, dt):
     return [0.2, 0.0, 0.0]
@@ -122,6 +131,8 @@ def main():
 
         with open(os.path.join(tmp, "old_style.py"), "w") as f:
             f.write(OLD_STYLE)
+        with open(os.path.join(tmp, "circle.py"), "w") as f:
+            f.write(CIRCLE)
         cfg = c.call("default_config")
         check("scene selection in the config", cfg["scene"]["collision"] == "log" and "rel_x" in cfg["scene"]["objects"]
               and set(cfg["scene"]["object_types"]) == {"vehicle", "walker", "parked"})
@@ -185,22 +196,32 @@ def main():
         r = json.loads(json.dumps(cfg))
         r["sync"]["duration"] = 9.0
         r["scene"].update({"collision": "log", "objects": ["dist"], "lane": [], "ego": ["X", "Speed"],
+                           "record": {"objects": ["rel_x"], "ego": ["X"], "lane": []},
                            "exports_all": False, "exports": ["Xo", "Vx"]})
         r["collect"]["capture_every"] = 5
         r["run"]["log_path"] = os.path.join(tmp, "run", "mylog.csv")
         c.events.clear()
         c.call("cosim_start", config=r, timeout=120)
+        # Traffic added and removed during the run: CARLA must not tick on its own.
+        c.wait_event(lambda e: e.get("event") == "telemetry" and e["data"]["t"] > 2.0, 60)
+        tr = c.call("spawn_traffic", vehicles=6, walkers=6, seed=3, timeout=60)
+        c.wait_event(lambda e: e.get("event") == "telemetry" and e["data"]["t"] > 4.0, 60)
+        c.call("clear_traffic", timeout=60)
         st = run_until_state(c, ("finished", "error", "stopped"), 150)
+        tel = [e["data"] for e in c.events if e.get("event") == "telemetry"]
+        offs = {t["world_frame"] - t["frame"] for t in tel}
+        check("traffic during a run: CARLA stays in step with CarSim", len(offs) == 1 and tr["walkers"] > 0,
+              "world frame - run frame: %s; %d vehicles, %d walkers" % (sorted(offs), tr["vehicles"], tr["walkers"]))
         warns = [e["msg"] for e in c.events if e.get("event") == "log" and e.get("level") == "warn" and "碰撞" in e["msg"]]
         check("collision = log keeps running", st["state"] == "finished" and "时长" in st.get("detail", "") and warns,
               "%s; %d warnings" % (st.get("detail"), len(warns)))
         recs = records()
-        check("only the selected keys", recs[5]["obj_keys"] == ["dist", "id", "type"] and "lane" not in recs[5]["keys"]
+        check("algorithm gets its own selection", recs[5]["obj_keys"] == ["dist", "id", "type"] and "lane" not in recs[5]["keys"]
               and sorted(recs[5]["ego"]) == ["Speed", "X"], "%s, scene keys %s" % (recs[5]["obj_keys"], recs[5]["keys"]))
         main = read_csv(os.path.join(tmp, "run", "mylog.csv"))
         objs = read_csv(os.path.join(tmp, "run", "mylog_objects.csv"))
-        check("run record columns = selection", list(main[0]) == ["t", "frame", "ego_X", "ego_Speed", "Xo", "Vx"]
-              and list(objs[0]) == ["t", "frame", "id", "type", "dist"]
+        check("records keep their own selection", list(main[0]) == ["t", "frame", "ego_X", "Xo", "Vx"]
+              and list(objs[0]) == ["t", "frame", "id", "type", "rel_x"]
               and not os.path.exists(os.path.join(tmp, "run", "mylog_lane.csv")), list(main[0]))
         frames = [int(x["frame"]) for x in main]
         check("run record every 5th frame", all(f % 5 == 0 for f in frames) and 80 <= len(main) <= 95
@@ -237,6 +258,9 @@ def main():
         check("frames/ in step with the sensor files", st["state"] == "finished" and len(stems["frames"]) == 5
               and stems["cam"] == stems["lidar"] == stems["frames"] and all(int(x) % 2 == 0 for x in stems["frames"]), stems["frames"])
         fr = json.load(open(os.path.join(root, "frames", stems["frames"][-1] + ".json")))
+        check("frame record = the record selection (algorithm had every key)",
+              fr["objects"] and set(fr["objects"][0]) == {"id", "type", "rel_x", "rel_y", "rel_vx", "rel_vy", "dist", "gap"}
+              and set(recs[-1]["obj_keys"]) == set(ALL_OBJECT_KEYS), sorted(fr["objects"][0]) if fr["objects"] else [])
         check("frame record: CarSim exports + scene", "exports" in fr and "Xo" in fr["exports"] and "ego" in fr
               and "objects" in fr and "lane" in fr and abs(fr["ego"]["X"] - fr["exports"]["Xo"]) < 0.1,
               sorted(fr))
@@ -254,6 +278,22 @@ def main():
         c.call("cosim_start", config=r, timeout=120)
         st = run_until_state(c, ("finished", "error", "stopped"), 60)
         check("control(exports, t, dt) unchanged", st["state"] == "finished", st.get("detail"))
+
+        # ---- 4b: a full circle: ego Yaw keeps counting like CarSim's; off the road: no lane
+        r = json.loads(json.dumps(cfg))
+        r["sync"]["duration"] = 16.0
+        r["scene"]["collision"] = "off"
+        r["run"]["controller"] = {"path": os.path.join(tmp, "circle.py"), "entry": "control"}
+        c.events.clear()
+        c.call("cosim_start", config=r, timeout=120)
+        st = run_until_state(c, ("finished", "error", "stopped"), 120)
+        circ = [json.loads(line) for line in open(log + ".circle")]
+        dev = max(abs(x["yaw"] - x["Yaw"]) for x in circ)
+        turn = max(abs(x["Yaw"]) for x in circ)
+        check("ego Yaw continuous like CarSim's", st["state"] == "finished" and turn > 360 and dev < 0.5,
+              "turned %.0f deg, max |ego Yaw - Yaw| %.3f" % (turn, dev))
+        check("off the road: lane is None", any(not x["lane"] for x in circ) and any(x["lane"] for x in circ),
+              "%d of %d frames without a lane" % (sum(not x["lane"] for x in circ), len(circ)))
 
         # ---- 5: the example algorithm (default selection) stops behind the car --
         put_car()

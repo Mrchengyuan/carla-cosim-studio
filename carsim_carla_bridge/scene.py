@@ -11,8 +11,9 @@ Everything follows CarSim (docs/场景与数据接口.md has the full table):
     (speeds km/h or m/s, angles deg or rad); lengths m.
 
 Obstacles are CARLA vehicles and walkers, plus the parked cars that are part
-of the map, within RANGE_M of the ego. Only the keys selected in the
-"scene" settings are handed over and recorded.
+of the map, within RANGE_M of the ego. The algorithm gets the keys selected
+in "scene" (ego / objects / lane), the records keep the ones in
+"scene" -> "record" (two separate lists).
 """
 
 import csv
@@ -88,6 +89,7 @@ class Units:
         units = units or {}
         self.speed = 3.6 if units.get("speed", "km/h") == "km/h" else 1.0   # from m/s
         self.angle = 1.0 if units.get("angle", "deg") == "deg" else math.pi / 180.0  # from deg
+        self.rate = 1.0 if units.get("rate", "deg/s") == "deg/s" else math.pi / 180.0  # from deg/s
 
 
 class SceneProvider:
@@ -112,10 +114,11 @@ class SceneProvider:
         self.actors, self.queues = [], []
         self.datas, self.frame = [], None   # raw rig data of the last frame (collector)
         self.errors = []
-        self.latest = self._view = None
+        self.latest = self._view = self._record_view = None
         self._kinds = {}                    # actor id -> (type, model, bbox) or None
         self._parked = []                   # map parked cars: (id, model, centre world, yaw, extent)
         self._touching = set()
+        self._yaw = None                    # ego yaw, continuous like CarSim's (not wrapped)
 
     # --------------------------------------------------------------- lifecycle
     def start(self, t=0.0, ego_velocity=None):
@@ -156,6 +159,7 @@ class SceneProvider:
             self.actors.append(a)
             self.queues.append(q)
         self.update(None, t, ego_velocity)
+        self._touching = set()  # an overlap already there at the start counts as a new contact
 
     def stop(self):
         for a in self.actors:
@@ -187,12 +191,18 @@ class SceneProvider:
         su, au = self.units.speed, self.units.angle
         snap = self.world.get_snapshot()
         es = snap.find(self.ego.id)
+        if es is None and self.latest is not None:
+            # The ego left the world (fell off the map, deleted): the backend
+            # ends the run; never report a scene around a stale pose.
+            return self.latest
         etf = es.get_transform() if es is not None else self.ego.get_transform()
         ev = ego_velocity if ego_velocity is not None else \
             es.get_velocity() if es is not None else self.ego.get_velocity()
         rw = etf.transform(carla.Location(*map(float, self.ref_local)))  # reference point, world
         EX, EY, EZ = self._global(rw.x, rw.y, rw.z)
         eyaw = self._global_yaw(etf.rotation.yaw)
+        # Continuous like CarSim's Yaw export (it keeps counting past +-180).
+        self._yaw = eyaw if self._yaw is None else self._yaw + _wrap(eyaw - self._yaw)
         evx, evy = self._global_vec(ev.x, ev.y, ev.z)
         ps = math.radians(eyaw)
         cp, sp = math.cos(ps), math.sin(ps)
@@ -203,7 +213,7 @@ class SceneProvider:
         el, ew, eh = self._ego_ext
         ego_poly = _corners(self._ego_box[0], self._ego_box[1], 0.0, el, ew)
         scene = {"t": t, "frame": frame,
-                 "ego": {"X": EX, "Y": EY, "Z": EZ, "Yaw": eyaw * au, "Vx_global": evx * su, "Vy_global": evy * su,
+                 "ego": {"X": EX, "Y": EY, "Z": EZ, "Yaw": self._yaw * au, "Vx_global": evx * su, "Vy_global": evy * su,
                          "Speed": math.hypot(evx, evy) * su, "length": 2 * el, "width": 2 * ew, "height": 2 * eh}}
         types = set(self.s.get("object_types") or [])
         objs = []
@@ -222,7 +232,7 @@ class SceneProvider:
                          "X": X, "Y": Y, "Z": Z, "Yaw": yaw_g * au,
                          "Vx_global": vg[0] * su, "Vy_global": vg[1] * su, "Speed": math.hypot(*vg) * su,
                          "rel_x": x, "rel_y": y, "rel_yaw": ryaw * au, "rel_vx": rvx * su, "rel_vy": rvy * su,
-                         "dist": dist, "gap": gap, "_z0": Z - ext[2] - EZ})
+                         "dist": dist, "gap": gap, "_z0": Z - ext[2] - EZ, "_z1": Z + ext[2] - EZ})
 
         if types & {"vehicle", "walker"}:
             for a in snap:
@@ -230,8 +240,10 @@ class SceneProvider:
                     continue
                 k = self._kinds.get(a.id, False)
                 if k is False:
-                    k = self._kinds[a.id] = self._kind(a.id)
-                if k is None or k[0] not in types:
+                    k = self._kind(a.id)
+                    if k is not False:  # False: not known to the client yet, ask again next frame
+                        self._kinds[a.id] = k
+                if not k or k[0] not in types:  # None: not an obstacle; False: not known yet
                     continue
                 kind, model, bb = k
                 tf = a.get_transform()
@@ -251,37 +263,46 @@ class SceneProvider:
         scene["objects"] = objs
         scene["collisions"] = self._collisions(objs, eh)
         for o in objs:
-            del o["_z0"]
-        if self.s.get("lane"):
+            del o["_z0"], o["_z1"]
+        if self.s.get("lane") or (self.s.get("record") or {}).get("lane"):
             scene["lane"] = self._lane(rw, eyaw, EX, EY, rel)
         if any(c["name"] in self.algo_sensors for c in self.sensor_cfgs):
             scene["sensors"] = {c["name"]: {"type": c["type"], "data": self._convert(c, d)}
                                 for c, d in zip(self.sensor_cfgs, self.datas or [None] * len(self.sensor_cfgs))
                                 if c["name"] in self.algo_sensors}
-        self.latest, self._view = scene, None
+        self.latest, self._view, self._record_view = scene, None, None
         return scene
 
+    def _select(self, sel, sensors):
+        sc = self.latest
+        v = {"t": sc["t"], "frame": sc["frame"],
+             "ego": {k: sc["ego"][k] for k in sel.get("ego") or () if k in sc["ego"]}}
+        keys = [k for k in OBJECT_KEYS if k in ALWAYS_OBJECT_KEYS or k in (sel.get("objects") or ())]
+        v["objects"] = [{k: o[k] for k in keys} for o in sc["objects"]]
+        if sel.get("lane") and "lane" in sc:
+            v["lane"] = None if sc["lane"] is None else {k: sc["lane"][k] for k in sel["lane"] if k in sc["lane"]}
+        if self.s.get("collision", "log") != "off":
+            v["collisions"] = sc["collisions"]
+        if sensors and "sensors" in sc:
+            v["sensors"] = sc["sensors"]
+        return v
+
     def view(self):
-        """The selected keys of the latest scene: what the algorithm gets."""
+        """The keys of the latest scene selected for the algorithm."""
         if self._view is None and self.latest is not None:
-            sc, s = self.latest, self.s
-            v = {"t": sc["t"], "frame": sc["frame"],
-                 "ego": {k: sc["ego"][k] for k in s.get("ego") or () if k in sc["ego"]}}
-            keys = [k for k in OBJECT_KEYS if k in ALWAYS_OBJECT_KEYS or k in (s.get("objects") or ())]
-            v["objects"] = [{k: o[k] for k in keys} for o in sc["objects"]]
-            if "lane" in sc:
-                v["lane"] = None if sc["lane"] is None else {k: sc["lane"][k] for k in s["lane"] if k in sc["lane"]}
-            if s.get("collision", "log") != "off":
-                v["collisions"] = sc["collisions"]
-            if "sensors" in sc:
-                v["sensors"] = sc["sensors"]
-            self._view = v
+            self._view = self._select(self.s, True)
         return self._view
+
+    def record_view(self):
+        """The keys of the latest scene selected for the records (no sensor data)."""
+        if self._record_view is None and self.latest is not None:
+            self._record_view = self._select(self.s.get("record") or {}, False)
+        return self._record_view
 
     def _kind(self, actor_id):
         a = self.world.get_actor(actor_id)
         if a is None:
-            return None
+            return False
         t = a.type_id
         if t.startswith("vehicle."):
             return "vehicle", t, a.bounding_box
@@ -293,7 +314,7 @@ class SceneProvider:
         """Objects touching the ego's box (CarSim's car drives through them in CARLA)."""
         hits, touching = [], set()
         for o in objs:
-            if o["gap"] > 0.0 or o["_z0"] > 2 * eh:  # apart, or above the car
+            if o["gap"] > 0.0 or o["_z0"] > 2 * eh or o["_z1"] < 0.05:  # apart, above or below the car (bridges)
                 continue
             touching.add(o["id"])
             hits.append({"id": o["id"], "type": o["type"], "model": o["model"], "new": o["id"] not in self._touching})
@@ -302,8 +323,8 @@ class SceneProvider:
 
     def _lane(self, rw, eyaw, EX, EY, rel):
         wp = self.map.get_waypoint(rw, project_to_road=True, lane_type=carla.LaneType.Driving)
-        if wp is None:
-            return None
+        if wp is None or wp.transform.location.distance(rw) > wp.lane_width / 2 + 1.5:
+            return None  # not on a driving lane (parking lot, off the road)
         au, su = self.units.angle, self.units.speed
         wps, cur, d = [wp], wp, 0.0
         while d + LANE_STEP_M <= RANGE_M + 1e-6:
@@ -405,8 +426,9 @@ class SceneProvider:
             return radar_iso(d.raw_data, su, au)
         if kind == "imu":
             a, g = d.accelerometer, d.gyroscope
-            return {"accel": [a.x, -a.y, a.z], "gyro": [math.degrees(-g.x) * au, math.degrees(g.y) * au,
-                                                         math.degrees(-g.z) * au],
+            ru = self.units.rate
+            return {"accel": [a.x, -a.y, a.z], "gyro": [math.degrees(-g.x) * ru, math.degrees(g.y) * ru,
+                                                         math.degrees(-g.z) * ru],
                     "compass": math.degrees(d.compass) * au}
         if kind == "gnss":
             return {"lat": d.latitude, "lon": d.longitude, "alt": d.altitude}
@@ -454,14 +476,22 @@ class Recorder:
     "lane"}; the lane file only when scalar lane keys are selected."""
 
     def __init__(self, paths, settings, export_names):
-        s = settings
+        """settings: the "scene" settings; the keys come from its "record" part."""
+        s = dict(settings.get("record") or {}, exports_all=settings.get("exports_all", True),
+                 exports=settings.get("exports") or [])
         self.ego_keys = [k for k in EGO_KEYS if k in (s.get("ego") or ())]
         self.obj_keys = [k for k in OBJECT_KEYS if k in ALWAYS_OBJECT_KEYS or k in (s.get("objects") or ())]
         self.lane_keys = [k for k in LANE_KEYS if k in (s.get("lane") or ()) and k not in LANE_LISTS]
         self.exports = list(export_names) if s.get("exports_all", True) else \
             [n for n in export_names if n in (s.get("exports") or ())]
         self.files = []
+        try:
+            self._open(paths)
+        except BaseException:
+            self.close()  # the files opened before the one that failed
+            raise
 
+    def _open(self, paths):
         def open_csv(path, header):
             os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
             f = open(path, "w", newline="", encoding="utf-8")

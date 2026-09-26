@@ -158,6 +158,7 @@ class App {
   bool quit_ = false;
   bool auto_connect_ = false;  // --auto-connect: connect to CARLA once the backend is up
   bool recover_connect_ = false;  // after RestartBackend: reconnect and clear what the old one left
+  bool rig_converting_ = false;   // an old config's rig (CARLA frame) is being converted by the backend
   std::string busy_task_;         // what the backend worker has been busy with ("busy" heartbeat)
   double busy_secs_ = 0, busy_seen_ = 0;
   bool busy_carla_gone_ = false;  // ... and CARLA does not listen any more

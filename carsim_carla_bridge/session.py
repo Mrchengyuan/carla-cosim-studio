@@ -186,9 +186,10 @@ def start_scene(ses, anchor, ref_local=None, t=0.0, ego_velocity=None):
     rp = d["sync"]["reference_point"]
     if ref_local is None:
         ref_local = front_axle_local(ses.vehicle) if rp == "front_axle" else [float(v) for v in rp]
-    rig = d["rig"]["sensors"] or rigmod.build_preset(d["rig"]["preset"], None, rp)
+    ref = [float(v) for v in ref_local]
+    rig = d["rig"]["sensors"] or rigmod.build_preset(d["rig"]["preset"], rigmod.spec_of(ses.vehicle), ref)
     if d["rig"]["sensors"] and d["rig"].get("frame") == "carla":  # an older config: car centre, y right
-        rig = [rigmod.to_carsim(s, ref_local) for s in rig]
+        rig = [rigmod.to_carsim(s, ref) for s in rig]
     rig = [c for c in rig if c.get("enabled", True)]
     wanted = set(d["scene"].get("sensors") or [])
     sensors = rig if d["collect"].get("enabled") else [c for c in rig if c["name"] in wanted]
@@ -208,9 +209,9 @@ def scene_step(ses, world_frame, t, ego_velocity=None):
     """After a tick: update the scene, record a sample, handle contacts.
     Returns telemetry fields."""
     scene = ses.scene.update(world_frame, t, ego_velocity)
-    every = max(1, int(ses.d["collect"].get("capture_every", 1)))
+    every = st.sample_every(ses.d)
     if ses.recorder is not None and world_frame % every == 0:  # the data collector samples the same frames
-        ses.recorder.write(scene, ses.exports())
+        ses.recorder.write(ses.scene.record_view(), ses.exports())
     new = [c for c in scene["collisions"] if c["new"]]
     policy = ses.d["scene"].get("collision", "log")
     if policy == "off":
@@ -218,7 +219,10 @@ def scene_step(ses, world_frame, t, ego_velocity=None):
     elif new and policy == "stop" and not ses.end_reason:
         c = new[0]
         ses.end_reason = "碰撞：撞到 %s（id %s）" % (c["model"], c["id"])
-    return {"scene": gui_view(scene, ses.scene._ego_box), "collisions": new}
+    gv = gui_view(scene, ses.scene._ego_box)
+    if policy == "off":
+        gv["collisions"] = []  # not checked: nothing to show either
+    return {"scene": gv, "collisions": new}
 
 
 class CoSimSession:

@@ -57,17 +57,25 @@ def default_dict():
         # Conservative defaults: a run without an explicit limit never starts.
         "collect": {"enabled": False, "out_dir": "datasets", "session": "", "image_format": "jpg",
                     "jpg_quality": 90, "pointcloud_format": "bin", "capture_every": 1, "labels": True,
-                    "label_radius": 80.0, "max_frames": 100, "max_seconds": 0.0, "max_gb": 2.0},
-        # What the control algorithm gets and the records hold (scene.py,
-        # docs/场景与数据接口.md): the selected keys only. collision: "log" =
-        # report and go on, "stop" = end the run, "off" = no check. sensors:
-        # rig sensor names handed to the algorithm. exports_all / exports:
-        # which CarSim exports the records keep (the algorithm gets them all).
+                    "label_radius": 80.0, "max_frames": 100, "max_seconds": 0.0, "max_gb": 2.0,
+                    # Sampling period of collection and run records, s (a multiple of
+                    # frame_dt); 0 = every capture_every frames (older configs).
+                    "sample_period": 0.0},
+        # What the control algorithm gets (ego / objects / lane / sensors) and
+        # what the records keep (record, exports_all / exports): the selected
+        # keys only (scene.py, docs/场景与数据接口.md). collision: "log" = report
+        # and go on, "stop" = end the run, "off" = no check. sensors: rig
+        # sensor names handed to the algorithm; the algorithm always gets all
+        # CarSim exports.
         "scene": {"collision": "log", "object_types": ["vehicle", "walker", "parked"],
                   "ego": ["X", "Y", "Z", "Yaw", "Vx_global", "Vy_global", "Speed", "length", "width", "height"],
                   "objects": ["id", "type", "rel_x", "rel_y", "rel_vx", "rel_vy", "dist", "gap"],
                   "lane": ["width", "offset", "heading_err", "center_rel"],
-                  "sensors": [], "exports_all": True, "exports": []},
+                  "sensors": [],
+                  "record": {"ego": ["X", "Y", "Z", "Yaw", "Vx_global", "Vy_global", "Speed", "length", "width", "height"],
+                             "objects": ["id", "type", "rel_x", "rel_y", "rel_vx", "rel_vy", "dist", "gap"],
+                             "lane": ["width", "offset", "heading_err", "center_rel"]},
+                  "exports_all": True, "exports": []},
     }
 
 
@@ -92,6 +100,15 @@ def load_dict(path=None, override=None):
     if override:
         _merge(d, copy.deepcopy(override))
     return d
+
+
+def sample_every(d):
+    """Frames between two samples of the records / data collection."""
+    c, dt = d["collect"], float(d["sync"]["frame_dt"])
+    period = float(c.get("sample_period", 0.0) or 0.0)
+    if period > 0 and dt > 0:
+        return max(1, int(round(period / dt)))
+    return max(1, int(c.get("capture_every", 1) or 1))
 
 
 def to_bridge_cfg(d):

@@ -74,7 +74,8 @@ git clone https://github.com/Mrchengyuan/python_carsim_env
 
 | 有 | 没有 |
 |---|---|
-| 对 CARLA 的全部改动：`carla_patches/carla_0.9.16_external_dynamics.patch`（外部动力学接口；另外修复了 CARLA 0.9.16 自身的几个错误：读取卡车、巴士等多轮车辆物理参数时让服务器崩溃的越界；交通车被撞飞或掉出世界时交通管理器死循环、让仿真卡死；CARLA 服务器退出或卡顿时，客户端库的后台线程（交通管理器、世界状态推送）直接把整个 Python 进程中止） | **编译好的改版 CARLA**（也没有原版 CARLA，原版请从官方下载） |
+| 对 CARLA 的全部改动：`carla_patches/carla_0.9.16_external_dynamics.patch`（外部动力学接口；另外修复了 CARLA 0.9.16 自身的几个错误：读取卡车、巴士等多轮车辆物理参数时让服务器崩溃的越界；交通车被撞飞或掉出世界时交通管理器死循环、让仿真卡死；CARLA 服务器退出或卡顿时，客户端库的后台线程（交通管理器、世界状态推送）直接把整个 Python 进程中止；新生成的交通车速度上限读到垃圾值时交通管理器递归查找交通标志直到栈溢出） | **编译好的改版 CARLA**（也没有原版 CARLA，原版请从官方下载） |
+| `carla_patches/carla_0.9.16_release_gil.patch`：Python 包里 `apply_external_state()`、`get_wheel_steer_angle()` 等待服务器时释放 Python 全局锁（否则和大画面的相机回调互相等待，整个仿真卡死）。要在主补丁之后打 | |
 | Linux 编译用的修复补丁：`carla_patches/carla_0.9.16_linux_libpng_url_fix.patch` | |
 | 一键编译脚本：`scripts/build_ue4.sh`、`scripts/build_carla.sh` | |
 | 启动脚本：`scripts/carla_mod_server.sh`、`scripts/start_studio.sh mod` | |
@@ -227,7 +228,7 @@ class Controller:
 
 命令行和强化学习训练用同一份配置：
 ```bash
-python carsim_carla_bridge/run_cosim.py --config cosim_config.json                      # 界面保存的配置
+python carsim_carla_bridge/run_cosim.py --config carsim_carla_bridge/cosim_config.json # 界面保存的配置
 python carsim_carla_bridge/run_cosim.py --sim simfile.sim --controller carsim_carla_bridge/controllers/my_controller.py
 python carsim_carla_bridge/run_cosim.py --mock --duration 20                             # 不需要 CarSim
 ```
@@ -247,7 +248,7 @@ python carsim_carla_bridge/run_cosim.py --mock --duration 20                    
 | `tests/test_backend.py` | 界面后端全部命令（地图、天气、交通、传感器、多视图、录制、联合仿真、暂停 / 单步、出生点被占时启动失败不丢主车） | 35/35 |
 | `tests/test_features.py` | 传感器套件、磁盘保护、各驾驶模式、自定义控制算法、停止后停车、3 帧多传感器采集 | 18/18 |
 | `tests/test_dataset.py` | 小规模采集 → 浏览渲染 → KITTI / nuScenes 导出；用语义激光雷达验证坐标约定，用 KITTI 文件本身复算框内点数，装了 nuscenes-devkit 时用官方工具交叉验证；缺帧时 KITTI 编号连续、导出中拒绝删除、路径含 `[ ]` 等特殊字符 | 22/22 |
-| `tests/test_robustness.py` | 后端抗异常：控制算法在导入或运行时调用 `sys.exit`、输出 NaN，格式错误的请求，不存在的车型（主车和传感器保留），视图建不起来时通知界面，改版客户端连原版服务器时自动用兼容模式，测量全部车型（含 6 轮卡车），控制算法返回值个数不对 / 出错时指出文件和行号，主车被 CARLA 删除（开出地图掉出世界）时运行带原因结束、界面得知，交通车被撞飞时运行不卡死（改版包），交通车停在出生点上时自动挪开，回放不重复生成车辆、结束后不留残留，重新连接时清理主车 / 交通 / 视图，非有限数值安全发送 | 原版包 27/27，改版包 29/29；改版 CARLA 上 28/28 |
+| `tests/test_robustness.py` | 后端抗异常：控制算法在导入或运行时调用 `sys.exit`、输出 NaN，格式错误的请求，不存在的车型（主车和传感器保留），视图建不起来时通知界面，改版客户端连原版服务器时自动用兼容模式，测量全部车型（含 6 轮卡车），控制算法返回值个数不对 / 出错时指出文件和行号，主车被 CARLA 删除（开出地图掉出世界）时运行带原因结束、界面得知，交通车被撞飞时运行不卡死（改版包），交通车停在出生点上时自动挪开，回放不重复生成车辆、结束后不留残留，键盘驾驶配 960×540 实时画面不卡死，重新连接时清理主车 / 交通 / 视图，非有限数值安全发送 | 原版包 28/28，改版包 30/30；改版 CARLA 上 29/29 |
 | `tests/test_all_vehicles.py` | 41 种车型（含自行车、摩托车、6 轮卡车、巴士）逐一当主车做联合仿真，CARLA 服务器不能崩 | 41/41 |
 | `tests/test_carla_restart.py` | 运行中关掉 CARLA 再重新启动（会真的停止并重启 CARLA；改版加 `--mod`）：后端不能崩、立刻说明原因、能连上新的服务器继续用 | 4/4（两种包、两种 CARLA） |
 | `tests/test_modified_carla.py` | 改版 CARLA：位姿、速度、角速度、IMU、四轮转向、悬架、物理交接 | 10/10 |

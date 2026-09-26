@@ -471,7 +471,7 @@ void App::DrawRigProperties() {
     if (ImGui::SliderFloat("##pps", &pps, 5, 500, "%.0f")) a["points_per_second"] = static_cast<int>(pps * 1e4f);
     attr_float("上视场 °", "upper_fov", -30, 30, "%.1f");
     attr_float("下视场 °", "lower_fov", -60, 0, "%.1f");
-    ImGui::TextColored(p.text_dim, "采集时每帧自动输出完整一圈扫描（旋转频率 = 采集频率）");
+    ui::DimWrapped("采集时每帧自动输出完整一圈扫描（旋转频率 = 采集频率）");
   } else if (t == "radar") {
     attr_float("水平视场 °", "horizontal_fov", 5, 180, "%.0f");
     attr_float("垂直视场 °", "vertical_fov", 1, 60, "%.0f");

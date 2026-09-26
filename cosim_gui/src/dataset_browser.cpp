@@ -257,7 +257,7 @@ void App::DrawPanelDataset() {
   ui::RecordTarget("ds:refresh");
   std::string to_delete;
   if (ds_sessions_.empty()) {
-    ImGui::TextColored(p.text_dim, "这个目录里还没有数据集。在“数据采集”页打开采集后点“运行”。");
+    ui::DimWrapped("这个目录里还没有数据集。在“数据采集”页打开采集后点“运行”。");
   } else if (ImGui::BeginTable("dssessions", 4, ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInnerH | ImGuiTableFlags_SizingStretchProp)) {
     ImGui::TableSetupColumn("名称", ImGuiTableColumnFlags_WidthStretch, 3.0f);
     ImGui::TableSetupColumn("帧");
@@ -413,7 +413,7 @@ void App::DrawPanelDataset() {
                          r.value("size_mb", 0.0));
       ImGui::TextWrapped("%s", r.value("out", std::string()).c_str());
       if (r.value("format", std::string()) == "nuscenes")
-        ImGui::TextColored(p.text_dim, "用 NuScenes(version='%s', dataroot='<上面的目录>') 读取", r.value("version", std::string()).c_str());
+        ui::DimWrapped("用 NuScenes(version='%s', dataroot='<上面的目录>') 读取", r.value("version", std::string()).c_str());
     } else {
       ImGui::TextColored(p.danger, ICON_FA_CIRCLE_XMARK "  导出失败：%s", ds_export_result_.value("error", std::string()).c_str());
     }

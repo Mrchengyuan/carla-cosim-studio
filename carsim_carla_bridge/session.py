@@ -318,6 +318,21 @@ class CarlaDriveSession:
         w.apply_settings(s)
         if self.tm is not None:  # only the autopilot needs the traffic manager
             self.tm.set_synchronous_mode(True)
+        # Front wheel angles for the telemetry are computed the way PhysX does
+        # (steer x max angle x speed curve for the inner wheel, Ackermann for
+        # the outer one), not read with get_wheel_steer_angle(): that call
+        # waits for the server holding the GIL (original carla package), which
+        # deadlocks with the sensor callbacks of large live views.
+        pc = self.vehicle.get_physics_control()
+        self._steer_geo = None
+        if len(pc.wheels) >= 4:
+            inv = self.vehicle.get_transform().get_inverse_matrix()
+            pos = [[sum(inv[r][k] * p[k] for k in range(4)) for r in range(2)]
+                   for p in ([w.position.x / 100.0, w.position.y / 100.0, w.position.z / 100.0, 1.0] for w in pc.wheels[:4])]
+            wheelbase = (pos[0][0] + pos[1][0]) / 2 - (pos[2][0] + pos[3][0]) / 2
+            track = abs(pos[1][1] - pos[0][1])
+            curve = sorted((p.x, p.y) for p in pc.steering_curve) or [(0.0, 1.0)]
+            self._steer_geo = (pc.wheels[0].max_steer_angle, curve, wheelbase, track)
         dr = d["drive"]
         self.mode = dr["carla_driver"]
         if self.mode == "autopilot":
@@ -335,6 +350,24 @@ class CarlaDriveSession:
         self._wall0 = time.perf_counter()
         return {"external_api": False, "server_api": None, "reference_point": [0, 0, 0], "t_step": dt, "inner_steps": 1,
                 "clock_warning": False, "dynamics": "CARLA"}
+
+    def _wheel_angles(self, steer, speed_kmh):
+        """[FL, FR] steer angle, deg, + = right (as get_wheel_steer_angle)."""
+        if self._steer_geo is None or abs(steer) < 1e-4:
+            return [0.0, 0.0]
+        max_deg, curve, wheelbase, track = self._steer_geo
+        k = curve[-1][1]
+        for (x0, y0), (x1, y1) in zip(curve, curve[1:]):
+            if speed_kmh <= x1:
+                k = y0 + (y1 - y0) * max(0.0, speed_kmh - x0) / max(1e-6, x1 - x0)
+                break
+        if speed_kmh <= curve[0][0]:
+            k = curve[0][1]
+        inner = min(abs(steer), 1.0) * max_deg * k
+        outer = math.degrees(math.atan(wheelbase / (wheelbase / math.tan(math.radians(inner)) + track))) \
+            if wheelbase > 0 and inner > 1e-3 else inner
+        # Turning right: the right wheel is the inner one.
+        return [outer, inner] if steer > 0 else [-inner, -outer]
 
     def stop(self, release_vehicle=True):
         try:
@@ -357,12 +390,7 @@ class CarlaDriveSession:
         t = self.frame * dt
         tf = self.vehicle.get_transform()
         c = self.vehicle.get_control()
-        steer = []
-        for wl in (carla.VehicleWheelLocation.FL_Wheel, carla.VehicleWheelLocation.FR_Wheel):
-            try:
-                steer.append(self.vehicle.get_wheel_steer_angle(wl))
-            except RuntimeError:
-                steer.append(0.0)
+        steer = self._wheel_angles(c.steer, speed * 3.6)
         self.done = self.n_frames > 0 and self.frame >= self.n_frames
         wall = time.perf_counter() - self._wall0
         try:

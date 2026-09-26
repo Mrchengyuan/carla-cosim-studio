@@ -253,8 +253,8 @@ Import（输入）保持你原来的三个，REPLACE 模式：油门、制动、
 
 1. 编译 CARLA 定制版 UE4（`Setup.bat`、`GenerateProjectFiles.bat`，VS 2022 编译 `UE4.sln`），设置环境变量 `UE4_ROOT`。
 2. 克隆 CARLA 0.9.16：`git clone --depth 1 -b 0.9.16 https://github.com/carla-simulator/carla.git C:\carla`
-3. 打补丁：`cd /d C:\carla` → `git apply C:\carla-cosim-studio\carla_patches\carla_0.9.16_external_dynamics.patch`
-   （`linux_libpng_url_fix.patch` 只在 Linux 需要）。以前按旧版补丁编译过的，只需打新增的部分，见编译指南第 2 节末尾。
+3. 打补丁：`cd /d C:\carla` → `git apply C:\carla-cosim-studio\carla_patches\carla_0.9.16_external_dynamics.patch`，
+   再 `git apply C:\carla-cosim-studio\carla_patches\carla_0.9.16_release_gil.patch`（`linux_libpng_url_fix.patch` 只在 Linux 需要）。以前按旧版补丁编译过的，只需打新增的部分，见编译指南第 2 节末尾。
 4. 在 “x64 Native Tools Command Prompt for VS 2022” 里：`Update.bat` → `make PythonAPI` → `make package`。
 5. 打包结果在 `C:\carla\Build\UE4Carla\0.9.16\WindowsNoEditor\`，这正是 `env.bat` 里 `CARLA_MOD_ROOT` 的默认值。
 6. 安装改版 Python 包：`pip install C:\carla\PythonAPI\carla\dist\carla-0.9.16-cp310-cp310-win_amd64.whl --force-reinstall`，
@@ -270,7 +270,7 @@ Import（输入）保持你原来的三个，REPLACE 模式：油门、制动、
 cd /d C:\carla-cosim-studio\carsim_carla_bridge
 ..\venv\Scripts\activate
 python run_cosim.py --mock --duration 20                                       rem 模拟 CarSim
-python run_cosim.py --config ..\cosim_config.json                              rem 界面保存的配置
+python run_cosim.py --config cosim_config.json                                 rem 界面保存的配置（存在本目录）
 python run_cosim.py --sim C:\carla-cosim-studio\python_carsim_env\simfile.sim --carsim-repo ..\python_carsim_env --controller controllers\my_controller.py
 ```
 在训练代码里使用（每个 `env.control_step()` 后加两行）：

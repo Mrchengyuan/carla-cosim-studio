@@ -268,7 +268,7 @@ PROXY=http://127.0.0.1:7890 ./scripts/build_carla.sh
 | 步骤 | 做什么 |
 |---|---|
 | `source` | 克隆 CARLA 0.9.16 源码到 `carla_src/` |
-| `patch` | 打上 `carla_patches/` 里的两个补丁（外部动力学接口 + libpng 下载地址修复） |
+| `patch` | 按文件名顺序打上 `carla_patches/` 里的三个补丁（外部动力学接口及 CARLA 自身错误的修复、libpng 下载地址修复、Python 包释放全局锁）；已经打过的文件会跳过 |
 | `content` | 下载并解压地图 / 车辆资源（约 21.6 GB） |
 | `pythonapi` | 编译 LibCarla 和 Python 包，生成 `carla_src/PythonAPI/carla/dist/carla-0.9.16-cp310-*.whl` |
 | `editor` | 编译 CARLA 的 Unreal 插件（包含我们的改动） |
@@ -310,7 +310,7 @@ venv_build/bin/pip install --force-reinstall --no-deps carla_src/PythonAPI/carla
 cd ~/carla-cosim-studio/carsim_carla_bridge
 source ../venv/bin/activate
 python run_cosim.py --mock --duration 20                      # 模拟 CarSim + 示例控制算法
-python run_cosim.py --config ../cosim_config.json             # 用界面保存的配置
+python run_cosim.py --config cosim_config.json                # 用界面保存的配置（界面把它存在本目录）
 python run_cosim.py --sim /path/to/simfile.sim --controller controllers/my_controller.py   # 真实 CarSim + 你的控制算法
 ```
 在自己的训练代码里使用（每个 `env.control_step()` 之后加两行）：

@@ -548,12 +548,14 @@ class Backend:
         spawn_index = int(spawn_index) % len(pts)
         self.anchor = pts[spawn_index]
         self.ego = w.try_spawn_actor(bp, self.anchor)
-        if self.ego is None and self._clear_spawn_point(self.anchor, spawn_index):
-            for _ in range(5):  # a destroyed car leaves the physics scene with the next frame
-                self._tick_or_wait(1)
-                self.ego = w.try_spawn_actor(bp, self.anchor)
-                if self.ego is not None:
-                    break
+        for _ in range(5):
+            # Traffic keeps moving: the next car may roll into the spot just
+            # freed, so clear it again before each attempt. A destroyed car
+            # leaves the physics scene with the next frame.
+            if self.ego is not None or not self._clear_spawn_point(self.anchor, spawn_index):
+                break
+            self._tick_or_wait(1)
+            self.ego = w.try_spawn_actor(bp, self.anchor)
         if self.ego is None:
             self.anchor = None
             raise RuntimeError("出生点 %d 被其他车辆或物体占用，无法生成主车：换一个出生点，或先在“交通流”页清除交通" % spawn_index)
@@ -1332,7 +1334,16 @@ def serve(port, exit_with_client=False):
     threading.Thread(target=heartbeat, daemon=True).start()
     srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    srv.bind(("127.0.0.1", port))
+    for attempt in range(50):
+        try:
+            srv.bind(("127.0.0.1", port))
+            break
+        except OSError:
+            # The previous backend may still be cleaning up (GUI closed and
+            # opened again right away): give it a few seconds.
+            if attempt == 49:
+                raise
+            time.sleep(0.2)
     srv.listen(1)
     print("backend listening on 127.0.0.1:%d" % port, flush=True)
     while True:

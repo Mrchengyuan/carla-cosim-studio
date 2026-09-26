@@ -38,7 +38,10 @@ bool ChoiceCard(const char* id, const char* icon, const char* title, const char*
   const float fs = ImGui::GetFontSize();
   ImGui::PushID(id);
   ImVec2 pos = ImGui::GetCursorScreenPos();
-  const float h = fs * 2.75f;
+  // The description wraps (narrow panels, small screens) and the card grows.
+  const float desc_size = fs * 0.88f, wrap = std::max(fs * 4.0f, w - fs * 4.1f);
+  const float desc_h = ImGui::GetFont()->CalcTextSizeA(desc_size, FLT_MAX, wrap, desc).y;
+  const float h = std::max(fs * 2.75f, fs * 1.65f + desc_h);
   const bool clicked = ImGui::InvisibleButton("##c", ImVec2(w, h));
   const bool hov = ImGui::IsItemHovered();
   ImDrawList* dl = ImGui::GetWindowDrawList();
@@ -52,10 +55,8 @@ bool ChoiceCard(const char* id, const char* icon, const char* title, const char*
   dl->AddText(ImVec2(pos.x + fs * 2.0f, pos.y + fs * 0.42f), ImGui::GetColorU32(selected ? p.accent : p.text_dim), icon);
   ImFont* bold = ui::GetFonts().bold ? ui::GetFonts().bold : ImGui::GetFont();
   dl->AddText(bold, fs, ImVec2(pos.x + fs * 3.5f, pos.y + fs * 0.42f), ImGui::GetColorU32(p.text), title);
-  const ImVec4 clip(pos.x, pos.y, pos.x + w - fs * 0.6f, pos.y + h);
-  dl->AddText(ImGui::GetFont(), fs * 0.88f, ImVec2(pos.x + fs * 3.5f, pos.y + fs * 1.5f), ImGui::GetColorU32(p.text_dim),
-              desc, nullptr, 0.0f, &clip);
-  if (hov && ImGui::CalcTextSize(desc).x * 0.88f > w - fs * 4.1f) ImGui::SetTooltip("%s", desc);
+  dl->AddText(ImGui::GetFont(), desc_size, ImVec2(pos.x + fs * 3.5f, pos.y + fs * 1.5f), ImGui::GetColorU32(p.text_dim),
+              desc, nullptr, wrap);
   ImGui::PopID();
   return clicked;
 }
@@ -226,7 +227,7 @@ void App::DrawPanelWorld() {
 void App::DrawPanelTraffic() {
   const ui::Palette& p = ui::Colors();
   ui::BeginCard(ICON_FA_TRAFFIC_LIGHT, "背景交通流");
-  ImGui::TextColored(p.text_dim, "由 CARLA 交通管理器控制：遵守信号灯、会让行，行人在人行道上随机走动。");
+  ui::DimWrapped("由 CARLA 交通管理器控制：遵守信号灯、会让行，行人在人行道上随机走动。");
   ui::Row("车辆数");
   ImGui::SliderInt("##tv", &traffic_vehicles_, 0, 150);
   ui::Row("行人数");
@@ -492,8 +493,8 @@ void App::DrawPanelDrive() {
       EditString(ctl, "path");
       ui::Row("入口", "文件里的类名（带 control 方法）或函数名", fs * 8);
       EditString(ctl, "entry");
-      ImGui::TextColored(p.text_dim, "接口：control(exports, t, dt) -> [油门, 制动, 方向盘角]，exports 是按变量名取值的 CarSim 导出变量");
-      ImGui::TextColored(p.text_dim, "示例：controllers/example_controller.py（定速 + 蛇形），controllers/simple_path_follower.py（SimplePathFollower）");
+      ui::DimWrapped("接口：control(exports, t, dt) -> [油门, 制动, 方向盘角]，exports 是按变量名取值的 CarSim 导出变量");
+      ui::DimWrapped("示例：controllers/example_controller.py（定速 + 蛇形），controllers/simple_path_follower.py（SimplePathFollower）");
     }
     ImGui::Dummy(ImVec2(0, fs * 0.3f));
     if (ui::FoldHeader(ICON_FA_FLASK, "测试用驾驶方式（还没有算法时，用来检查联合仿真链路）", false, cur != "custom")) {
@@ -714,7 +715,7 @@ void App::DrawPanelCoSim() {
   ImGui::SameLine();
   if (ui::Button(ICON_FA_ROTATE_LEFT, "默认"))
     Call("default_config", json::object(), [this](const json& r) { json carla = cfg_["carla"]; cfg_ = r; cfg_["carla"].update(carla); Log("已恢复默认配置"); });
-  ImGui::TextColored(p.text_dim, "同一个 JSON 也能给命令行和强化学习训练用：python run_cosim.py --config <文件>");
+  ui::DimWrapped("同一个 JSON 也能给命令行和强化学习训练用：python run_cosim.py --config <文件>");
   ui::EndCard();
 }
 
@@ -830,7 +831,7 @@ void App::DrawPanelRecorder() {
   const ui::Palette& p = ui::Colors();
   const float fs = ImGui::GetFontSize();
   ui::BeginCard(ICON_FA_CIRCLE_DOT, "录制");
-  ImGui::TextColored(p.text_dim, "CARLA 录制器记录整个场景（所有车辆、行人、信号灯），可以之后换一套传感器重新回放采集。");
+  ui::DimWrapped("CARLA 录制器记录整个场景（所有车辆、行人、信号灯），可以之后换一套传感器重新回放采集。");
   ui::Row("文件", "保存在 CARLA 服务器所在机器上");
   InputStr("##rec", rec_file_);
   ImGui::SetCursorPosX(ImGui::GetCursorPosX() + ui::LabelWidth());

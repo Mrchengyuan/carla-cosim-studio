@@ -959,3 +959,38 @@ index 8426f93..9a36d93 100644
    }
  }
  
+diff --git a/LibCarla/source/carla/trafficmanager/MotionPlanStage.cpp b/LibCarla/source/carla/trafficmanager/MotionPlanStage.cpp
+index 31b694c..305c90f 100644
+--- a/LibCarla/source/carla/trafficmanager/MotionPlanStage.cpp
++++ b/LibCarla/source/carla/trafficmanager/MotionPlanStage.cpp
+@@ -4,6 +4,7 @@
+ // This work is licensed under the terms of the MIT license.
+ // For a copy, see <https://opensource.org/licenses/MIT>.
+ 
++#include <cmath>
+ #include <limits>
+ 
+ #include "carla/client/TrafficSign.h"
+@@ -68,7 +69,12 @@ void MotionPlanStage::Update(const unsigned long index) {
+   const float vehicle_speed = vehicle_velocity.Length();
+   const cg::Vector3D vehicle_heading = simulation_state.GetHeading(actor_id);
+   const bool vehicle_physics_enabled = simulation_state.IsPhysicsEnabled(actor_id);
+-  const float vehicle_speed_limit = simulation_state.GetSpeedLimit(actor_id);
++  // CoSim: the speed limit of a vehicle the server has only just spawned can be
++  // garbage (seen: 1.6e27). The landmark search below then covers that
++  // distance and recurses until the stack overflows. Keep it sane.
++  const float raw_speed_limit = simulation_state.GetSpeedLimit(actor_id);
++  const float vehicle_speed_limit = (std::isfinite(raw_speed_limit) && raw_speed_limit > 0.0f && raw_speed_limit < 400.0f)
++                                    ? raw_speed_limit : 30.0f;
+   const Buffer &waypoint_buffer = buffer_map.at(actor_id);
+   const LocalizationData &localization = localization_frame.at(index);
+   const CollisionHazardData &collision_hazard = collision_frame.at(index);
+@@ -363,7 +369,7 @@ float MotionPlanStage::GetLandmarkTargetVelocity(const SimpleWaypoint& waypoint,
+                                                  const ActorId actor_id,
+                                                  float max_target_velocity) {
+ 
+-    auto const max_distance = LANDMARK_DETECTION_TIME * max_target_velocity;
++    auto const max_distance = std::min(LANDMARK_DETECTION_TIME * max_target_velocity, 500.0f);  // CoSim: see Update
+ 
+     float landmark_target_velocity = std::numeric_limits<float>::max();
+ 

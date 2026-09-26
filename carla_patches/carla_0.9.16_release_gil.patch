@@ -1,0 +1,23 @@
+diff --git a/PythonAPI/carla/source/libcarla/Actor.cpp b/PythonAPI/carla/source/libcarla/Actor.cpp
+--- a/PythonAPI/carla/source/libcarla/Actor.cpp
++++ b/PythonAPI/carla/source/libcarla/Actor.cpp
+@@ -95,6 +95,10 @@
+   state.steer = steer;
+   state.brake = brake;
+   state.gear = gear;
++  // CoSim: waits for the server. Holding the GIL meanwhile starves the sensor
++  // callbacks (they need it to run); the server, blocked sending them data,
++  // then never answers: a deadlock until the client time-out.
++  carla::PythonUtil::ReleaseGIL unlock;
+   self.ApplyExternalState(state);
+ }
+ 
+@@ -222,7 +226,7 @@
+       .def("open_door", &cc::Vehicle::OpenDoor, (arg("door_idx")))
+       .def("close_door", &cc::Vehicle::CloseDoor, (arg("door_idx")))
+       .def("set_wheel_steer_direction", &cc::Vehicle::SetWheelSteerDirection, (arg("wheel_location")), (arg("angle_in_deg")))
+-      .def("get_wheel_steer_angle", &cc::Vehicle::GetWheelSteerAngle, (arg("wheel_location")))
++      .def("get_wheel_steer_angle", CALL_WITHOUT_GIL_1(cc::Vehicle, GetWheelSteerAngle, cr::VehicleWheelLocation), (arg("wheel_location")))  // CoSim: see ApplyVehicleExternalState
+       .def("set_wheel_pitch_angle", &cc::Vehicle::SetWheelPitchAngle, (arg("wheel_location")), (arg("angle_in_deg")))
+       .def("get_wheel_pitch_angle", &cc::Vehicle::GetWheelPitchAngle, (arg("wheel_location")))
+       .def("get_light_state", CONST_CALL_WITHOUT_GIL(cc::Vehicle, GetLightState))

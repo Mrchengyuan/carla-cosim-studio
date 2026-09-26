@@ -126,6 +126,9 @@ class App {
   int DatasetFrameNumber() const;
   void UploadViewTexture();
   void UpdateKeyboardDriving();
+  // Relative paths the user types are relative to the bridge directory, like
+  // every other path of a run (controller file, logs, datasets).
+  std::string UserPath(const std::string& path) const;
   void LoadConfig(const std::string& path);
   void SaveConfig(const std::string& path);
   void SavePrefs();

@@ -1,4 +1,5 @@
 // CARLA CoSim Studio entry point: GLFW window + OpenGL3 + Dear ImGui + ImPlot.
+#include <algorithm>
 #include <csignal>
 #include <cstdio>
 #include <cstdlib>
@@ -158,9 +159,10 @@ int main(int argc_raw, char** argv_raw) {
 #endif
   // --size WxH / --scale S: window size and UI scale (e.g. for high-resolution screenshots).
   int win_w = 1680, win_h = 1000;
+  bool size_given = false;
   float scale_override = 0.0f;
   for (int i = 1; i + 1 < argc; ++i) {
-    if (std::string(argv[i]) == "--size") std::sscanf(argv[i + 1], "%dx%d", &win_w, &win_h);
+    if (std::string(argv[i]) == "--size") size_given = std::sscanf(argv[i + 1], "%dx%d", &win_w, &win_h) == 2;
     if (std::string(argv[i]) == "--scale") scale_override = static_cast<float>(std::atof(argv[i + 1]));
   }
   GLFWwindow* window = glfwCreateWindow(win_w, win_h, "CARLA CoSim Studio", nullptr, nullptr);
@@ -170,6 +172,18 @@ int main(int argc_raw, char** argv_raw) {
   }
   glfwMakeContextCurrent(window);
   glfwSwapInterval(1);
+  if (!size_given) {
+    // Never larger than the screen: the default size (scaled up on high-DPI
+    // screens) ran off a 1366x768 laptop, or a 1920x1080 one at 150 %.
+    int wx = 0, wy = 0, ww = 0, wh = 0, fw = 0, fh = 0, l = 0, t = 0, r = 0, b = 0;
+    if (GLFWmonitor* mon = glfwGetPrimaryMonitor()) glfwGetMonitorWorkarea(mon, &wx, &wy, &ww, &wh);
+    glfwGetWindowSize(window, &fw, &fh);
+    glfwGetWindowFrameSize(window, &l, &t, &r, &b);
+    if (ww > 0 && wh > 0 && (fw + l + r > ww || fh + t + b > wh)) {
+      glfwSetWindowSize(window, std::min(fw, ww - l - r), std::min(fh, wh - t - b));
+      glfwSetWindowPos(window, wx + l, wy + t);
+    }
+  }
 
   float xs = 1.0f, ys = 1.0f;
   glfwGetWindowContentScale(window, &xs, &ys);

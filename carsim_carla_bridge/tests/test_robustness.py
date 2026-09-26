@@ -200,6 +200,30 @@ def main():
             c.call("cosim_stop")
             c.call("clear_traffic")
 
+        # ---- a large live view does not freeze the run ------------------------
+        # A call that waits for CARLA while holding the GIL (get_wheel_steer_angle
+        # in the original package) starved the view callback, and CARLA, stuck
+        # sending it camera data, never answered: the keyboard drive froze.
+        c.call("spawn_ego", blueprint="vehicle.tesla.model3", spawn_index=3)
+        c.call("views_set", views=[{"id": "p0", "kind": "rgb", "mode": "chase", "width": 960, "height": 540, "fps": 20}])
+        kb = json.loads(json.dumps(base))
+        kb["drive"].update({"dynamics": "carla", "carla_driver": "manual"})
+        c.events.clear()
+        c.call("cosim_start", config=kb)
+        t_end, sim_t = time.time() + 10.0, 0.0
+        try:
+            while time.time() < t_end:
+                c.call("manual_control", throttle=0.5, brake=0.0, steer=0.2, timeout=25)
+                tel = [e["data"]["t"] for e in c.events if e.get("event") == "telemetry"]
+                sim_t = tel[-1] if tel else sim_t
+                c.events = []
+                time.sleep(0.05)
+        except (TimeoutError, OSError):
+            pass
+        c.call("cosim_stop", timeout=60)
+        check("keyboard drive with a 960x540 live view keeps running", sim_t > 2.0, "sim %.1f s in 10 s" % sim_t)
+        c.call("views_set", views=[{"id": "p0", "kind": "rgb", "mode": "chase", "width": 160, "height": 90, "fps": 5}])
+
         # ---- traffic standing on the ego's spawn point does not block a run ----
         c.call("destroy_ego")
         n = c.call("spawn_traffic", vehicles=300, walkers=0, seed=7)["vehicles"]  # every spawn point

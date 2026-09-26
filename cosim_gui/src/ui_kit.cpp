@@ -143,6 +143,15 @@ void ApplyTheme(bool dark, float scale) {
   s.ScaleAllSizes(scale);
 }
 
+void DimWrapped(const char* fmt, ...) {
+  va_list args;
+  va_start(args, fmt);
+  ImGui::PushStyleColor(ImGuiCol_Text, Colors().text_dim);
+  ImGui::TextWrappedV(fmt, args);
+  ImGui::PopStyleColor();
+  va_end(args);
+}
+
 void BeginCard(const char* icon, const char* title, const char* id) {
   const Palette& p = g_pal;
   const float fs = ImGui::GetFontSize();

@@ -194,7 +194,10 @@ void App::Init(int argc, char** argv) {
   dark_ = prefs_.value("dark_theme", true);
 
   std::string last = prefs_.value("last_config", std::string());
-  if (!last.empty() && plat::FileExists(last)) LoadConfig(last);
+  if (!last.empty()) {
+    if (plat::FileExists(UserPath(last))) LoadConfig(last);
+    else Log("上次用的配置文件不见了：" + UserPath(last) + "，这次用默认设置", "warn");
+  }
   if (prefs_.value("auto_start_backend", true)) StartBackend();
   if (!tour_dir_.empty()) {
     if (hero_spawns_.empty()) BuildTour(); else BuildHeroTour();
@@ -641,7 +644,14 @@ void App::UpdateKeyboardDriving() {
   }
 }
 
-void App::LoadConfig(const std::string& path) {
+std::string App::UserPath(const std::string& path) const {
+  const std::string dir = prefs_.value("backend_dir", std::string());
+  if (path.empty() || dir.empty() || fs::u8path(path).is_absolute()) return path;
+  return (fs::u8path(dir) / fs::u8path(path)).lexically_normal().u8string();
+}
+
+void App::LoadConfig(const std::string& user_path) {
+  const std::string path = UserPath(user_path);
   std::ifstream f(fs::u8path(path));
   json j = f ? json::parse(f, nullptr, false) : json();
   if (!j.is_object()) {
@@ -655,7 +665,8 @@ void App::LoadConfig(const std::string& path) {
   Log("已载入配置 " + path);
 }
 
-void App::SaveConfig(const std::string& path) {
+void App::SaveConfig(const std::string& user_path) {
+  const std::string path = UserPath(user_path);
   std::ofstream f(fs::u8path(path));
   if (!f) {
     Log("无法写入 " + path, "error");

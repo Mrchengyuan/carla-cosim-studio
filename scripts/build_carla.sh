@@ -27,7 +27,8 @@ for step in $STEPS; do
     for p in "$COSIM_ROOT"/carla_patches/*.patch; do
       for f in $(grep "^+++ b/" "$p" | cut -c7- | tr -d "\r"); do
         if git apply --reverse --check --include="$f" "$p" 2>/dev/null; then echo ">>> 已打过：$f"
-        else git apply --include="$f" "$p" && echo ">>> 已应用：$f"; fi
+        elif git apply --check --include="$f" "$p" 2>/dev/null; then git apply --include="$f" "$p" && echo ">>> 已应用：$f"
+        else echo ">>> 跳过：$f（已经被后面的补丁改过；如果后面的补丁也报错，说明这个文件被手动改动过）"; fi
       done
     done ;;
   content)

@@ -67,6 +67,8 @@ void Splitter(const char* id, bool vertical, float length, float* size, float lo
 // ---- widgets --------------------------------------------------------------
 enum class Kind { Primary, Secondary, Danger, Success };
 bool Button(const char* icon, const char* text, Kind kind = Kind::Secondary, ImVec2 size = ImVec2(0, 0));
+// Secondary text that wraps at the panel edge instead of being cut off.
+void DimWrapped(const char* fmt, ...) IM_FMTARGS(1);
 bool IconButton(const char* icon, const char* tooltip, const char* id);
 // Flat toolbar button: coloured icon + label, frame only on hover.
 bool ToolButton(const char* icon, const char* label, const ImVec4& icon_color, const char* tooltip, float height);

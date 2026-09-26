@@ -200,6 +200,52 @@ def main():
             c.call("cosim_stop")
             c.call("clear_traffic")
 
+        # ---- co-sim: the car sits on the road, settings are locked, ... ------
+        c.call("spawn_ego", blueprint="vehicle.tesla.model3", spawn_index=3)
+        c.call("cosim_start", config=json.loads(json.dumps(base)))
+        time.sleep(1.5)
+        ow.wait_for_tick(10)
+        ego = ow.get_actor(c.call("world_info")["ego_id"])
+        tf, bb = ego.get_transform(), ego.bounding_box
+        gap = tf.location.z + bb.location.z - bb.extent.z - ow.get_map().get_waypoint(tf.location).transform.location.z
+        check("co-sim (CarSim height): the car sits on the road, it does not float above the spawn point",
+              abs(gap) < 0.15, "bottom %.3f m above the road" % gap)
+        ok, msg = expect_error(c, "world_settings", "运行中", synchronous=False)
+        check("simulation settings cannot be changed during a run", ok, msg)
+        c.call("cosim_stop")
+        # keyboard driving: when the GUI stops sending keys, the car does not drive on
+        kb0 = json.loads(json.dumps(base))
+        kb0["drive"].update({"dynamics": "carla", "carla_driver": "manual"})
+        c.events.clear()
+        c.call("cosim_start", config=kb0)
+        for _ in range(60):
+            c.call("manual_control", throttle=1.0, brake=0.0, steer=0.0)
+            time.sleep(0.05)
+        v_on = max([e["data"]["speed_kmh"] for e in c.events if e.get("event") == "telemetry"] or [0.0])
+        time.sleep(3.0)
+        c.call("ping")
+        v_off = [e["data"]["speed_kmh"] for e in c.events if e.get("event") == "telemetry"][-1]
+        c.call("cosim_stop")
+        check("keyboard drive: no keys for a while = throttle released (dead man's switch)", v_on > 5.0 and v_off < 0.7 * v_on,
+              "%.1f -> %.1f km/h" % (v_on, v_off))
+        # collection with an event sensor must not wait 5 s per frame; a reused session name gets its own folder
+        col = json.loads(json.dumps(base))
+        col["rig"]["sensors"] = [{"name": "cam", "type": "rgb", "x": 1.5, "y": 0.0, "z": 1.6, "pitch": 0.0, "yaw": 0.0, "roll": 0.0,
+                                  "attributes": {"image_size_x": 320, "image_size_y": 180, "fov": 90}},
+                                 {"name": "bump", "type": "collision", "x": 0.0, "y": 0.0, "z": 0.0, "pitch": 0.0, "yaw": 0.0, "roll": 0.0,
+                                  "attributes": {}}]
+        col["collect"].update({"enabled": True, "out_dir": os.path.join(tmp, "ds"), "session": "same", "max_frames": 10, "max_gb": 1.0})
+        roots = []
+        for _ in range(2):
+            c.events.clear()
+            t0 = time.time()
+            c.call("cosim_start", config=col)
+            st = run_until(c, ("finished", "error"), 120)
+            roots.append(sorted(os.listdir(os.path.join(tmp, "ds"))))
+        check("collection with a collision sensor runs at full speed", st["state"] == "finished" and time.time() - t0 < 30,
+              "%s in %.0f s" % (st["state"], time.time() - t0))
+        check("a reused session name never writes into the old session", roots[-1] == ["same", "same_2"], roots[-1])
+
         # ---- a large live view does not freeze the run ------------------------
         # A call that waits for CARLA while holding the GIL (get_wheel_steer_angle
         # in the original package) starved the view callback, and CARLA, stuck

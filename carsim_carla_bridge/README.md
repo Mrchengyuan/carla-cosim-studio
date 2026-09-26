@@ -72,13 +72,11 @@ world.tick()
 
 **还没有验证的部分**：
 - 真实 CarSim 的导出变量名和单位（CarSim 只能在你的 Windows 上跑）。
-- 改版 CARLA 的 Unreal 插件编译（需要 UE4）。
-- 悬架行程的方向：按 UE4 源码推断压缩时车轮上移（与 PhysX `suspJounce` 同号），需要编译后实际看一下。
 - 真实 CarSim 输出下参考点位置是否准确。
+- 改版 CARLA 的 Unreal 插件已在 Ubuntu 上编译并测试（悬架方向、四轮转向、IMU 等，见 `tests/test_modified_carla.py`），Windows 上尚未编译。
 
 ## 已知限制
 
-- 车辆被设为运动学刚体、按瞬移方式更新位姿，所以不会产生碰撞响应（不会被撞开），
-  碰撞传感器也很可能不会触发（尚未验证）。需要碰撞时，可以在 CarSim 端处理，
+- 车辆被设为运动学刚体、按瞬移方式更新位姿，所以不会产生碰撞响应（不会被撞开）。需要碰撞时，可以在 CarSim 端处理，
   或者调用 `restore_physx_physics()` 切回 CARLA 物理。
 - 目前一次只同步一辆 CarSim 车。多辆车需要多开 CarSim 进程，并给每辆车建一个 `CarlaVehicleSync`。

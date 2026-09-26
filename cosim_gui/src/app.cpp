@@ -173,8 +173,17 @@ void App::Init(int argc, char** argv) {
   std::ifstream pf(fs::u8path(prefs_path_));
   if (pf) {
     json saved = json::parse(pf, nullptr, false);
-    if (saved.is_object()) prefs_.update(saved);
+    // A hand-edited value of the wrong type (e.g. "backend_port": "57100")
+    // would throw on every start: keep the default for it.
+    if (saved.is_object())
+      for (auto& kv : saved.items()) {
+        const json& def = prefs_.contains(kv.key()) ? prefs_[kv.key()] : json();
+        if (def.is_null() || (def.is_number() && kv.value().is_number()) ||
+            (def.is_string() && kv.value().is_string()) || (def.is_boolean() && kv.value().is_boolean()))
+          prefs_[kv.key()] = kv.value();
+      }
   }
+  prefs_file_ = prefs_;
   for (int i = 1; i < argc; ++i) {
     std::string a = argv[i];
     auto next = [&](std::string& dst) { if (i + 1 < argc) dst = argv[++i]; };
@@ -182,9 +191,16 @@ void App::Init(int argc, char** argv) {
     if (a == "--tour") next(tour_dir_);
     else if (a == "--hero") { next(tour_dir_); hero_spawns_ = hero_spawns_.empty() ? "3" : hero_spawns_; }
     else if (a == "--hero-spawns") next(hero_spawns_);
-    else if (a == "--python") { next(v); prefs_["python"] = v; }
-    else if (a == "--backend-dir") { next(v); prefs_["backend_dir"] = v; }
-    else if (a == "--carla-port") { next(v); prefs_["carla_port"] = std::atoi(v.c_str()); }
+    else if (a == "--python") {
+      next(v);
+      // A relative path to a Python (not just "python3") means: from here. The
+      // backend is started in the bridge directory, where it would not resolve.
+      if (v.find_first_of("/\\") != std::string::npos && !fs::u8path(v).is_absolute())
+        v = fs::absolute(fs::u8path(v)).u8string();
+      prefs_["python"] = prefs_cli_["python"] = v;
+    }
+    else if (a == "--backend-dir") { next(v); prefs_["backend_dir"] = prefs_cli_["backend_dir"] = fs::absolute(fs::u8path(v)).u8string(); }
+    else if (a == "--carla-port") { next(v); prefs_["carla_port"] = prefs_cli_["carla_port"] = std::atoi(v.c_str()); }
     else if (a == "--font") next(font_path_);
     else if (a == "--config") { next(v); prefs_["last_config"] = v; }
     else if (a == "--light") prefs_["dark_theme"] = false;
@@ -206,8 +222,17 @@ void App::Init(int argc, char** argv) {
 
 void App::SavePrefs() {
   prefs_["dark_theme"] = dark_;
+  // What the launcher passed (e.g. port 3000 for the modified CARLA) is for
+  // this session only, unless the user changed it on the page.
+  json out = prefs_;
+  if (prefs_cli_.is_object())
+    for (auto& kv : prefs_cli_.items())
+      if (out.value(kv.key(), json()) == kv.value()) {
+        if (prefs_file_.contains(kv.key())) out[kv.key()] = prefs_file_[kv.key()];
+        else out.erase(kv.key());
+      }
   std::ofstream f(fs::u8path(prefs_path_));
-  if (f) f << prefs_.dump(2, ' ', false, json::error_handler_t::replace);
+  if (f) f << out.dump(2, ' ', false, json::error_handler_t::replace);
 }
 
 void App::Log(const std::string& msg, const std::string& level) {
@@ -243,6 +268,12 @@ const json* App::SelectedVehicleSpec() const {
 // --------------------------------------------------------------------------
 void App::StartBackend() {
   if (plat::IsAlive(backend_proc_)) return;
+  if (backend_proc_.valid()) plat::Kill(backend_proc_, true);  // gone already: just release it
+  if (!backend_problem_.empty()) {
+    // Started by hand after a crash or hang: clear what the old one left in CARLA.
+    backend_problem_.clear();
+    recover_connect_ = true;
+  }
   std::string dir = prefs_.value("backend_dir", std::string());
   std::string script = (fs::u8path(dir) / "backend_server.py").u8string();
   if (dir.empty() || !plat::FileExists(script)) {
@@ -270,7 +301,7 @@ void App::StopBackend() {
   }
   be_.Disconnect();
   if (backend_proc_.valid()) plat::Kill(backend_proc_);
-  carla_connected_ = false;
+  OnEvent({{"event", "disconnected"}, {"quiet", true}});  // nothing of that backend's state is valid
   Log("后端已停止，CARLA 中的主车、传感器和交通已清理");
 }
 
@@ -303,8 +334,10 @@ void App::ConnectBackend(bool quiet) {
   // pages read exists.
   Call("default_config", json::object(), [this](const json& r) {
     json cur = cfg_.is_object() ? cfg_ : json::object();
+    cfg_defaults_ = r;
     cfg_ = r;
     cfg_.merge_patch(cur);
+    ConformConfig();
     if (!cfg_["drive"].contains("cosim_driver")) cfg_["drive"]["cosim_driver"] = cfg_["run"].value("driver", std::string("custom"));
     RefreshDisk();
   });
@@ -397,8 +430,11 @@ void App::RefreshVehicles() {
   Call("list_vehicles", json::object(), [this](const json& r) {
     vehicles_ = r;
     const std::string want = cfg_["carla"].value("vehicle", std::string());
+    vehicle_sel_ = -1;  // the old index may be another model in this list
     for (size_t i = 0; i < vehicles_.size(); ++i)
-      if (vehicles_[i]["id"] == want) vehicle_sel_ = static_cast<int>(i);
+      if (vehicles_[i].value("id", std::string()) == want) vehicle_sel_ = static_cast<int>(i);
+    if (vehicle_sel_ < 0 && !want.empty() && !vehicles_.empty())
+      Log("这个 CARLA 里没有配置中的车型 " + want + "，请在“车辆与视角”页重新选择", "warn");
   });
 }
 
@@ -650,6 +686,62 @@ std::string App::UserPath(const std::string& path) const {
   return (fs::u8path(dir) / fs::u8path(path)).lexically_normal().u8string();
 }
 
+namespace {
+// Makes v match the shape of def (the backend's default config): values of the
+// wrong type (a hand-edited file) would make the pages throw. Returns how
+// many values were replaced.
+int Conform(json& v, const json& def) {
+  int fixed = 0;
+  if (def.is_object()) {
+    if (!v.is_object()) { v = def; return 1; }
+    for (auto& kv : def.items()) {
+      if (!v.contains(kv.key())) v[kv.key()] = kv.value();
+      else fixed += Conform(v[kv.key()], kv.value());
+    }
+  } else if (def.is_number()) {
+    if (!v.is_number()) { v = def; return 1; }
+  } else if (def.is_string()) {
+    if (!v.is_string()) { v = def; return 1; }
+  } else if (def.is_boolean()) {
+    if (!v.is_boolean()) { v = def; return 1; }
+  } else if (def.is_array()) {
+    if (!v.is_array()) { v = def; return 1; }
+    if (!def.empty()) {  // element type from the first default element
+      json keep = json::array();
+      for (auto& e : v) {
+        if ((def[0].is_string() && e.is_string()) || (def[0].is_number() && e.is_number()) || def[0].is_object()) {
+          if (def[0].is_object()) fixed += Conform(e, def[0]);
+          keep.push_back(e);
+        } else {
+          ++fixed;
+        }
+      }
+      v = keep;
+    }
+  }
+  return fixed;
+}
+}  // namespace
+
+void App::ConformConfig() {
+  if (!cfg_defaults_.is_object()) return;
+  int fixed = Conform(cfg_, cfg_defaults_);
+  // Rig sensors: objects with numbers where numbers belong.
+  json& sensors = cfg_["rig"]["sensors"];
+  json keep = json::array();
+  for (auto& s : sensors) {
+    if (!s.is_object()) { ++fixed; continue; }
+    for (const char* k : {"x", "y", "z", "pitch", "yaw", "roll"})
+      if (s.contains(k) && !s[k].is_number()) { s[k] = 0.0; ++fixed; }
+    for (const char* k : {"name", "type"})
+      if (!s.value(k, json()).is_string()) { s[k] = std::string(k) == "type" ? "rgb" : "sensor"; ++fixed; }
+    if (!s.value("attributes", json()).is_object()) { s["attributes"] = json::object(); ++fixed; }
+    keep.push_back(s);
+  }
+  sensors = keep;
+  if (fixed) Log(Fmt("配置里有 %d 个值的类型不对（多半是手改过），已换成默认值", fixed), "warn");
+}
+
 void App::LoadConfig(const std::string& user_path) {
   const std::string path = UserPath(user_path);
   std::ifstream f(fs::u8path(path));
@@ -659,6 +751,7 @@ void App::LoadConfig(const std::string& user_path) {
     return;
   }
   cfg_.merge_patch(j);
+  ConformConfig();
   cfg_path_ = path;
   prefs_["last_config"] = path;
   SavePrefs();
@@ -739,12 +832,12 @@ void App::OnEvent(const json& ev) {
     }
     PushHist(h_speed_, d.value("speed_kmh", 0.0f), kHist);
     PushHist(h_rt_, d.value("rt_factor", 0.0f), kHist);
-    const json& st = d["wheel_steer"];
+    const json st = d.value("wheel_steer", json::array());
     PushHist(h_steer_fl_, st.size() > 0 ? static_cast<float>(appui::NumAt(st, 0)) : 0.0f, kHist);
     PushHist(h_steer_fr_, st.size() > 1 ? static_cast<float>(appui::NumAt(st, 1)) : 0.0f, kHist);
-    const json& su = d["wheel_suspension_mm"];
+    const json su = d.value("wheel_suspension_mm", json::array());
     for (size_t i = 0; i < 4; ++i) PushHist(h_susp_[i], su.size() > i ? static_cast<float>(appui::NumAt(su, i)) : 0.0f, kHist);
-    const json& a = d["action"];
+    const json a = d.value("action", json::array());
     PushHist(h_thr_, a.size() > 0 ? static_cast<float>(appui::NumAt(a, 0)) : 0.0f, kHist);
     PushHist(h_brk_, a.size() > 1 ? static_cast<float>(appui::NumAt(a, 1)) : 0.0f, kHist);
   } else if (type == "collect_stats") {
@@ -807,8 +900,11 @@ void App::OnEvent(const json& ev) {
   } else if (type == "export_done") {
     ds_exporting_ = false;
     ds_export_result_ = ev;
-    if (ev.value("ok", false))
-      Log(Fmt("导出完成：%s", ev["result"].value("out", std::string()).c_str()));
+    if (ev.value("ok", false)) {
+      const json res = ev.value("result", json::object());  // (const json: never operator[] a missing key)
+      Log(Fmt("导出完成：%s", res.value("out", std::string()).c_str()));
+      if (res.contains("warning")) Log(res.value("warning", std::string()), "warn");
+    }
     else
       Log("导出失败：" + ev.value("error", std::string()), "error");
   } else if (type == "disconnected") {

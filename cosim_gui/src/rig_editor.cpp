@@ -94,7 +94,8 @@ Dims VehicleDims(const json* s) {
   d.wb = s->value("wheelbase_m", d.wb);
   d.track = s->value("track_m", d.track);
   d.fx = s->value("front_axle_x_m", d.fx);
-  if (s->contains("wheel_radius_m") && !(*s)["wheel_radius_m"].empty()) d.r = (*s)["wheel_radius_m"][0].get<float>();
+  const json wr = s->value("wheel_radius_m", json::array());
+  if (wr.is_array() && !wr.empty()) d.r = static_cast<float>(appui::NumAt(wr, 0));  // null (NaN) safe
   return d;
 }
 
@@ -252,6 +253,8 @@ void App::DrawRigTopView(float w, float h) {
   const Dims d = VehicleDims(SelectedVehicleSpec());
   ImDrawList* dl = ImGui::GetWindowDrawList();
   const ImVec2 o = ImGui::GetCursorScreenPos();
+  // The sensor handles are drawn on top of this canvas: let them take the mouse.
+  ImGui::SetNextItemAllowOverlap();
   ImGui::InvisibleButton("topview", ImVec2(w, h));
   const bool canvas_hovered = ImGui::IsItemHovered();
   dl->AddRectFilled(o, ImVec2(o.x + w, o.y + h), ImGui::GetColorU32(p.plot_bg), 2.0f);
@@ -339,6 +342,8 @@ void App::DrawRigSideView(float w, float h) {
   const Dims d = VehicleDims(SelectedVehicleSpec());
   ImDrawList* dl = ImGui::GetWindowDrawList();
   const ImVec2 o = ImGui::GetCursorScreenPos();
+  // The sensor handles are drawn on top of this canvas: let them take the mouse.
+  ImGui::SetNextItemAllowOverlap();
   ImGui::InvisibleButton("sideview", ImVec2(w, h));
   dl->AddRectFilled(o, ImVec2(o.x + w, o.y + h), ImGui::GetColorU32(p.plot_bg), 2.0f);
   dl->AddRect(o, ImVec2(o.x + w, o.y + h), ImGui::GetColorU32(p.card_border), 2.0f);

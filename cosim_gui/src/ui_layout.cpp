@@ -200,9 +200,11 @@ void App::Frame() {
   const float total_h = ImGui::GetContentRegionAvail().y - status_h;
   const float total_w = ImGui::GetContentRegionAvail().x;
   if (nav_w_ <= 0) { nav_w_ = fs * 13.0f; mon_w_ = fs * 34.0f; console_h_ = fs * 15.0f; }
-  nav_w_ = std::max(fs * 9.0f, std::min(nav_w_, total_w * 0.25f));
-  mon_w_ = std::max(fs * 24.0f, std::min(mon_w_, total_w * 0.5f));
-  console_h_ = std::max(fs * 6.0f, std::min(console_h_, total_h * 0.7f));
+  if (total_w > fs * 40.0f && total_h > fs * 20.0f) {  // not while minimised: that would lose the sizes
+    nav_w_ = std::max(fs * 9.0f, std::min(nav_w_, total_w * 0.25f));
+    mon_w_ = std::max(fs * 24.0f, std::min(mon_w_, total_w * 0.5f));
+    console_h_ = std::max(fs * 6.0f, std::min(console_h_, total_h * 0.7f));
+  }
 
   // Project tree
   ImGui::PushStyleColor(ImGuiCol_ChildBg, p.panel);

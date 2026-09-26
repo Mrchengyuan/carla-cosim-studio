@@ -109,6 +109,9 @@ class ViewStreamer:
                 raise ValueError("不能作为视图显示的传感器类型：%s" % spec.get("kind"))
             if not spec.get("id"):
                 raise ValueError("视图缺少 id")
+        ids = [spec["id"] for spec in specs]
+        if len(set(ids)) != len(ids):  # the second would replace the first and leak its sensor
+            raise ValueError("视图 id 重复：%s" % ids)
         self.stop(notify=False)
         try:
             out = [self._add(world, vehicle, spec) for spec in specs]

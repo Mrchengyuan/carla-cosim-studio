@@ -315,6 +315,7 @@ def _copy_image(src, dst_noext, want_ext):
 def estimate_export(ses, fmt, camera=None):
     """Rough output size (bytes): KITTI stores PNG images, which is ~4x a JPG."""
     total = 0
+    camera = camera or ses.first_of("rgb")
     for f in ses.frames[:3] or []:
         for n, s in ses.sensors.items():
             p = ses.file(n, f)
@@ -364,14 +365,18 @@ def export_kitti(ses, out, camera=None, lidar=None, min_lidar_pts=1, progress=No
     def row(m):
         return " ".join("%.12e" % x for x in np.asarray(m).reshape(-1))
 
+    # The ego "down" direction in KITTI camera axes (camera y only for a level camera).
+    down_cam = C @ (cam_from_ego[:3, :3] @ np.array([0.0, 0.0, -1.0]))
+    mount = ses.sensors[camera].get("mount", {})
+    tilted = abs(float(mount.get("pitch", 0.0))) > 3.0 or abs(float(mount.get("roll", 0.0))) > 3.0
     W = int(ses.sensors[camera]["attributes"]["image_size_x"])
     H = int(ses.sensors[camera]["attributes"]["image_size_y"])
     ids, pairs, n_obj = [], [], 0
     for idx, frame in enumerate(ses.frames):
         name = "%06d" % len(ids)  # contiguous KITTI indices even if a frame is skipped
         src = ses.file(camera, frame)
-        if src is None:
-            continue
+        if src is None or ses.file(lidar, frame) is None:
+            continue  # without its lidar sweep every object would be filtered out: a false "empty road"
         _copy_image(src, os.path.join(tr, "image_2", name), ".png")
         pts = ses.lidar_points(lidar, frame).astype(np.float32).copy()
         pts_ego = ses.to_ego(lidar, pts)
@@ -412,7 +417,7 @@ def export_kitti(ses, out, camera=None, lidar=None, min_lidar_pts=1, progress=No
             alpha = ry - math.atan2(center[0], center[2])
             alpha = (alpha + math.pi) % (2 * math.pi) - math.pi
             occ = 0 if npts >= 50 else 1 if npts >= 10 else 2
-            bottom = center + np.array([0.0, ez, 0.0])
+            bottom = center + ez * down_cam  # KITTI location = bottom centre
             lines.append("%s %.2f %d %.2f %.2f %.2f %.2f %.2f %.2f %.2f %.2f %.2f %.2f %.2f %.2f" % (
                 KITTI_TYPES.get(o["class"], "Misc"), min(1.0, max(0.0, trunc)), occ, alpha, cx0, cy0, cx1, cy1,
                 2 * ez, 2 * ey, 2 * ex, bottom[0], bottom[1], bottom[2], ry))
@@ -435,11 +440,15 @@ def export_kitti(ses, out, camera=None, lidar=None, min_lidar_pts=1, progress=No
         f.write("由 CARLA CoSim Studio 从 %s 导出。\n相机 %s -> image_2，激光雷达 %s -> velodyne（y 轴已翻转为 KITTI 左手->右手约定）。\n"
                 "occluded 由框内激光点数估计：>=50 为 0，>=10 为 1，其余为 2；框内点数少于 %d 的目标不导出。\n"
                 % (ses.root, camera, lidar, min_lidar_pts))
-    return {"format": "kitti", "out": os.path.abspath(out), "frames": len(ids), "objects": n_obj,
-            "camera": camera, "lidar": lidar}
+    res = {"format": "kitti", "out": os.path.abspath(out), "frames": len(ids), "objects": n_obj,
+           "camera": camera, "lidar": lidar}
+    if tilted:
+        res["warning"] = ("相机 %s 有俯仰或侧倾：KITTI 的朝向角 ry 定义在相机 y 轴上，倾斜相机的朝向只是近似"
+                          "（位置已按真实竖直方向计算）。训练 KITTI 模型建议用水平安装的相机" % camera)
+    return res
 
 
-def _radar_pcd(path, det):
+def _radar_pcd(path, det, vr_comp=None):
     """nuScenes radar .pcd (binary, 18 fields, as read by RadarPointCloud.from_file)."""
     fields = ["x", "y", "z", "dyn_prop", "id", "rcs", "vx", "vy", "vx_comp", "vy_comp", "is_quality_valid",
               "ambig_state", "x_rms", "y_rms", "invalid_state", "pdh0", "vx_rms", "vy_rms"]
@@ -455,7 +464,8 @@ def _radar_pcd(path, det):
         for i, (x, y, z, vr) in enumerate(det):
             r = math.hypot(x, y) or 1.0
             vx, vy = vr * x / r, vr * y / r
-            f.write(struct.pack(fmt, x, y, z, 0, i, 0.0, vx, vy, vx, vy, 1, 3, 0, 0, 0, 0, 0, 0))
+            vc = vr if vr_comp is None else vr_comp[i]
+            f.write(struct.pack(fmt, x, y, z, 0, i, 0.0, vx, vy, vc * x / r, vc * y / r, 1, 3, 0, 0, 0, 0, 0, 0))
         f.write(b"\n")  # the devkit reader asserts end < len(data) for the last field
 
 
@@ -479,11 +489,13 @@ def export_nuscenes(ses, out, version="v1.0-carla", progress=None):
     tables["map"].append({"token": map_tok, "log_tokens": [log_tok], "category": "semantic_prior", "filename": ""})
 
     channels = {}
+    lidar_name = ses.first_of("lidar")
     for n, s in ses.sensors.items():
         mod = {"rgb": "camera", "lidar": "lidar", "radar": "radar"}.get(s["type"])
         if mod is None:
             continue
-        ch = n.upper()
+        # nuScenes tools look the lidar up as LIDAR_TOP, whatever the rig called it.
+        ch = "LIDAR_TOP" if n == lidar_name else n.upper()
         channels[n] = ch
         tables["sensor"].append({"token": token("sensor", ch), "channel": ch, "modality": mod})
         E = ses.extrinsic[n]
@@ -493,12 +505,14 @@ def export_nuscenes(ses, out, version="v1.0-carla", progress=None):
                                             "camera_intrinsic": s["K"] if mod == "camera" else []})
         os.makedirs(os.path.join(out, "samples", ch), exist_ok=True)
 
-    sample_toks = [token(name, "sample", f) for f in ses.frames]
+    # A sample without its lidar sweep breaks the usual converters (they read
+    # sample["data"]["LIDAR_TOP"]): leave such frames out.
+    frames = [f for f in ses.frames if lidar_name is None or ses.file(lidar_name, f) is not None]
+    sample_toks = [token(name, "sample", f) for f in frames]
     last_sd = {}
     inst_anns = {}
-    lidar_name = ses.first_of("lidar")
     radar_names = [n for n, s in ses.sensors.items() if s["type"] == "radar"]
-    for i, frame in enumerate(ses.frames):
+    for i, frame in enumerate(frames):
         ego = ses.ego(frame)
         ts = int(round(ego.get("timestamp", i * 0.1) * 1e6))
         M = tf_matrix(ego["pose"])
@@ -523,15 +537,23 @@ def export_nuscenes(ses, out, version="v1.0-carla", progress=None):
                 p5 = np.zeros((len(p), 5), np.float32)
                 p5[:, :4] = p
                 p5[:, 1] *= -1.0
+                p5[:, 3] *= 255.0  # CARLA intensity 0-1, nuScenes 0-255
                 rel = base + ".pcd.bin"
                 p5.tofile(os.path.join(out, rel))
                 h = w = 0
                 fmt = "pcd"
             else:
                 det = ses.radar_points(n, frame)
+                # vx_comp / vy_comp: without the radar's own motion (CARLA measures
+                # relative to the sensor): add the ego velocity along each ray.
+                v_world = np.array(ego.get("velocity", [0.0, 0.0, 0.0]), dtype=float)
+                v_radar = (M[:3, :3] @ ses.extrinsic[n][:3, :3]).T @ v_world
+                rng = np.linalg.norm(det[:, :3], axis=1)
+                rng[rng == 0] = 1.0
+                vr_comp = det[:, 3] + (det[:, :3] @ v_radar) / rng
                 det = det * np.array([1, -1, 1, 1])
                 rel = base + ".pcd"
-                _radar_pcd(os.path.join(out, rel), det)
+                _radar_pcd(os.path.join(out, rel), det, vr_comp)
                 h = w = 0
                 fmt = "pcd"
             sd_tok = token(name, "sd", ch, frame)
@@ -583,7 +605,7 @@ def export_nuscenes(ses, out, version="v1.0-carla", progress=None):
                                            "nbr_annotations": 0, "first_annotation_token": ann_tok, "last_annotation_token": ""})
             tables["sample_annotation"].append(ann)
         if progress:
-            progress(i + 1, len(ses.frames))
+            progress(i + 1, len(frames))
     for inst in tables["instance"]:
         anns = inst_anns[inst["token"]]
         inst["nbr_annotations"] = len(anns)
@@ -597,7 +619,7 @@ def export_nuscenes(ses, out, version="v1.0-carla", progress=None):
     for k, rows in tables.items():
         with open(os.path.join(vdir, k + ".json"), "w", encoding="utf-8") as f:
             json.dump(rows, f, indent=0)
-    return {"format": "nuscenes", "out": os.path.abspath(out), "version": version, "frames": len(ses.frames),
+    return {"format": "nuscenes", "out": os.path.abspath(out), "version": version, "frames": len(frames),
             "objects": len(tables["sample_annotation"]), "channels": sorted(channels.values())}
 
 

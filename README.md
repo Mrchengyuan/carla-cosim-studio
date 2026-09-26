@@ -228,9 +228,10 @@ class Controller:
 
 命令行和强化学习训练用同一份配置：
 ```bash
-python carsim_carla_bridge/run_cosim.py --config carsim_carla_bridge/cosim_config.json # 界面保存的配置
-python carsim_carla_bridge/run_cosim.py --sim simfile.sim --controller carsim_carla_bridge/controllers/my_controller.py
-python carsim_carla_bridge/run_cosim.py --mock --duration 20                             # 不需要 CarSim
+cd carsim_carla_bridge                     # 配置里的相对路径（控制算法、日志）都以这个目录为准
+python run_cosim.py --config cosim_config.json                                   # 界面保存的配置
+python run_cosim.py --sim simfile.sim --controller controllers/my_controller.py --duration 0
+python run_cosim.py --mock --duration 20                                         # 不需要 CarSim
 ```
 
 ## 坐标与同步
@@ -248,7 +249,7 @@ python carsim_carla_bridge/run_cosim.py --mock --duration 20                    
 | `tests/test_backend.py` | 界面后端全部命令（地图、天气、交通、传感器、多视图、录制、联合仿真、暂停 / 单步、出生点被占时启动失败不丢主车） | 35/35 |
 | `tests/test_features.py` | 传感器套件、磁盘保护、各驾驶模式、自定义控制算法、停止后停车、3 帧多传感器采集 | 18/18 |
 | `tests/test_dataset.py` | 小规模采集 → 浏览渲染 → KITTI / nuScenes 导出；用语义激光雷达验证坐标约定，用 KITTI 文件本身复算框内点数，装了 nuscenes-devkit 时用官方工具交叉验证；缺帧时 KITTI 编号连续、导出中拒绝删除、路径含 `[ ]` 等特殊字符 | 22/22 |
-| `tests/test_robustness.py` | 后端抗异常：控制算法在导入或运行时调用 `sys.exit`、输出 NaN，格式错误的请求，不存在的车型（主车和传感器保留），视图建不起来时通知界面，改版客户端连原版服务器时自动用兼容模式，测量全部车型（含 6 轮卡车），控制算法返回值个数不对 / 出错时指出文件和行号，主车被 CARLA 删除（开出地图掉出世界）时运行带原因结束、界面得知，交通车被撞飞时运行不卡死（改版包），交通车停在出生点上时自动挪开，回放不重复生成车辆、结束后不留残留，键盘驾驶配 960×540 实时画面不卡死，重新连接时清理主车 / 交通 / 视图，非有限数值安全发送 | 原版包 28/28，改版包 30/30；改版 CARLA 上 29/29 |
+| `tests/test_robustness.py` | 后端抗异常：控制算法在导入或运行时调用 `sys.exit`、输出 NaN，格式错误的请求，不存在的车型（主车和传感器保留），视图建不起来时通知界面，改版客户端连原版服务器时自动用兼容模式，测量全部车型（含 6 轮卡车），控制算法返回值个数不对 / 出错时指出文件和行号，主车被 CARLA 删除（开出地图掉出世界）时运行带原因结束、界面得知，交通车被撞飞时运行不卡死（改版包），交通车停在出生点上时自动挪开，回放不重复生成车辆、结束后不留残留，键盘驾驶配 960×540 实时画面不卡死，联合仿真时车贴着路面，运行中不能改仿真设置，键盘松手后车会停，带碰撞传感器的采集不变慢，同名采集会话不互相覆盖，重新连接时清理主车 / 交通 / 视图，非有限数值安全发送 | 原版包 33/33，改版包 35/35；改版 CARLA 上 34/34 |
 | `tests/test_all_vehicles.py` | 41 种车型（含自行车、摩托车、6 轮卡车、巴士）逐一当主车做联合仿真，CARLA 服务器不能崩 | 41/41 |
 | `tests/test_carla_restart.py` | 运行中关掉 CARLA 再重新启动（会真的停止并重启 CARLA；改版加 `--mod`）：后端不能崩、立刻说明原因、能连上新的服务器继续用 | 4/4（两种包、两种 CARLA） |
 | `tests/test_modified_carla.py` | 改版 CARLA：位姿、速度、角速度、IMU、四轮转向、悬架、物理交接 | 10/10 |

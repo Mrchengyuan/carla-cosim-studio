@@ -40,9 +40,9 @@
 ```bat
 git clone --depth 1 -b 0.9.16 https://github.com/carla-simulator/carla.git C:\carla
 cd C:\carla
-git apply --check carla_0.9.16_external_dynamics.patch
-git apply carla_0.9.16_external_dynamics.patch
-git apply carla_0.9.16_release_gil.patch
+git apply --check C:\carla-cosim-studio\carla_patches\carla_0.9.16_external_dynamics.patch
+git apply C:\carla-cosim-studio\carla_patches\carla_0.9.16_external_dynamics.patch
+git apply C:\carla-cosim-studio\carla_patches\carla_0.9.16_release_gil.patch
 git status
 ```
 `git status` 应显示 20 个修改文件和 3 个新文件：
@@ -85,11 +85,15 @@ git apply C:\carla-cosim-studio\carla_patches\carla_0.9.16_release_gil.patch
 以下命令都在 **"x64 Native Tools Command Prompt for VS 2022"** 里执行：
 ```bat
 cd C:\carla
-Update.bat            :: 下载地图/车辆等资源，约 20 GB
-make PythonAPI        :: 编译 LibCarla 客户端 + Python 包（wheel 在 PythonAPI\carla\dist）
-make launch           :: 编译 Unreal 插件并打开 UE4 编辑器，点 Play 即启动服务器
+rem 下载地图/车辆等资源，约 20 GB
+Update.bat
+rem 编译 LibCarla 客户端 + Python 包（wheel 在 PythonAPI\carla\dist）
+make PythonAPI
+rem 编译 Unreal 插件并打开 UE4 编辑器，点 Play 即启动服务器
+make launch
 ```
-可选：`make package` 生成和官方发布包一样的独立可执行版本，之后不用每次开编辑器。
+接着 `make package` 生成和官方发布包一样的独立可执行版本（在 `C:\carla\Build\UE4Carla\<版本>\WindowsNoEditor`）。
+**桌面图标 CARLA CoSim Studio (mod) 用的就是这个打包版**；只用 `make launch`（编辑器里点 Play）也能联合仿真，但要手动开服务器。
 
 ## 4. 验证补丁生效
 
@@ -101,7 +105,7 @@ make launch           :: 编译 Unreal 插件并打开 UE4 编辑器，点 Play 
    应输出 `True`。
 2. 编辑器里点 Play 后运行桥接的模拟测试（不需要 CarSim）：
    ```bat
-   cd carsim_carla_bridge
+   cd /d C:\carla-cosim-studio\carsim_carla_bridge
    python run_cosim.py --mock --duration 20
    ```
    第一行应打印 `external-dynamics API: yes (modified CARLA)`。
@@ -142,10 +146,7 @@ make launch           :: 编译 Unreal 插件并打开 UE4 编辑器，点 Play 
 - Linux 专用：CARLA 0.9.16 的 `Setup.sh` 里 libpng 下载地址已失效，修复放在单独的
   `carla_0.9.16_linux_libpng_url_fix.patch` 里，Windows 不需要。
 
-## 7. 旧版说明
+## 7. Windows 上的情况
 
-- **客户端部分已验证**：在服务器上用 g++ 12 对 LibCarla 客户端（`Vehicle.cpp`、`Client.cpp`）和整个
-  PythonAPI 绑定（`libcarla.cpp`）做了编译检查，结果为 0 错误。RPC 结构体的 msgpack 序列化往返测试也已通过。
-- **Unreal 插件部分未编译**：这部分需要 UE4 引擎，服务器上没有。代码按 CARLA 现有的
-  CarSim/Chrono 组件写法编写，调用的都是 0.9.16 插件里已经在用的接口，
-  但**第一次 `make launch` 仍可能遇到 MSVC 编译报错**。遇到报错把输出发给我即可。
+- 以上内容已在 Ubuntu 上完整编译并运行验证（见第 6 节）；Windows 上用 MSVC 编译还没有实际走过一遍，
+  代码没有用到平台相关的写法，但**第一次编译仍可能遇到 MSVC 报错**。遇到报错把输出发给我即可。

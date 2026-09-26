@@ -95,7 +95,14 @@ class CarlaVehicleSync:
         self._map = world.get_map()
         self.ex = CarSimExports(export_names or self.cfg.EXPORT_NAMES, self.cfg.UNITS)
         a = anchor
-        self.anchor = AnchorFrame((a.location.x, a.location.y, a.location.z),
+        # CarSim's origin is on the ground (Zo = 0 on flat road); CARLA spawn
+        # points sit 0.5-0.7 m above the road so cars can drop onto it. Anchor
+        # the CarSim ground on the road there, or the car floats all run long.
+        z = a.location.z
+        wp = self._map.get_waypoint(a.location)
+        if wp is not None and abs(wp.transform.location.z - z) < 3.0:
+            z = wp.transform.location.z
+        self.anchor = AnchorFrame((a.location.x, a.location.y, z),
                                   a.rotation.yaw, a.rotation.pitch, a.rotation.roll)
         self.ref_local = self._reference_point_local()
         self.wheel_radius_m = self._wheel_radii()

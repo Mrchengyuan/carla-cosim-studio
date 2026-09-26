@@ -35,7 +35,15 @@ def make_env(d):
         return MockCarSimEnv(c["export_names"], t_stop=dur + 1.0 if dur > 0 else 1e9)
     if not c["sim_path"]:
         raise ValueError("CarSim .sim file not set (carsim.sim_path)")
-    sys.path.insert(0, os.path.abspath(c["repo_path"]))
+    repo = os.path.abspath(c["repo_path"])
+    if repo in sys.path:
+        sys.path.remove(repo)
+    sys.path.insert(0, repo)
+    # A different python_carsim_env folder than last run: import that one.
+    old = sys.modules.get("carsim_env")
+    if old is not None and os.path.dirname(os.path.abspath(getattr(old, "__file__", ""))) != repo:
+        for m in ("carsim_env", "vs_solver"):
+            sys.modules.pop(m, None)
     from carsim_env import CarSimEnv
     return CarSimEnv(c["sim_path"])
 
@@ -54,10 +62,10 @@ def _user_error(what, e, path):
     line of their own file, not the backend's."""
     line = next((f.lineno for f in reversed(traceback.extract_tb(e.__traceback__))
                  if os.path.abspath(f.filename) == path), None)
-    msg = str(e)
-    if isinstance(e, SyntaxError) and e.lineno:
-        line, msg = e.lineno, e.msg
-    where = "（%s 第 %d 行）" % (os.path.basename(path), line) if line else ""
+    msg, fname = str(e), path
+    if isinstance(e, SyntaxError) and e.lineno:  # possibly in a module the algorithm imports
+        line, msg, fname = e.lineno, e.msg, e.filename or path
+    where = "（%s 第 %d 行）" % (os.path.basename(fname), line) if line else ""
     return "%s：%s: %s%s" % (what, type(e).__name__, msg, where)
 
 
@@ -204,11 +212,20 @@ class CoSimSession:
             self.camera = spawn_chase_camera(w, self.vehicle, d["run"]["record_dir"])
 
         self.obs = self.env.reset()
+        # The .sim defines how many exports / imports there are, in which order.
+        n_exp, n_imp = self.env.config.get("n_export"), self.env.config.get("n_import")
+        names = d["carsim"]["export_names"]
+        if n_exp and len(names) != int(n_exp):
+            raise RuntimeError("导出变量个数不一致：界面里列了 %d 个，.sim 里有 %d 个。顺序和个数必须与 .sim 的导出变量一致"
+                               "（“CarSim 动力学”页），否则位姿会用错变量" % (len(names), int(n_exp)))
+        if d["run"]["driver"] != "custom" and n_imp and int(n_imp) != 3:
+            raise RuntimeError("测试用驾驶方式只给 3 个导入变量（油门、制动、方向盘角），.sim 里有 %d 个；"
+                               "请用你自己的控制算法按 .sim 的导入顺序返回" % int(n_imp))
         t_step = self.env.config["t_step"]
         self.inner = max(1, int(round(frame_dt / t_step)))
         self.clock_warning = abs(self.inner * t_step - frame_dt) > 1e-9
         # duration <= 0: run until stopped (or until CarSim reaches t_stop).
-        self.n_frames = int(round(d["sync"]["duration"] / frame_dt)) if d["sync"]["duration"] > 0 else 0
+        self.n_frames = max(1, int(round(d["sync"]["duration"] / frame_dt))) if d["sync"]["duration"] > 0 else 0
 
         if d["run"]["log_path"]:
             self._log_file = open(d["run"]["log_path"], "w", newline="", encoding="utf-8")
@@ -346,7 +363,7 @@ class CarlaDriveSession:
                                                 destination=pts[dest].location if 0 <= dest < len(pts) else None)
         else:
             self.command_driver = ManualDriver()
-        self.n_frames = int(round(d["sync"]["duration"] / dt)) if d["sync"]["duration"] > 0 else 0
+        self.n_frames = max(1, int(round(d["sync"]["duration"] / dt))) if d["sync"]["duration"] > 0 else 0
         self._wall0 = time.perf_counter()
         return {"external_api": False, "server_api": None, "reference_point": [0, 0, 0], "t_step": dt, "inner_steps": 1,
                 "clock_warning": False, "dynamics": "CARLA"}

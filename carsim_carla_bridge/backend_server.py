@@ -95,7 +95,7 @@ class Backend:
         self.emit({"event": "log", "level": level, "msg": msg})
 
     def _set_cosim_state(self, s, detail=""):
-        self.cosim_state = s
+        self.cosim_state, self.cosim_detail = s, detail
         self.emit({"event": "cosim_state", "state": s, "detail": detail})
 
     def _alive(self, actor):
@@ -113,7 +113,7 @@ class Backend:
         host, port = self.carla_addr
         if host not in ("localhost", "127.0.0.1", "::1"):
             return None if not now else False
-        if os.path.exists("/proc/net/tcp"):
+        if os.path.exists("/proc/net/tcp") and getattr(self, "_proc_sees_carla", True):
             want = ":%04X" % port
             for table in ("/proc/net/tcp", "/proc/net/tcp6"):
                 try:
@@ -130,7 +130,13 @@ class Backend:
                 out = subprocess.run(["netstat", "-ano", "-p", "TCP"], capture_output=True, text=True, timeout=10).stdout
             except (OSError, subprocess.SubprocessError):
                 return None
-            return any(":%d " % port in l and "LISTEN" in l for l in out.splitlines())
+            # The state column is localized (e.g. "ABHÖREN"); a listening socket is
+            # the one without a foreign address.
+            for line in out.splitlines():
+                cols = line.split()
+                if len(cols) >= 3 and cols[1].endswith(":%d" % port) and cols[2] in ("0.0.0.0:0", "[::]:0", "*:*"):
+                    return True
+            return False
         return None
 
     def _check_carla(self, now=False):
@@ -143,6 +149,9 @@ class Backend:
             return
         self._alive_check = time.time()
         if self._carla_listening(now) is not False:
+            if getattr(self, "_fast_timeout", False):  # set while CARLA seemed gone
+                self._fast_timeout = False
+                self._try(lambda: self.client.set_timeout(20.0))
             return
         why = "CARLA 服务器已退出或连不上（%s:%d）" % self.carla_addr
         self.emit({"event": "carla_lost", "reason": why})  # first: the GUI stops asking about that world
@@ -298,6 +307,7 @@ class Backend:
         self._try(self.cmd_clear_traffic)
         self._try(lambda: self.ego.destroy() if self._alive(self.ego) else None)
         self.ego = self.anchor = None
+        self.ego_autopilot = False
 
     def _tick_or_wait(self, n=1):
         w = self._need_world()
@@ -312,16 +322,30 @@ class Backend:
         return "pong"
 
     def cmd_connect(self, host="localhost", port=2000, timeout=20.0, recover=False):
+        # This backend kept the world ticking itself: sync mode is no sign of a
+        # frozen world then.
+        we_ticked = self.world is not None and self.idle_tick
         if self.world is not None:
             # Reconnecting: take our ego, sensors, views and traffic out of the
             # old world first, or they stay behind as orphans.
             self._teardown()
+        self._release_tm()
+        self.world = None  # until the new connection works: never half old, half new
         self.client = carla.Client(host, int(port))
         self.client.set_timeout(float(timeout))
         self.carla_addr = (host, int(port))
-        self.world = self.client.get_world()
+        try:
+            world = self.client.get_world()
+        except Exception:
+            self.client = None
+            raise
+        self.world = world
+        # Docker / WSL2 setups can hide a live CARLA from /proc/net/tcp: then
+        # only time-outs tell that it is gone.
+        self._proc_sees_carla = True
+        self._proc_sees_carla = self._carla_listening() is not False
         s = self.world.get_settings()
-        if s.synchronous_mode:
+        if s.synchronous_mode and not we_ticked:
             # A backend killed during a run leaves the world in synchronous mode
             # with nobody ticking it: frozen. Give a client that does tick it a
             # moment; if none does, go back to asynchronous.
@@ -387,7 +411,8 @@ class Backend:
     # ---------------------------------------------------------------- world
     def cmd_list_maps(self):
         self._need_world()
-        return sorted({m.split("/")[-1] for m in self.client.get_available_maps()})
+        # AnnotationColorLandscape is an internal map of CARLA (no roads): loading it fails.
+        return sorted({m.split("/")[-1] for m in self.client.get_available_maps()} - {"AnnotationColorLandscape"})
 
     def _switch_world(self, load):
         self._need_world()
@@ -415,6 +440,10 @@ class Backend:
 
     def cmd_world_settings(self, synchronous=None, frame_dt=None, no_rendering=None, idle_tick=None):
         w = self._need_world()
+        if self.cosim_state in ("running", "paused"):
+            # The run owns synchronous mode and the time step; changing them
+            # now would silently break the lock-step with CarSim.
+            raise RuntimeError("仿真运行中不能改仿真设置，请先停止运行")
         s = w.get_settings()
         if synchronous is not None:
             s.synchronous_mode = bool(synchronous)
@@ -529,6 +558,7 @@ class Backend:
             self.cmd_remove_sensor(sid)
         self.ego = None
         self.anchor = None
+        self.ego_autopilot = False
 
     def cmd_spawn_ego(self, blueprint="vehicle.tesla.model3", spawn_index=0, color=""):
         w = self._need_world()
@@ -746,12 +776,12 @@ class Backend:
                 bp.set_attribute(k, str(v))
         tf = carla.Transform(carla.Location(float(x), float(y), float(z)),
                              carla.Rotation(float(pitch), float(yaw), float(roll)))
+        if save_dir:
+            os.makedirs(save_dir, exist_ok=True)  # first: a bad path must not leave a sensor behind
         actor = w.spawn_actor(bp, tf, attach_to=self.ego)
-        rec = {"actor": actor, "type": type, "save_dir": save_dir, "count": 0, "file": None,
+        rec = {"actor": actor, "type": type, "save_dir": save_dir, "count": 0, "file": None, "lock": threading.Lock(),
                "last": "", "spec": {"type": type, "x": x, "y": y, "z": z, "pitch": pitch, "yaw": yaw,
                                     "roll": roll, "attributes": attributes, "save_dir": save_dir}}
-        if save_dir:
-            os.makedirs(save_dir, exist_ok=True)
         self.sensors[actor.id] = rec
         actor.listen(lambda data, r=rec: self._on_sensor(r, data))
         self._log("已添加传感器 %s (id %d)%s" % (bp.id, actor.id, "，保存到 " + save_dir if save_dir else ""))
@@ -786,13 +816,21 @@ class Backend:
             elif t == "lane_invasion":
                 row = [data.frame, data.timestamp, " ".join(str(m.type) for m in data.crossed_lane_markings)]
                 rec["last"] = "压线 %s" % row[2]
+            elif t == "radar":  # one row per detection: frame, time, velocity, azimuth, altitude, depth
+                rows = [[data.frame, data.timestamp, r.velocity, r.azimuth, r.altitude, r.depth] for r in data]
+                rec["last"] = "%d 个目标 frame %d" % (len(rows), data.frame)
+                row = None
             else:
                 row = [data.frame, data.timestamp]
                 rec["last"] = "frame %d" % data.frame
             if d:
-                if rec["file"] is None:
-                    rec["file"] = open(os.path.join(d, "%s.csv" % t), "a", encoding="utf-8")
-                rec["file"].write(",".join(str(x) for x in row) + "\n")
+                with rec["lock"]:
+                    if rec.get("closed"):  # removed meanwhile: a late measurement
+                        return
+                    if rec["file"] is None:
+                        rec["file"] = open(os.path.join(d, "%s.csv" % t), "a", encoding="utf-8")
+                    for r in (rows if row is None else [row]):
+                        rec["file"].write(",".join(str(x) for x in r) + "\n")
 
     def cmd_list_sensors(self):
         return [{"id": sid, "type": r["type"], "blueprint": r["actor"].type_id, "count": r["count"],
@@ -807,8 +845,10 @@ class Backend:
             rec["actor"].destroy()
         except RuntimeError:
             pass
-        if rec["file"]:
-            rec["file"].close()
+        with rec["lock"]:
+            rec["closed"] = True
+            if rec["file"]:
+                rec["file"].close()
         return True
 
     # ------------------------------------------------------------ live view
@@ -902,7 +942,12 @@ class Backend:
         self.cmd_destroy_ego()
         self._tick_or_wait(1)
         self.replay_before = {a.id for a in w.get_actors()}
-        info = self.client.replay_file(os.path.abspath(filename), float(start), float(duration), int(follow_id))
+        try:
+            info = self.client.replay_file(os.path.abspath(filename), float(start), float(duration), int(follow_id))
+        except Exception:
+            self.replay_before = None  # nothing to clear later: it never started
+            raise
+        hero = None
         for _ in range(40):
             self._tick_or_wait(1)
             hero = next((a for a in w.get_actors().filter("vehicle.*")
@@ -912,7 +957,7 @@ class Backend:
                 if view_specs:
                     self._try(lambda: self.cmd_views_set(view_specs))
                 break
-        self._log("回放开始：当前的主车和交通已清除，画面跟随录像里的主车")
+        self._log("回放开始：当前的主车和交通已清除" + ("，画面跟随录像里的主车" if hero is not None else "（录像里没有主车）"))
         return info
 
     def cmd_recorder_info(self, filename):
@@ -1082,7 +1127,7 @@ class Backend:
         cfg["frame_dt"] = float(frame_dt)
         c = coll.DataCollector(None, None, sensors, cfg)
         est = c.estimate()
-        est["per_sensor"] = [{"name": s["name"], "mb_per_frame": rigmod.bytes_per_frame(s, cfg["image_format"]) / 1e6}
+        est["per_sensor"] = [{"name": s["name"], "mb_per_frame": rigmod.bytes_per_frame(s, cfg["image_format"], cfg["frame_dt"]) / 1e6}
                              for s in c.sensor_cfgs]
         est["disk"] = coll.disk_info(cfg["out_dir"])
         return est
@@ -1116,7 +1161,10 @@ class Backend:
         self._stop_cosim_if_running("stopped")
         # Always report the state, so a GUI that is out of sync (e.g. after a
         # backend restart) stops showing "running".
-        self._set_cosim_state(self.cosim_state if self.cosim_state not in ("running", "paused") else "stopped")
+        if self.cosim_state in ("running", "paused"):
+            self._set_cosim_state("stopped")
+        else:  # the same state again, with its reason (e.g. why the run ended)
+            self._set_cosim_state(self.cosim_state, getattr(self, "cosim_detail", ""))
         return True
 
     def _stop_cosim_if_running(self, final="stopped", detail=""):
@@ -1183,7 +1231,7 @@ class Backend:
             self._log("仿真出错：%s" % (e or e.__class__.__name__), "error")
             self._stop_cosim_if_running("error", str(e))
             return
-        self._update_spectator()
+        self._try(self._update_spectator)
         # Every 2nd frame is enough for the GUI, but a single step must show.
         if always_emit or tel["frame"] % 2 == 0 or tel["done"]:
             self.emit({"event": "telemetry", "data": tel})
@@ -1221,6 +1269,17 @@ class Backend:
         CARLA call (e.g. a looping traffic manager) would keep the process, and
         the GUI waiting for it, alive forever."""
         t0 = time.time()
+        # All CARLA calls belong to the worker: stop it taking work (queued
+        # requests are dropped; a run start or traffic spawn after the cleanup
+        # would leave actors behind) and let it finish the current one.
+        self.exiting = True
+        while True:
+            try:
+                self.requests.get_nowait()
+            except queue.Empty:
+                break
+        while self.task is not None and time.time() - t0 < 2.0:
+            time.sleep(0.05)
         t = threading.Thread(target=self.cleanup, daemon=True)
         t.start()
         t.join(limit)
@@ -1247,6 +1306,9 @@ class Backend:
                 time.sleep(0.1)
 
     def _worker_iteration(self):
+        if getattr(self, "exiting", False):  # exit_now() is cleaning up
+            time.sleep(0.05)
+            return
         self._check_carla()
         self._check_ego()
         self._check_traffic()
@@ -1276,7 +1338,9 @@ class Backend:
                 self.task = None
         if self.cosim_state != "running" and self.world is not None:
             try:
-                if self.idle_tick and self.world.get_settings().synchronous_mode:
+                # Not while paused: a paused run keeps the world where it is
+                # (and its collector would pile up sensor data meanwhile).
+                if self.idle_tick and self.cosim_state != "paused" and self.world.get_settings().synchronous_mode:
                     self.task = ("空闲时推进世界", time.time())
                     try:
                         self.world.tick()
@@ -1328,12 +1392,16 @@ def serve(port, exit_with_client=False):
                 # let the calls after it give up quickly.
                 gone = backend.world is not None and backend.carla_addr is not None and backend._carla_listening() is False
                 if gone:
+                    backend._fast_timeout = True
                     backend._try(lambda: backend.client.set_timeout(0.5))
                 backend.emit({"event": "busy", "task": task[0], "seconds": round(time.time() - task[1], 1),
                               "carla_gone": gone})
     threading.Thread(target=heartbeat, daemon=True).start()
     srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    if os.name == "nt":  # there SO_REUSEADDR lets a second backend listen on the same port
+        srv.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+    else:
+        srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     for attempt in range(50):
         try:
             srv.bind(("127.0.0.1", port))
@@ -1380,6 +1448,9 @@ def serve(port, exit_with_client=False):
                         req = json.loads(line.decode("utf-8"))
                     except ValueError as e:  # one bad line must not end the backend
                         send({"event": "log", "level": "error", "msg": "后端收到无法解析的请求：%s" % e})
+                        continue
+                    if not isinstance(req, dict):
+                        send({"event": "log", "level": "error", "msg": "后端收到的请求不是 JSON 对象，已忽略"})
                         continue
                     backend.requests.put((req, send))
         except OSError:

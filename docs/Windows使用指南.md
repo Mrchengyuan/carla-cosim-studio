@@ -43,7 +43,8 @@
 
 安装完打开“命令提示符”（按 Win 键搜索 `cmd`）检查：
 ```bat
-python --version        rem 应显示 Python 3.10.x
+rem 应显示 Python 3.10.x
+python --version
 git --version
 ```
 
@@ -74,7 +75,8 @@ C:\carla-cosim-studio\                     ← 本仓库（路径里最好不要
 cd /d C:\
 git clone https://github.com/Mrchengyuan/carla-cosim-studio.git
 cd carla-cosim-studio
-git clone https://github.com/Mrchengyuan/python_carsim_env.git   # 原始仓库：https://github.com/dyZhou2001/python_carsim_env（原作者 dyZhou2001）
+rem 原始仓库：https://github.com/dyZhou2001/python_carsim_env（原作者 dyZhou2001）
+git clone https://github.com/Mrchengyuan/python_carsim_env.git
 ```
 > 仓库是私有的话，Git 会弹出登录窗口，用 GitHub 账号登录（或用户名 + Personal Access Token）。
 > 不想用 Git 的话，也可以在 GitHub 页面点 **Code → Download ZIP**，解压到 `C:\carla-cosim-studio`。
@@ -163,7 +165,7 @@ cmake --build build --config Release
 | 变量 | 默认值 | 含义 |
 |---|---|---|
 | `CARLA_ROOT` | `C:\carla-cosim-studio\CARLA_0.9.16` | 原版 CARLA 目录 |
-| `CARLA_MOD_ROOT` | `C:\carla\Build\UE4Carla\0.9.16\WindowsNoEditor` | 改版 CARLA 打包目录 |
+| `CARLA_MOD_ROOT` | `C:\carla\Build\UE4Carla\<版本>\WindowsNoEditor`（自动查找） | 改版 CARLA 打包目录 |
 | `STUDIO_EXE` | `...\CARLA_CoSim_Studio_Windows\carla_cosim_studio.exe` | 界面程序 |
 | `COSIM_PYTHON` | `...\venv\Scripts\python.exe` | 后端使用的 Python |
 | `CARLA_PYTHONAPI` | `%CARLA_ROOT%\PythonAPI\carla` | CARLA 路径规划模块 |
@@ -190,9 +192,11 @@ CarSim 通过 `python_carsim_env`（调用 CarSim 求解器 DLL）和 CARLA 同�
 ```bat
 cd /d C:\carla-cosim-studio\python_carsim_env
 ..\venv\Scripts\activate
-pip install torch gymnasium tensorboard          rem python_carsim_env 自己的依赖（只做联合仿真可不装 torch）
+rem python_carsim_env 自己的依赖（只做联合仿真可不装 torch）
+pip install torch gymnasium tensorboard
 rem 把你的 simfile.sim 复制到这个目录，然后：
-python carsim_env.py                              rem carsim_env.py 默认读取当前目录下的 simfile.sim
+rem carsim_env.py 默认读取当前目录下的 simfile.sim
+python carsim_env.py
 ```
 - 必须用 **64 位 Python**，对应 CarSim 的 64 位求解器（`carsim_64.dll`）。
 - CarSim **许可证服务**要在运行。如果报许可证错误，先在 CarSim 界面里正常运行一次仿真确认许可证可用。
@@ -256,7 +260,7 @@ Import（输入）保持你原来的三个，REPLACE 模式：油门、制动、
 3. 打补丁：`cd /d C:\carla` → `git apply C:\carla-cosim-studio\carla_patches\carla_0.9.16_external_dynamics.patch`，
    再 `git apply C:\carla-cosim-studio\carla_patches\carla_0.9.16_release_gil.patch`（`linux_libpng_url_fix.patch` 只在 Linux 需要）。以前按旧版补丁编译过的，只需打新增的部分，见编译指南第 2 节末尾。
 4. 在 “x64 Native Tools Command Prompt for VS 2022” 里：`Update.bat` → `make PythonAPI` → `make package`。
-5. 打包结果在 `C:\carla\Build\UE4Carla\0.9.16\WindowsNoEditor\`，这正是 `env.bat` 里 `CARLA_MOD_ROOT` 的默认值。
+5. 打包结果在 `C:\carla\Build\UE4Carla\<版本>\WindowsNoEditor\`（版本文件夹由 git 决定，例如 `0.9.16-dirty` 或一串提交号），`env.bat` 会自动找到它；放在别处的话改 `CARLA_MOD_ROOT`。
 6. 安装改版 Python 包：`pip install C:\carla\PythonAPI\carla\dist\carla-0.9.16-cp310-cp310-win_amd64.whl --force-reinstall`，
    检查 `python -c "import carla; print(hasattr(carla.Vehicle, 'apply_external_state'))"` 输出 `True`。
 7. 双击 **CARLA CoSim Studio (mod)**；界面“连接”页会显示绿色的“改版 CARLA：可用”。
@@ -269,8 +273,10 @@ Import（输入）保持你原来的三个，REPLACE 模式：油门、制动、
 ```bat
 cd /d C:\carla-cosim-studio\carsim_carla_bridge
 ..\venv\Scripts\activate
-python run_cosim.py --mock --duration 20                                       rem 模拟 CarSim
-python run_cosim.py --config cosim_config.json                                 rem 界面保存的配置（存在本目录）
+rem 模拟 CarSim
+python run_cosim.py --mock --duration 20
+rem 界面保存的配置（存在本目录）
+python run_cosim.py --config cosim_config.json
 python run_cosim.py --sim C:\carla-cosim-studio\python_carsim_env\simfile.sim --carsim-repo ..\python_carsim_env --controller controllers\my_controller.py
 ```
 在训练代码里使用（每个 `env.control_step()` 后加两行）：

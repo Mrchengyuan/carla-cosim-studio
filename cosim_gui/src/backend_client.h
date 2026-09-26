@@ -36,7 +36,7 @@ class BackendClient {
   void Poll(const EventHandler& on_event);
 
  private:
-  void ReaderLoop();
+  void ReaderLoop(plat::Socket s);
   void FailPending(const std::string& why);
 
   plat::Socket sock_ = plat::kInvalidSocket;

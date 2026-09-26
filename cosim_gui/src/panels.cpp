@@ -340,12 +340,13 @@ void App::DrawPanelVehicle() {
       ImGui::TableSetColumnIndex(1); ImGui::TextColored(p.text_dim, "%s", v.value("base_type", std::string()).c_str());
       const json& s = v.contains("spec") ? v["spec"] : json();
       if (s.is_object()) {
-        ImGui::TableSetColumnIndex(2); ImGui::Text("%.3f", s["wheel_radius_m"].empty() ? 0.0 : appui::NumAt(s["wheel_radius_m"], 0));
+        const json wr = s.value("wheel_radius_m", json::array()), ms = s.value("max_steer_deg", json::array());
+        ImGui::TableSetColumnIndex(2); ImGui::Text("%.3f", wr.empty() ? 0.0 : appui::NumAt(wr, 0));
         ImGui::TableSetColumnIndex(3); ImGui::Text("%.3f", s.value("wheelbase_m", 0.0));
         ImGui::TableSetColumnIndex(4); ImGui::Text("%.3f", s.value("track_m", 0.0));
         ImGui::TableSetColumnIndex(5); ImGui::Text("%.2f × %.2f × %.2f", s.value("length_m", 0.0), s.value("width_m", 0.0), s.value("height_m", 0.0));
         ImGui::TableSetColumnIndex(6); ImGui::Text("%.0f", s.value("mass_kg", 0.0));
-        ImGui::TableSetColumnIndex(7); ImGui::Text("%.0f", s["max_steer_deg"].empty() ? 0.0 : appui::NumAt(s["max_steer_deg"], 0));
+        ImGui::TableSetColumnIndex(7); ImGui::Text("%.0f", ms.empty() ? 0.0 : appui::NumAt(ms, 0));
       } else {
         for (int c = 2; c < 8; ++c) { ImGui::TableSetColumnIndex(c); ImGui::TextColored(p.text_dim, "-"); }
       }
@@ -704,8 +705,11 @@ void App::DrawPanelCoSim() {
   ui::EndCard();
 
   ui::BeginCard(ICON_FA_FLOPPY_DISK, "配置文件");
-  static std::string path;
-  if (path.empty()) path = cfg_path_.empty() ? std::string("cosim_config.json") : cfg_path_;
+  static std::string path, shown_cfg;
+  if (path.empty() || shown_cfg != cfg_path_) {  // follow Ctrl+S / loads
+    path = cfg_path_.empty() ? std::string("cosim_config.json") : cfg_path_;
+    shown_cfg = cfg_path_;
+  }
   ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - fs * 16);
   InputStr("##cfgpath", path);
   ImGui::SameLine();

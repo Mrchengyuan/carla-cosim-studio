@@ -57,6 +57,9 @@ def camera_K(w, h, fov):
     return [[f, 0.0, w / 2.0], [0.0, f, h / 2.0], [0.0, 0.0, 1.0]]
 
 
+EVENT_TYPES = ("collision", "lane_invasion")  # fire now and then, not every frame
+
+
 class DataCollector:
     def __init__(self, world, ego, sensors, cfg, extra_state=None, emit=None):
         """sensors: rig sensor dicts; cfg: collect settings; extra_state():
@@ -73,11 +76,12 @@ class DataCollector:
         self.done = False
         self.stop_reason = ""
         self._t0 = None
+        self._frame0 = self._last_frame = None  # simulation time, for max_seconds
 
     # ----------------------------------------------------------- planning
     def estimate(self):
         fmt = self.cfg.get("image_format", "jpg")
-        per_frame = sum(rigmod.bytes_per_frame(s, fmt) for s in self.sensor_cfgs) + 20000  # labels + ego
+        per_frame = sum(rigmod.bytes_per_frame(s, fmt, self.cfg["frame_dt"]) for s in self.sensor_cfgs) + 20000  # labels + ego
         hz = 1.0 / (self.cfg["frame_dt"] * max(1, int(self.cfg.get("capture_every", 1))))
         max_frames = int(self.cfg.get("max_frames", 0) or 0)
         max_s = float(self.cfg.get("max_seconds", 0) or 0)
@@ -101,7 +105,13 @@ class DataCollector:
             raise RuntimeError("预计需要 %.1f GB，磁盘只剩 %.1f GB（需保留 %.0f GB），请减少采集量"
                                % (est["total_gb"], di["free_gb"], DISK_RESERVE_GB))
         name = c.get("session") or time.strftime("session_%Y%m%d_%H%M%S")
-        self.root = os.path.join(c["out_dir"], name)
+        # Never write into an existing session: frames of two runs (and two
+        # rigs' calibrations) would mix. A reused name gets a suffix.
+        base_root, k = os.path.join(c["out_dir"], name), 1
+        self.root = base_root
+        while os.path.exists(self.root):
+            k += 1
+            self.root = "%s_%d" % (base_root, k)
         os.makedirs(os.path.join(self.root, "labels"), exist_ok=True)
         os.makedirs(os.path.join(self.root, "ego"), exist_ok=True)
 
@@ -114,9 +124,11 @@ class DataCollector:
             for k, v in s.get("attributes", {}).items():
                 if bp.has_attribute(k):
                     bp.set_attribute(k, str(v))
+            attrs = dict(s.get("attributes", {}))
             if s["type"] == "lidar" and bp.has_attribute("rotation_frequency"):
                 # One full sweep per captured frame.
                 bp.set_attribute("rotation_frequency", str(1.0 / c["frame_dt"]))
+                attrs["rotation_frequency"] = 1.0 / c["frame_dt"]
             tf = carla.Transform(carla.Location(s["x"], s["y"], s["z"]),
                                  carla.Rotation(pitch=s["pitch"], yaw=s["yaw"], roll=s["roll"]))
             actor = self.world.spawn_actor(bp, tf, attach_to=self.ego)
@@ -127,7 +139,7 @@ class DataCollector:
             os.makedirs(os.path.join(self.root, s["name"]), exist_ok=True)
             entry = {"type": s["type"], "blueprint": bp.id, "extrinsic_sensor_to_ego": tf.get_matrix(),
                      "mount": {k: s[k] for k in ("x", "y", "z", "roll", "pitch", "yaw")},
-                     "attributes": s.get("attributes", {})}
+                     "attributes": attrs}
             if s["type"] in rigmod.CAMERA_TYPES:
                 a = s["attributes"]
                 entry["K"] = camera_K(int(a["image_size_x"]), int(a["image_size_y"]), float(a["fov"]))
@@ -146,6 +158,11 @@ class DataCollector:
                             "radar": "rows of [velocity m/s, azimuth rad, altitude rad, depth m]"}}
         with open(os.path.join(self.root, "meta.json"), "w", encoding="utf-8") as f:
             json.dump(meta, f, indent=2, ensure_ascii=False)
+        # Raw frames waiting for the writer: at most ~1 GB of them (the nuScenes
+        # rig is ~35 MB per frame), however many that is.
+        raw = sum(int(s.get("attributes", {}).get("image_size_x", 0) or 0) * int(s.get("attributes", {}).get("image_size_y", 0) or 0) * 4
+                  for s in self.sensor_cfgs if s["type"] in rigmod.CAMERA_TYPES) or 1
+        self.q = queue.Queue(maxsize=max(4, min(48, int(1e9 // raw))))
         self.writer = threading.Thread(target=self._write_loop, daemon=True)
         self.writer.start()
         self._t0 = time.time()
@@ -161,8 +178,10 @@ class DataCollector:
                 pass
         self.actors = []
         if self.writer is not None:
+            # Wait for every queued frame: "finished" must mean "on disk" (the
+            # session can be exported or deleted right after).
             self.q.put(None)
-            self.writer.join(timeout=60)
+            self.writer.join()
             self.writer = None
         self._emit_stats(force=True)
 
@@ -171,8 +190,22 @@ class DataCollector:
         """Call right after world.tick(); frame = its return value."""
         if self.done:
             return
+        if self._frame0 is None:
+            self._frame0 = frame
         datas = []
         for s, qq in zip(self.sensor_cfgs, self.queues):
+            if s["type"] in EVENT_TYPES:
+                # Event sensors fire rarely: take what is there, never wait.
+                events = []
+                while True:
+                    try:
+                        d = qq.get_nowait()
+                    except queue.Empty:
+                        break
+                    if d.frame <= frame:
+                        events.append(d)
+                datas.append(events or None)
+                continue
             d = None
             deadline = time.time() + 5.0
             while time.time() < deadline:
@@ -182,9 +215,7 @@ class DataCollector:
                     break
                 if d.frame >= frame:
                     break
-            if s["type"] in ("collision", "lane_invasion"):
-                d = d if (d is not None and d.frame == frame) else None  # event sensors fire rarely
-            elif d is None or d.frame != frame:
+            if d is None or d.frame != frame:
                 self.errors.append("%s: 第 %d 帧数据缺失" % (s["name"], frame))
                 d = None
             datas.append(d)
@@ -193,6 +224,7 @@ class DataCollector:
             sample = (frame, datas, self._ego_state(frame), self._labels() if self.cfg.get("labels", True) else None)
             self.q.put(sample)       # blocks if the writer falls behind
             self.frames += 1
+        self._last_frame = frame
         self._check_limits()
         self._emit_stats()
 
@@ -200,7 +232,7 @@ class DataCollector:
         c = self.cfg
         if c.get("max_frames") and self.frames >= int(c["max_frames"]):
             self.done, self.stop_reason = True, "达到帧数上限"
-        elif c.get("max_seconds") and time.time() - self._t0 >= float(c["max_seconds"]):
+        elif c.get("max_seconds") and (self._last_frame - self._frame0 + 1) * float(c["frame_dt"]) >= float(c["max_seconds"]):
             self.done, self.stop_reason = True, "达到时长上限"
         elif c.get("max_gb") and self.bytes >= float(c["max_gb"]) * 1e9:
             self.done, self.stop_reason = True, "达到容量上限"
@@ -261,7 +293,11 @@ class DataCollector:
         fmt = self.cfg.get("image_format", "jpg")
         quality = int(self.cfg.get("jpg_quality", 90))
         pc_fmt = self.cfg.get("pointcloud_format", "bin")
-        from PIL import Image
+        try:
+            from PIL import Image
+        except ImportError as e:  # keep draining the queue, or the simulation blocks on it
+            Image = None
+            self.errors.append("无法保存图像：缺少 Pillow（pip install pillow）：%s" % e)
         while True:
             item = self.q.get()
             if item is None:
@@ -276,6 +312,8 @@ class DataCollector:
                     if k in rigmod.CAMERA_TYPES:
                         bgra = np.frombuffer(d.raw_data, dtype=np.uint8).reshape(d.height, d.width, 4)
                         rgb = np.ascontiguousarray(bgra[:, :, 2::-1])
+                        if Image is None:
+                            continue
                         if k == "rgb" and fmt == "jpg":
                             path = base + ".jpg"
                             Image.fromarray(rgb).save(path, quality=quality)
@@ -300,16 +338,27 @@ class DataCollector:
                     elif k == "gnss":
                         ego["gnss"] = {"lat": d.latitude, "lon": d.longitude, "alt": d.altitude}
                         continue
-                    else:
-                        ego.setdefault("events", []).append({"sensor": s["name"], "frame": d.frame})
+                    else:  # event sensors: every event of this frame
+                        for ev in d:
+                            rec = {"sensor": s["name"], "frame": ev.frame}
+                            other = getattr(ev, "other_actor", None)
+                            if other is not None:
+                                rec["other_actor"] = {"id": other.id, "type_id": other.type_id}
+                            if hasattr(ev, "normal_impulse"):
+                                rec["normal_impulse"] = _vec(ev.normal_impulse)
+                            if hasattr(ev, "crossed_lane_markings"):
+                                rec["crossed_lane_markings"] = [str(m.type) for m in ev.crossed_lane_markings]
+                            ego.setdefault("events", []).append(rec)
                         continue
                     self.bytes += os.path.getsize(path)
                 for sub, obj in (("ego", ego), ("labels", labels)):
                     if obj is None:
                         continue
                     path = os.path.join(self.root, sub, "%06d.json" % frame)
-                    with open(path, "w", encoding="utf-8") as f:
+                    with open(path + ".tmp", "w", encoding="utf-8") as f:  # no half-written file after a crash
                         json.dump(obj, f)
+                    os.replace(path + ".tmp", path)
                     self.bytes += os.path.getsize(path)
             except Exception as e:
                 self.errors.append("写入第 %d 帧失败：%s" % (frame, e))
+            del self.errors[:-100]

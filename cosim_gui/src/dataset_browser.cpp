@@ -44,19 +44,19 @@ void App::DatasetOpen(const std::string& root) {
     // Default panes: first camera on the left, first lidar (or radar) on the right.
     ds_left_.clear();
     ds_right_.clear();
-    for (const json& s : r["sensors"]) {
+    for (const json& s : r.value("sensors", json::array())) {
       const std::string t = s.value("type", std::string()), n = s.value("name", std::string());
       if (ds_left_.empty() && t == "rgb") ds_left_ = n;
       if (ds_right_.empty() && t == "lidar") ds_right_ = n;
     }
-    for (const json& s : r["sensors"]) {
+    for (const json& s : r.value("sensors", json::array())) {
       const std::string t = s.value("type", std::string()), n = s.value("name", std::string());
       if (ds_left_.empty() && Viewable(t)) ds_left_ = n;
       if (ds_right_.empty() && Viewable(t) && n != ds_left_) ds_right_ = n;
     }
     ds_export_cam_ = ds_left_;
     ds_export_lidar_.clear();
-    for (const json& s : r["sensors"])
+    for (const json& s : r.value("sensors", json::array()))
       if (s.value("type", std::string()) == "lidar" && ds_export_lidar_.empty()) ds_export_lidar_ = s.value("name", std::string());
     ds_out_.clear();
     ds_export_result_ = json::object();
@@ -342,7 +342,7 @@ void App::DrawPanelDataset() {
       ImGui::TableSetColumnIndex(1); ImGui::TextUnformatted(ob.value("class", std::string()).c_str());
       ImGui::TableSetColumnIndex(2); ImGui::Text("%.1f", ob.value("distance", 0.0));
       ImGui::TableSetColumnIndex(3);
-      if (!ob["lidar_pts"].is_number()) ImGui::TextDisabled("-"); else ImGui::Text("%d", ob["lidar_pts"].get<int>());
+      if (!ob.value("lidar_pts", json()).is_number()) ImGui::TextDisabled("-"); else ImGui::Text("%d", ob.value("lidar_pts", 0));
     }
     ImGui::EndTable();
   }

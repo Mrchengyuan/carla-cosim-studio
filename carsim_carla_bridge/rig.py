@@ -122,15 +122,18 @@ BYTES_PER_PX3 = {"rgb_jpg": 0.108, "rgb_png": 0.45, "depth": 0.18, "semantic": 0
 LIDAR_HIT_RATIO = 0.5
 
 
-def bytes_per_frame(sensor_cfg, image_format="jpg"):
+def bytes_per_frame(sensor_cfg, image_format="jpg", frame_dt=None):
+    """Bytes one captured frame of this sensor writes. With frame_dt: lidar and
+    radar as collected (one sweep per frame: points_per_second x frame_dt)."""
     k, a = sensor_cfg["type"], sensor_cfg.get("attributes", {})
     if k in CAMERA_TYPES:
         px3 = int(a.get("image_size_x", 800)) * int(a.get("image_size_y", 600)) * 3
         key = ("rgb_jpg" if image_format == "jpg" else "rgb_png") if k == "rgb" else k
         return px3 * BYTES_PER_PX3[key]
     if k == "lidar":
-        pts = float(a.get("points_per_second", 56000)) / max(1.0, float(a.get("rotation_frequency", 10.0)))
+        pps = float(a.get("points_per_second", 56000))
+        pts = pps * frame_dt if frame_dt else pps / max(1.0, float(a.get("rotation_frequency", 10.0)))
         return pts * LIDAR_HIT_RATIO * 16  # float32 x, y, z, intensity
     if k == "radar":
-        return float(a.get("points_per_second", 1500)) / 10.0 * 32
+        return float(a.get("points_per_second", 1500)) * (frame_dt or 0.1) * 32  # csv rows
     return 200                             # imu / gnss rows in the ego json

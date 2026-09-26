@@ -130,6 +130,7 @@ class App {
   // every other path of a run (controller file, logs, datasets).
   std::string UserPath(const std::string& path) const;
   void LoadConfig(const std::string& path);
+  void ConformConfig();
   void SaveConfig(const std::string& path);
   void SavePrefs();
   void OnEvent(const json& ev);
@@ -144,6 +145,9 @@ class App {
   BackendClient be_;
   plat::Process backend_proc_;
   json prefs_;
+  json prefs_file_;          // prefs as read from the file (before command-line overrides)
+  json prefs_cli_;           // values the command line set: saved only if the user changed them
+  json cfg_defaults_;        // the backend's default config (types to repair loaded configs with)
   std::string prefs_path_;
   json cfg_;                // run config, same schema as settings.py
   std::string cfg_path_;

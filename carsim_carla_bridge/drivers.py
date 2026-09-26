@@ -11,6 +11,7 @@ with CarSim (where vehicle.get_velocity() reads 0) as well.
 """
 
 import math
+import time
 import os
 import random
 import sys
@@ -66,6 +67,10 @@ class ManualDriver:
         self.stamp = stamp
 
     def step(self, vehicle, speed_ms, dt):
+        # Dead man's switch: the GUI sends the keys 20 times a second. If that
+        # stops (GUI stalled or gone), release the throttle instead of driving on.
+        if self.stamp and time.time() - self.stamp > 0.5:
+            return Command(0.0, 0.3, 0.0)
         return self.cmd
 
 

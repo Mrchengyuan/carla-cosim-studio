@@ -11,7 +11,7 @@ LOG="${XDG_CACHE_HOME:-$HOME/.cache}/carla_cosim_studio/launch_$MODE.log"
 mkdir -p "$(dirname "$LOG")" && : > "$LOG" && exec > >(tee -a "$LOG") 2>&1
 echo "$(date '+%F %T') start_studio.sh $MODE"
 if [ "$MODE" = "mod" ]; then
-  PORT=$CARLA_MOD_PORT; SESSION=carla_mod; NAME="改版 CARLA"; TIMEOUT=900; KIND=mod
+  PORT=$CARLA_MOD_PORT; SESSION=carla_mod; NAME="改版 CARLA"; TIMEOUT=3600; KIND=mod  # the first start compiles shaders (20-40 min)
   START="bash '$COSIM_ROOT/scripts/carla_mod_server.sh'"
 else
   PORT=$CARLA_PORT; SESSION=carla_server; NAME="原版 CARLA"; TIMEOUT=300; KIND=stock
@@ -23,12 +23,21 @@ notify() { command -v zenity >/dev/null && zenity "$@" 2>/dev/null; }
 
 STARTED=0
 if ! listening; then
-  # Record when the server ends (stop.log says whether a script stopped it) and
-  # keep its own output: a crash of CARLA itself is explained there.
-  CARLA_LOG="${LOG%.log}_carla.log"
-  [ -f "$CARLA_LOG" ] && mv -f "$CARLA_LOG" "$CARLA_LOG.prev"
-  tmux new -d -s "$SESSION" "$START > '$CARLA_LOG' 2>&1; echo \"\$(date '+%F %T') $NAME 已退出，退出码 \$?（CARLA 的输出：$CARLA_LOG）\" >> '$LOG'"
-  STARTED=1
+  if tmux has-session -t "$SESSION" 2>/dev/null; then
+    # Another launcher (icon double-clicked twice) is starting it: wait for
+    # that one, and leave stopping it to that launcher.
+    echo "$NAME 正在由另一个启动器启动，等它启动好"
+  else
+    # Record when the server ends (stop.log says whether a script stopped it) and
+    # keep its own output: a crash of CARLA itself is explained there.
+    CARLA_LOG="${LOG%.log}_carla.log"
+    [ -f "$CARLA_LOG" ] && mv -f "$CARLA_LOG" "$CARLA_LOG.prev"
+    # The settings go along explicitly: a tmux server that is already running
+    # would start the session with its own (old) environment.
+    ENVS="COSIM_ROOT='$COSIM_ROOT' CARLA_ROOT='$CARLA_ROOT' CARLA_SRC='$CARLA_SRC' UE4_ROOT='$UE4_ROOT' CARLA_PORT='$CARLA_PORT' CARLA_MOD_PORT='$CARLA_MOD_PORT'"
+    tmux new -d -s "$SESSION" "env $ENVS $START > '$CARLA_LOG' 2>&1; rc=\$?; echo \"\$(date '+%F %T') $NAME 已退出，退出码 \$rc（CARLA 的输出：$CARLA_LOG）\" >> '$LOG'"
+    STARTED=1
+  fi
   (
     # Closing the progress window must not end this wait: CARLA would then be
     # stopped as "failed to start" while it is still loading.
@@ -45,7 +54,7 @@ if ! listening; then
   if ! listening; then
     notify --error --title="CARLA CoSim Studio" --width=420 --text="$NAME 没有启动成功。\n启动记录：$LOG"
     echo "$NAME failed to start"
-    stop_carla_server "$KIND" "端口 $PORT 没有打开（启动失败）"
+    [ "$STARTED" = 1 ] && stop_carla_server "$KIND" "端口 $PORT 没有打开（启动失败）"
     exit 1
   fi
 fi

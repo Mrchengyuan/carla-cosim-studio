@@ -107,7 +107,7 @@ wget -c https://downloads.carlasim.com/Linux/CARLA_0.9.16.tar.gz      # 断了�
 tar -xzf CARLA_0.9.16.tar.gz -C CARLA_0.9.16
 rm CARLA_0.9.16.tar.gz        # 解压完可以删掉安装包，省 8 GB
 ```
-可选：额外地图 `AdditionalMaps_0.9.16.tar.gz`，下载后解压到 `CARLA_0.9.16/Import/`，再执行 `./ImportAssets.sh`。
+可选：额外地图 `AdditionalMaps_0.9.16.tar.gz`：下载后把这个压缩包**原样**（不要解压）放进 `CARLA_0.9.16/Import/`，再在 `CARLA_0.9.16/` 目录执行 `./ImportAssets.sh`。
 
 ### 3.2 试运行
 ```bash
@@ -194,7 +194,7 @@ tmux new -d -s carla_server "./scripts/carla_server.sh"          # 需要 CARLA 
 # 等端口出现
 until ss -ltn | grep -q ":2000 "; do sleep 2; done; echo "CARLA 已就绪"
 # 2) 启动界面
-./cosim_gui/build/carla_cosim_studio --python venv/bin/python --auto-connect
+./cosim_gui/build/carla_cosim_studio --python "$PWD/venv/bin/python" --backend-dir "$PWD/carsim_carla_bridge" --auto-connect
 ```
 关闭：关掉界面窗口，再执行 `./scripts/stop_carla.sh`。
 
@@ -257,6 +257,11 @@ PROXY=http://127.0.0.1:7890 ./scripts/build_ue4.sh      # 不需要代理就去�
 已经克隆过的话：`./scripts/build_ue4.sh --no-clone`。
 
 ### 8.3 编译改版 CARLA
+先装 CARLA 0.9.16 在 Ubuntu 22.04 上编译需要的系统包：
+```bash
+sudo apt install build-essential g++-12 cmake ninja-build libvulkan1 python3-dev python3-pip \
+    libpng-dev libtiff5-dev libjpeg-dev tzdata sed curl unzip autoconf libtool rsync libxml2-dev git git-lfs aria2
+```
 ```bash
 cd ~/carla-cosim-studio
 source venv/bin/activate                     # PythonAPI 会按当前 Python 版本编译
@@ -291,7 +296,7 @@ venv_build/bin/pip install --force-reinstall --no-deps carla_src/PythonAPI/carla
 - 手动：`tmux new -d -s carla_mod "./scripts/carla_mod_server.sh"`（端口 3000）。
 
 注意事项：
-- **第一次启动要编译着色器，可能需要 20–40 分钟**，以后每次约 1–2 分钟。
+- **第一次启动要编译着色器，可能需要 20–40 分钟**（桌面图标最多等 1 小时），以后每次约 40 秒（本机实测 42 秒）。
 - 改版 CARLA 是以“编辑器游戏模式”运行的，**第一次切换到某张地图也要现场编译，会很慢**。需要频繁切换地图时，可以打包成正式版：`cd carla_src && make package`（再需要 1–2 小时和约 20 GB 空间），打包版切换地图约 6 秒。
 - 只测试接口、不需要画面时：`./scripts/carla_mod_server.sh --norender`。
 - 验证改版接口：`venv_build/bin/python carsim_carla_bridge/tests/test_modified_carla.py --port 3000`，应该 10 项全部 PASS。
@@ -311,7 +316,7 @@ cd ~/carla-cosim-studio/carsim_carla_bridge
 source ../venv/bin/activate
 python run_cosim.py --mock --duration 20                      # 模拟 CarSim + 示例控制算法
 python run_cosim.py --config cosim_config.json                # 用界面保存的配置（界面把它存在本目录）
-python run_cosim.py --sim /path/to/simfile.sim --controller controllers/my_controller.py   # 真实 CarSim + 你的控制算法
+python run_cosim.py --sim /path/to/simfile.sim --controller controllers/my_controller.py --duration 0   # 真实 CarSim + 你的控制算法（--duration 0：一直运行到 .sim 的结束时间；不写默认只跑 20 秒）
 ```
 在自己的训练代码里使用（每个 `env.control_step()` 之后加两行）：
 ```python

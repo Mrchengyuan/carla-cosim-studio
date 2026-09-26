@@ -43,7 +43,11 @@ for step in $STEPS; do
     else
       curl -L ${PROXY:+-x $PROXY} -C - -o content.tar.gz "$URL"
     fi
-    echo ">>> 解压到 $D"; tar -xzf content.tar.gz -C "$D" && rm content.tar.gz && echo "$ID" > "$D/.version" ;;
+    echo ">>> 解压到 $D"
+    # (Not an && list: set -e does not stop on a failure inside one.)
+    tar -xzf content.tar.gz -C "$D" || { echo "解压 content.tar.gz 失败（下载不完整？删掉它重新运行 content 步骤）"; exit 1; }
+    rm content.tar.gz
+    echo "$ID" > "$D/.version" ;;
   pythonapi)
     cd "$CARLA_SRC"; echo ">>> make PythonAPI（用当前激活的 python3）"; make PythonAPI
     ls PythonAPI/carla/dist/*.whl ;;

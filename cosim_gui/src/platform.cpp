@@ -47,14 +47,42 @@ Socket TcpConnect(const std::string& host, int port, std::string& err) {
     err = "socket() 失败";
     return kInvalidSocket;
   }
-  if (connect(static_cast<decltype(socket(0, 0, 0))>(s), res->ai_addr,
-              static_cast<int>(res->ai_addrlen)) != 0) {
-    freeaddrinfo(res);
+  // Connect with a time-out: this runs on the UI thread, and on Windows a
+  // refused loopback connect otherwise blocks for about two seconds.
+  const auto fd = static_cast<decltype(socket(0, 0, 0))>(s);
+#ifdef _WIN32
+  u_long nb = 1;
+  ioctlsocket(fd, FIONBIO, &nb);
+#else
+  const int flags = fcntl(fd, F_GETFL, 0);
+  fcntl(fd, F_SETFL, flags | O_NONBLOCK);
+#endif
+  bool ok = connect(fd, res->ai_addr, static_cast<int>(res->ai_addrlen)) == 0;
+  freeaddrinfo(res);
+  if (!ok) {
+    fd_set wr, ex;
+    FD_ZERO(&wr);
+    FD_ZERO(&ex);
+    FD_SET(fd, &wr);
+    FD_SET(fd, &ex);
+    timeval tv{0, 300000};
+    if (select(static_cast<int>(fd + 1), nullptr, &wr, &ex, &tv) > 0 && FD_ISSET(fd, &wr)) {
+      int so_err = 0;
+      socklen_t len = sizeof(so_err);
+      ok = getsockopt(fd, SOL_SOCKET, SO_ERROR, reinterpret_cast<char*>(&so_err), &len) == 0 && so_err == 0;
+    }
+  }
+#ifdef _WIN32
+  nb = 0;
+  ioctlsocket(fd, FIONBIO, &nb);
+#else
+  fcntl(fd, F_SETFL, flags);
+#endif
+  if (!ok) {
     CloseSocket(s);
     err = "连接 " + host + ":" + port_str + " 失败（后端未启动？）";
     return kInvalidSocket;
   }
-  freeaddrinfo(res);
   int one = 1;
   setsockopt(static_cast<decltype(socket(0, 0, 0))>(s), IPPROTO_TCP, TCP_NODELAY,
              reinterpret_cast<const char*>(&one), sizeof(one));
@@ -179,9 +207,16 @@ bool IsAlive(const Process& p) {
 void Kill(Process& p, bool hard) {
   if (!p.valid()) return;
 #ifdef _WIN32
-  (void)hard;
-  TerminateProcess(reinterpret_cast<HANDLE>(p.handle), 0);
-  CloseHandle(reinterpret_cast<HANDLE>(p.handle));
+  // No SIGTERM on Windows: the backend was asked to shut down (it cleans CARLA
+  // up and exits); give it the time, then terminate it and wait until it is
+  // gone, so its log file is free again.
+  HANDLE h = reinterpret_cast<HANDLE>(p.handle);
+  if (!hard) WaitForSingleObject(h, 5000);
+  if (WaitForSingleObject(h, 0) == WAIT_TIMEOUT) {
+    TerminateProcess(h, 1);
+    WaitForSingleObject(h, 5000);
+  }
+  CloseHandle(h);
 #else
   const pid_t pid = static_cast<pid_t>(p.handle);
   if (IsAlive(p)) {

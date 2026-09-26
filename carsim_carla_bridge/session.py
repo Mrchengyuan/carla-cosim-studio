@@ -6,6 +6,7 @@ both run exactly the same code path.
 
 import csv
 import importlib.util
+import inspect
 import math
 import os
 import sys
@@ -14,9 +15,11 @@ import traceback
 
 import carla
 
+import rig as rigmod
 import settings as st
 from bridge import CarlaVehicleSync
 from drivers import ManualDriver, RouteFollower
+from scene import SceneProvider, gui_view
 
 
 def demo_driver(t):
@@ -48,12 +51,12 @@ def make_env(d):
     return CarSimEnv(c["sim_path"])
 
 
-def make_driver(d, ex, n_imports=None):
+def make_driver(d, ex, n_imports=None, scene=None):
     drv = d["run"]["driver"]
     if drv == "demo":
         return lambda obs, t: demo_driver(t)
     if drv == "custom":
-        return load_controller(d, ex, n_imports)
+        return load_controller(d, ex, n_imports, scene)
     raise ValueError("unknown CarSim driver '%s'" % drv)
 
 
@@ -69,12 +72,25 @@ def _user_error(what, e, path):
     return "%s：%s: %s%s" % (what, type(e).__name__, msg, where)
 
 
-def load_controller(d, ex, n_imports=None):
+def _wants_scene(fn):
+    """control(exports, t, dt, scene): a 4th parameter (or *args) asks for the scene."""
+    try:
+        ps = list(inspect.signature(fn).parameters.values())
+    except (TypeError, ValueError):
+        return False
+    if any(p.kind == p.VAR_POSITIONAL for p in ps):
+        return True
+    return len([p for p in ps if p.kind in (p.POSITIONAL_ONLY, p.POSITIONAL_OR_KEYWORD)]) >= 4
+
+
+def load_controller(d, ex, n_imports=None, scene=None):
     """The user's control algorithm, loaded fresh from its file at every run
     start (edits apply on the next run). The entry is a class (instantiated,
     reset() called if present, then control() every frame) or a function:
 
         control(exports, t, dt) -> values for the CarSim imports, .sim order
+        control(exports, t, dt, scene) -> the same, also given what is around
+                                          the car (scene.py; scene() returns it)
 
     exports is {name: value} of every CarSim export, in CarSim units.
     See controllers/example_controller.py.
@@ -120,11 +136,12 @@ def load_controller(d, ex, n_imports=None):
         raise RuntimeError(_user_error("加载控制算法出错", e, path)) from e
     dt = d["sync"]["frame_dt"]
     names = list(ex.index)
+    with_scene = _wants_scene(obj)
 
     def control(obs, t):
         exports = {n: ex.raw(obs, n) for n in names}
         try:
-            out = obj(exports, t, dt)
+            out = obj(exports, t, dt, scene() if scene else None) if with_scene else obj(exports, t, dt)
         except KeyError as e:
             if e.args and e.args[0] not in exports:
                 raise RuntimeError(_user_error("控制算法出错", e, path) +
@@ -162,6 +179,33 @@ def spawn_chase_camera(world, vehicle, out_dir):
     return cam
 
 
+def start_scene(world, vehicle, d, ego_velocity=None):
+    """The SceneProvider of a run: rig sensors only when the algorithm asked for them."""
+    sensors = []
+    if d["scene"].get("sensors"):
+        sensors = d["rig"]["sensors"] or rigmod.build_preset(d["rig"]["preset"])
+    sp = SceneProvider(world, vehicle, d["scene"], sensors, d["sync"]["frame_dt"])
+    try:
+        sp.start(ego_velocity)
+    except BaseException:
+        sp.stop()
+        raise
+    return sp
+
+
+def scene_step(ses, world_frame, ego_velocity=None):
+    """Update the scene after a tick; handle contacts. Returns telemetry fields."""
+    scene = ses.scene.update(world_frame, ego_velocity)
+    new = [c for c in scene["collisions"] if c["new"]]
+    policy = ses.d["scene"].get("collision", "log")
+    if policy == "off":
+        new = []
+    elif new and policy == "stop" and not ses.end_reason:
+        c = new[0]
+        ses.end_reason = "碰撞：撞到 %s（id %s）" % (c["type_id"], c["id"])
+    return {"scene": gui_view(scene), "collisions": new}
+
+
 class CoSimSession:
     """Lock-step CarSim + CARLA run for one already-spawned vehicle."""
 
@@ -172,6 +216,8 @@ class CoSimSession:
         self._original_settings = None
         self.frame = 0
         self.done = False
+        self.scene = None
+        self.end_reason = ""
 
     # --------------------------------------------------------------- lifecycle
     def start(self):
@@ -206,7 +252,8 @@ class CoSimSession:
             self.driver = lambda obs, t: self.command_driver.step(
                 self.vehicle, self._speed, frame_dt).to_carsim(sw_max, scale)
         else:
-            self.driver = make_driver(d, self.sync.ex, lambda: self.env.config.get("n_import"))
+            self.driver = make_driver(d, self.sync.ex, lambda: self.env.config.get("n_import"),
+                                      lambda: self.scene.latest)
         self.env = make_env(d)
         if d["run"]["record_dir"]:
             self.camera = spawn_chase_camera(w, self.vehicle, d["run"]["record_dir"])
@@ -221,6 +268,11 @@ class CoSimSession:
         if d["run"]["driver"] != "custom" and n_imp and int(n_imp) != 3:
             raise RuntimeError("测试用驾驶方式只给 3 个导入变量（油门、制动、方向盘角），.sim 里有 %d 个；"
                                "请用你自己的控制算法按 .sim 的导入顺序返回" % int(n_imp))
+        # Put the car where CarSim starts (reference point on the spawn point)
+        # before the first control() call, so its scene shows the real start.
+        state0 = self.sync.sync(self.obs, self.env.t_current, frame_dt)
+        w.tick()
+        self.scene = start_scene(w, self.vehicle, d, state0.velocity)
         t_step = self.env.config["t_step"]
         self.inner = max(1, int(round(frame_dt / t_step)))
         self.clock_warning = abs(self.inner * t_step - frame_dt) > 1e-9
@@ -246,6 +298,8 @@ class CoSimSession:
                 print("CoSimSession.stop: %s" % e, flush=True)
         if self.env is not None:
             step(self.env.close)
+        if self.scene is not None:
+            step(self.scene.stop)
         if self.camera is not None:
             step(self.camera.stop)
             step(self.camera.destroy)
@@ -276,6 +330,7 @@ class CoSimSession:
         state = self.sync.sync(self.obs, env.t_current, frame_dt)
         world_frame = self.world.tick()
         self.frame += 1
+        scene_tel = scene_step(self, world_frame, state.velocity)  # CarSim's velocity, not the teleported actor's
         v = state.velocity
         self._speed = math.sqrt(v.x ** 2 + v.y ** 2 + v.z ** 2)
 
@@ -290,10 +345,10 @@ class CoSimSession:
                                 snap.location.x, snap.location.y, snap.rotation.yaw,
                                 state.wheel_steer[0], state.wheel_steer[1],
                                 math.sqrt(vel.x ** 2 + vel.y ** 2 + vel.z ** 2)])
-        self.done = bool(done) or (self.n_frames > 0 and self.frame >= self.n_frames)
+        self.done = bool(done) or (self.n_frames > 0 and self.frame >= self.n_frames) or bool(self.end_reason)
         wall = time.perf_counter() - self._wall0
         v = state.velocity
-        return {
+        return {**scene_tel,
             "t": env.t_current,
             "frame": self.frame,
             "n_frames": self.n_frames,
@@ -325,6 +380,8 @@ class CarlaDriveSession:
         self.done = False
         self.command_driver = None
         self._original_settings = None
+        self.scene = None
+        self.end_reason = ""
 
     def start(self):
         d, w = self.d, self.world
@@ -364,6 +421,7 @@ class CarlaDriveSession:
         else:
             self.command_driver = ManualDriver()
         self.n_frames = max(1, int(round(d["sync"]["duration"] / dt))) if d["sync"]["duration"] > 0 else 0
+        self.scene = start_scene(w, self.vehicle, d)
         self._wall0 = time.perf_counter()
         return {"external_api": False, "server_api": None, "reference_point": [0, 0, 0], "t_step": dt, "inner_steps": 1,
                 "clock_warning": False, "dynamics": "CARLA"}
@@ -392,6 +450,8 @@ class CarlaDriveSession:
                 self.vehicle.set_autopilot(False, self.tm.get_port())
         except RuntimeError:
             pass
+        if self.scene is not None:
+            self.scene.stop()
         if self._original_settings is not None:
             self.world.apply_settings(self._original_settings)
             self._original_settings = None
@@ -404,18 +464,19 @@ class CarlaDriveSession:
             self.vehicle.apply_control(self.command_driver.step(self.vehicle, speed, dt).to_carla())
         world_frame = self.world.tick()
         self.frame += 1
+        scene_tel = scene_step(self, world_frame)
         t = self.frame * dt
         tf = self.vehicle.get_transform()
         c = self.vehicle.get_control()
         steer = self._wheel_angles(c.steer, speed * 3.6)
-        self.done = self.n_frames > 0 and self.frame >= self.n_frames
+        self.done = (self.n_frames > 0 and self.frame >= self.n_frames) or bool(self.end_reason)
         wall = time.perf_counter() - self._wall0
         try:
             red = self.vehicle.is_at_traffic_light() and \
                 self.vehicle.get_traffic_light_state() == carla.TrafficLightState.Red
         except RuntimeError:
             red = False
-        return {"t": t, "frame": self.frame, "n_frames": self.n_frames, "at_red_light": red,
+        return {**scene_tel, "t": t, "frame": self.frame, "n_frames": self.n_frames, "at_red_light": red,
                 "rt_factor": t / wall if wall > 0 else 0.0, "speed_kmh": speed * 3.6,
                 "location": [tf.location.x, tf.location.y, tf.location.z],
                 "rotation": [tf.rotation.pitch, tf.rotation.yaw, tf.rotation.roll],

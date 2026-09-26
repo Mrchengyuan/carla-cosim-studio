@@ -238,6 +238,7 @@ Import（输入）保持你原来的三个，REPLACE 模式：油门、制动、
 
      `exports` 按变量名取 CarSim 导出变量；返回值按 .sim 里导入变量的顺序。每次点“运行”都会重新加载文件，改完代码直接再运行。
      想用原来的 SimplePathFollower，就填 `controllers\simple_path_follower.py`（需要导出 `LatErr`）。
+     要用 CARLA 场景里的周围车辆、行人、障碍物和车道，把 `control` 写成 4 个参数 `control(self, exports, t, dt, scene)`，示例 `controllers\scene_controller.py`，说明见 [界面操作手册](界面操作手册.md) 的“驾驶模式”一节。
    - 仿真步长 = 控制周期，用 CarSim `t_step` 的整数倍，例如 `t_step = 0.001` 时用 `0.02`。
    - “测试用驾驶方式”折叠栏里的演示 / 路线跟随 / 键盘驾驶，只在还没有算法、想先检查链路时用。
 4. 把 **日志 CSV** 填上（例如 `cosim_log.csv`），点顶部 **运行**。

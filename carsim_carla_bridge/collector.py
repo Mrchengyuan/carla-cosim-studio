@@ -76,9 +76,12 @@ def _check_name(name, what):
 
 
 class DataCollector:
-    def __init__(self, world, ego, sensors, cfg, extra_state=None, emit=None):
+    def __init__(self, world, ego, sensors, cfg, extra_state=None, emit=None, shared=None):
         """sensors: rig sensor dicts; cfg: collect settings; extra_state():
-        dict merged into ego/<frame>.json (e.g. CarSim exports)."""
+        dict merged into ego/<frame>.json (e.g. CarSim exports); shared: a
+        scene.SceneProvider that already runs these sensors (its .frame /
+        .datas are read instead of spawning a second set)."""
+        self.shared = shared
         self.world, self.ego, self.cfg = world, ego, cfg
         self.sensor_cfgs = [s for s in sensors if s.get("enabled", True)]
         self.extra_state = extra_state or (lambda: {})
@@ -157,11 +160,12 @@ class DataCollector:
                 attrs["rotation_frequency"] = 1.0 / c["frame_dt"]
             tf = carla.Transform(carla.Location(s["x"], s["y"], s["z"]),
                                  carla.Rotation(pitch=s["pitch"], yaw=s["yaw"], roll=s["roll"]))
-            actor = self.world.spawn_actor(bp, tf, attach_to=self.ego)
-            qq = queue.Queue()
-            actor.listen(qq.put)
-            self.actors.append(actor)
-            self.queues.append(qq)
+            if self.shared is None:
+                actor = self.world.spawn_actor(bp, tf, attach_to=self.ego)
+                qq = queue.Queue()
+                actor.listen(qq.put)
+                self.actors.append(actor)
+                self.queues.append(qq)
             os.makedirs(os.path.join(self.root, s["name"]), exist_ok=True)
             entry = {"type": s["type"], "blueprint": bp.id, "extrinsic_sensor_to_ego": tf.get_matrix(),
                      "mount": {k: s[k] for k in ("x", "y", "z", "roll", "pitch", "yaw")},
@@ -239,7 +243,12 @@ class DataCollector:
                 self._emit_stats()
                 return
         datas = []
-        for s, qq in zip(self.sensor_cfgs, self.queues):
+        if self.shared is not None:
+            ok = self.shared.frame == frame and len(self.shared.datas) == len(self.sensor_cfgs)
+            datas = list(self.shared.datas) if ok else [None] * len(self.sensor_cfgs)
+            if not ok:
+                self.errors.append("第 %d 帧传感器数据缺失" % frame)
+        for s, qq in zip(self.sensor_cfgs if self.shared is None else [], self.queues):
             if s["type"] in EVENT_TYPES:
                 # Event sensors fire rarely: take what is there, never wait.
                 events = []

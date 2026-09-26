@@ -16,7 +16,9 @@ JSON layout (all keys optional, missing ones fall back to config.py):
              "controller": {"path": "controllers/example_controller.py", "entry": "Controller"}},
   "drive":  {"dynamics": "cosim", "carla_driver": "route", "target_speed_kmh": 40.0, ...},
   "rig":    {"preset": "front_camera", "sensors": [...]},
-  "collect":{"enabled": false, "out_dir": "datasets", "max_frames": 100, "max_gb": 2.0, ...}
+  "collect":{"enabled": false, "out_dir": "datasets", "max_frames": 100, "max_gb": 2.0, ...},
+  "scene":  {"objects": true, "lane": true, "sensors": false, "range_m": 80.0,
+             "collision": "log", ...}
 }
 """
 
@@ -55,6 +57,10 @@ def default_dict():
         "collect": {"enabled": False, "out_dir": "datasets", "session": "", "image_format": "jpg",
                     "jpg_quality": 90, "pointcloud_format": "bin", "capture_every": 1, "labels": True,
                     "label_radius": 80.0, "max_frames": 100, "max_seconds": 0.0, "max_gb": 2.0},
+        # What the control algorithm gets each frame (scene.py). collision:
+        # "log" = report and go on, "stop" = end the run, "off" = ignore.
+        "scene": {"objects": True, "map_objects": True, "lane": True, "sensors": False,
+                  "range_m": 80.0, "lane_ahead_m": 60.0, "lane_step_m": 2.0, "collision": "log"},
     }
 
 

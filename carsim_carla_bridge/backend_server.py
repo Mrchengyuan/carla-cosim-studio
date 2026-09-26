@@ -1000,6 +1000,7 @@ class Backend:
         col_cfg = dict(d["collect"])
         col_cfg["frame_dt"] = d["sync"]["frame_dt"]
         sensors = d["rig"]["sensors"] or rigmod.build_preset(d["rig"]["preset"], self.spec_cache.get(c["vehicle"]))
+        d["rig"]["sensors"] = sensors  # the scene's sensors for the algorithm are the same rig
         if col_cfg["enabled"]:
             # Validate limits / disk space before touching the world.
             est = coll.DataCollector(w, None, sensors, col_cfg).estimate()
@@ -1065,8 +1066,10 @@ class Backend:
         try:
             info = self.session.start()
             if col_cfg["enabled"]:
+                sc = self.session.scene
                 self.collector = coll.DataCollector(w, self.ego, sensors, col_cfg,
-                                                    extra_state=self.session.carsim_state, emit=self.emit)
+                                                    extra_state=self.session.carsim_state, emit=self.emit,
+                                                    shared=sc if sc is not None and sc.sensor_cfgs else None)
                 info["collect"] = self.collector.start()
                 self._log("数据采集开始：%d 个传感器 → %s（预计 %.1f MB/s）" % (
                     len(self.collector.sensor_cfgs), info["collect"]["root"], info["collect"]["estimate"]["mb_per_s"]))
@@ -1220,6 +1223,8 @@ class Backend:
             return
         try:
             tel = self.session.step()
+            for hit in tel.get("collisions", []):
+                self._log("碰撞：撞到 %s（id %s），t = %.2f s" % (hit["type_id"], hit["id"], tel["t"]), "warn")
             if self.collector is not None:
                 self.collector.on_tick(tel["world_frame"])
                 if self.collector.done:
@@ -1250,7 +1255,9 @@ class Backend:
         if tel["done"]:
             # Tell the GUI exactly why the run ended.
             ses = self.session
-            if self.collector is not None and self.collector.done:
+            if ses.end_reason:
+                reason = ses.end_reason
+            elif self.collector is not None and self.collector.done:
                 reason = "数据采集%s" % self.collector.stop_reason
             elif ses.n_frames > 0 and ses.frame >= ses.n_frames:
                 reason = "达到设定的运行时长 %.0f s" % tel["t"]

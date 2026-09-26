@@ -339,6 +339,8 @@ python tests/test_backend.py                         # 界面后端全部命令�
 python tests/test_features.py                        # 驾驶模式 + 3 帧采集（测完自动删除）
 python tests/test_robustness.py                      # 控制算法出错、NaN、错误请求、主车被删、交通车被撞飞、重新连接时的清理
 python tests/test_dataset.py                         # 6 帧采集 → 浏览 → KITTI / nuScenes 导出（测完自动删除）
+python tests/test_scene.py                           # 交给控制算法的周围目标、车道、碰撞处理、传感器数据
+python tests/test_offline_fixes.py                   # 不需要 CARLA：采集命名、容量上限、失败时恢复
 python tests/test_all_vehicles.py                    # 每种车型都当一次主车联合仿真，服务器不能崩
 python tests/test_carla_restart.py                   # 运行中关掉并重启 CARLA（会真的重启它；改版加 --mod）
 python tests/test_modified_carla.py --port 3000      # 改版 CARLA 接口（需要改版 CARLA 和 venv_build）

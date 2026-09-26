@@ -16,6 +16,10 @@
              python_carsim_env 的默认顺序：[油门 0~1, 制动, 方向盘转角 deg（左正）]
 
 入口也可以是普通函数 control(exports, t, dt)，在界面“入口”里填函数名。
+
+要用 CARLA 场景里的信息（周围的车、行人、障碍物，前方车道，传感器数据），
+把 control 写成 4 个参数 control(self, exports, t, dt, scene)，见
+scene_controller.py。
 """
 import math
 

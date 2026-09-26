@@ -523,6 +523,8 @@ void App::StartRun() {
   trail_x_.clear();
   trail_y_.clear();
   last_tel_ = json::object();
+  last_scene_ = json();
+  scene_hover_.clear();
   collect_stats_ = json::object();
   Call("cosim_start", {{"config", cfg_}}, [this](const json& r) {
     run_info_ = r;
@@ -817,6 +819,10 @@ void App::OnEvent(const json& ev) {
     }
   } else if (type == "telemetry") {
     last_tel_ = ev.value("data", json::object());
+    if (last_tel_.contains("scene")) {  // big: keep it out of the per-frame readouts
+      if (last_tel_["scene"].is_object()) last_scene_ = std::move(last_tel_["scene"]);
+      last_tel_.erase("scene");
+    }
     // Defence in depth: a number the backend could not send (NaN) arrives as
     // null; the readers below expect numbers.
     for (auto& kv : last_tel_.items()) {
@@ -961,7 +967,10 @@ void App::BuildTour() {
          cfg_["drive"]["dynamics"] = "cosim";
          cfg_["drive"]["cosim_driver"] = "custom";
          cfg_["drive"]["target_speed_kmh"] = 35.0;
+         cfg_["run"]["controller"]["path"] = "controllers/scene_controller.py";
+         cfg_["run"]["controller"]["entry"] = "Controller";
        }, idle, "07_drive"},
+      {kPanelScene, [this] { cfg_["scene"]["collision"] = "log"; }, idle, "07b_scene_config"},
       {kPanelCoSim, [this] {
          cfg_["carsim"]["mock"] = true;
          cfg_["sync"]["duration"] = 0.0;  // stopped below with the toolbar button
@@ -983,6 +992,10 @@ void App::BuildTour() {
       // From here the toolbar and viewport are driven by real mouse clicks.
       {kPanelView, [this] { click_target_ = "运行"; },
        [this] { return run_state_ == "running" && last_tel_.value("t", 0.0) > 5.0; }, "10_running_view"},
+      {kPanelScene, [this] { click_target_ = "dock:scene"; },
+       [this] { return run_state_ == "running" && last_tel_.value("t", 0.0) > 6.0 && last_scene_.is_object(); }, "10b_running_scene"},
+      {kPanelScene, [this] { click_target_ = "scene:moving_only"; },
+       [this] { return scene_moving_only_ && last_tel_.value("t", 0.0) > 6.5; }, "10c_scene_moving_only"},
       {kPanelDrive, [] {}, [this] { return run_state_ == "running" && last_tel_.value("t", 0.0) > 7.0; }, "11_running_drive"},
       {kPanelDrive, [this] { click_target_ = "暂停"; }, [this] { return run_state_ == "paused"; }, ""},
       {kPanelDrive, [this] { tour_mark_ = last_tel_.value("frame", 0); click_target_ = "单步"; },

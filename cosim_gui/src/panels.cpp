@@ -495,7 +495,9 @@ void App::DrawPanelDrive() {
       ui::Row("入口", "文件里的类名（带 control 方法）或函数名", fs * 8);
       EditString(ctl, "entry");
       ui::DimWrapped("接口：control(exports, t, dt) -> [油门, 制动, 方向盘角]，exports 是按变量名取值的 CarSim 导出变量");
-      ui::DimWrapped("示例：controllers/example_controller.py（定速 + 蛇形），controllers/simple_path_follower.py（SimplePathFollower）");
+      ui::DimWrapped("要用周围的车、行人、障碍物和车道：写成 control(exports, t, dt, scene)，见“场景信息”页");
+      ui::DimWrapped("示例：controllers/example_controller.py（定速 + 蛇形），controllers/scene_controller.py（沿车道跟车 / 停车），"
+                     "controllers/simple_path_follower.py（SimplePathFollower）");
     }
     ImGui::Dummy(ImVec2(0, fs * 0.3f));
     if (ui::FoldHeader(ICON_FA_FLASK, "测试用驾驶方式（还没有算法时，用来检查联合仿真链路）", false, cur != "custom")) {
@@ -572,6 +574,80 @@ void App::DrawPanelDrive() {
 }
 
 // --------------------------------------------------------------------------
+// What the control algorithm gets each frame besides the CarSim exports.
+void App::DrawPanelScene() {
+  if (!cfg_.contains("scene")) { ImGui::TextDisabled("等待后端返回配置 ..."); return; }
+  const ui::Palette& p = ui::Colors();
+  const float fs = ImGui::GetFontSize();
+  json& sc = cfg_["scene"];
+  auto check = [&](const char* key, const char* label, const char* help) {
+    bool v = sc.value(key, false);
+    if (ImGui::Checkbox(Fmt("%s##%s", label, key).c_str(), &v)) sc[key] = v;
+    if (help) { ImGui::SameLine(); ui::HelpMarker(help); }
+  };
+
+  ui::BeginCard(ICON_FA_CUBES, "每帧交给控制算法");
+  ImGui::BeginDisabled(Running());
+  check("objects", "周围目标", "交通流的车辆、行人，以及用 CARLA 生成的其他车辆和道具。位置、尺寸、朝向、相对速度都是 CARLA 的真值");
+  ImGui::Indent(fs * 1.5f);
+  ImGui::BeginDisabled(!sc.value("objects", true));
+  check("map_objects", "包括地图里的静态物体", "停着的车、摩托车、自行车，电线杆、护栏、围墙、路牌、垃圾桶等。树木、建筑、贴地的井盖和头顶上的路灯臂不算");
+  ImGui::EndDisabled();
+  ImGui::Unindent(fs * 1.5f);
+  check("lane", "前方车道", "车道中心线的点、车道宽、自车偏离车道中心的距离和航向差、限速、信号灯");
+  check("sensors", "传感器数据", "“传感器套件”里的全部传感器，每帧的图像 / 点云 / 雷达以 numpy 数组给出。每帧都要等数据，传感器越多越慢；同时采集数据时两者共用同一套传感器");
+  float range = sc.value("range_m", 80.0f);
+  ui::Row("目标范围 m", "离自车多远以内的目标交给算法", fs * 10);
+  if (ImGui::SliderFloat("##range", &range, 20, 200, "%.0f")) sc["range_m"] = range;
+  float ahead = sc.value("lane_ahead_m", 60.0f);
+  ui::Row("车道前视 m", "车道中心线给到前方多远（每 2 m 一个点）", fs * 10);
+  if (ImGui::SliderFloat("##ahead", &ahead, 10, 200, "%.0f")) sc["lane_ahead_m"] = ahead;
+  ImGui::EndDisabled();
+  ui::EndCard();
+
+  ui::BeginCard(ICON_FA_CAR_BURST, "碰撞");
+  ui::DimWrapped("联合仿真时车的位置由 CarSim 决定，CARLA 里撞上东西车也不会停，会直接穿过去。"
+                 "这里用包围盒判断自车是否碰到了周围目标。");
+  const std::string col = sc.value("collision", std::string("log"));
+  const float w = ImGui::GetContentRegionAvail().x;
+  ImGui::BeginDisabled(Running());
+  if (ChoiceCard("col_stop", ICON_FA_CIRCLE_STOP, "停止运行", "一碰到就结束这次运行，提示撞到了什么、在第几秒。", col == "stop", w))
+    sc["collision"] = "stop";
+  if (ChoiceCard("col_log", ICON_FA_LIST, "记录并继续", "在输出里记下每次碰撞，运行照常进行。", col == "log", w))
+    sc["collision"] = "log";
+  if (ChoiceCard("col_off", ICON_FA_BAN, "不检测", "不判断碰撞。", col == "off", w))
+    sc["collision"] = "off";
+  ImGui::EndDisabled();
+  ui::EndCard();
+
+  ui::BeginCard(ICON_FA_CODE, "在控制算法里使用");
+  ui::DimWrapped("把 control 写成 4 个参数就会收到 scene；只写 3 个参数的算法照旧运行。坐标都在自车坐标系："
+                 "原点在自车中心的地面，x 向前、y 向左，单位 m、m/s。");
+  static const char* kCode =
+      "def control(self, exports, t, dt, scene):\n"
+      "    for o in scene[\"objects\"]:       # 由近到远\n"
+      "        o[\"type\"]        # vehicle / walker / static\n"
+      "        o[\"x\"], o[\"y\"]   # 目标中心位置 m\n"
+      "        o[\"vx\"], o[\"vy\"] # 相对自车的速度 m/s\n"
+      "        o[\"length\"], o[\"width\"], o[\"distance\"]\n"
+      "    lane = scene[\"lane\"]  # center, width, offset, ...\n"
+      "    cam = scene[\"sensors\"][\"cam_front\"][\"data\"]  # numpy\n"
+      "    return [油门, 制动, 方向盘角]";
+  ImGui::PushStyleColor(ImGuiCol_ChildBg, p.field);
+  const float code_h = ImGui::GetTextLineHeight() * 9.6f + fs;
+  ImGui::BeginChild("scene_code", ImVec2(0, code_h), ImGuiChildFlags_Borders);
+  ImGui::TextUnformatted(kCode);  // (the mono font has no Chinese glyphs)
+  ImGui::EndChild();
+  ImGui::PopStyleColor();
+  ui::DimWrapped("完整示例：controllers/scene_controller.py（沿车道行驶，前方有车或障碍物就跟车、停车）。"
+                 "运行时底部“场景”标签显示算法这一帧收到的目标。");
+  if (ui::Button(ICON_FA_CUBES, "打开“场景”标签")) {
+    log_open_ = true;
+    dock_tab_select_ = 3;
+  }
+  ui::EndCard();
+}
+
 void App::DrawPanelCoSim() {
   if (!cfg_.contains("carsim")) { ImGui::TextDisabled("等待后端返回配置 ..."); return; }
   const ui::Palette& p = ui::Colors();

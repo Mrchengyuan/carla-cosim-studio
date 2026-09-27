@@ -116,6 +116,7 @@ class App {
   void StartView(const json& mount = json(), float fov = 90.0f);  // main camera; mount = rig camera preview
   void SendViews();                        // (re)start every visible viewport pane
   json PaneSpec(const std::string& source, int w, int h) const;
+  json RigMount(const json& s) const;      // a rig sensor's mount for a view, in the rig's frame
   std::vector<std::pair<std::string, std::string>> ViewSources();  // (source id, label) for pane pickers
   void DrawPane(int i, ImVec2 pos, ImVec2 size);
 
@@ -143,6 +144,10 @@ class App {
             const std::string& busy_text = "");
   const json* SelectedVehicleSpec() const;
   bool Running() const { return run_state_ == "running" || run_state_ == "paused"; }
+  // The rig's mounts are still an older config's (CARLA frame: car centre, y right).
+  bool RigLegacy() const {
+    return cfg_.contains("rig") && cfg_["rig"].is_object() && cfg_["rig"].value("frame", std::string("carsim")) == "carla";
+  }
   void SetWorld(const json& r);  // world_info reply
 
   // ---------------------------------------------------------- state

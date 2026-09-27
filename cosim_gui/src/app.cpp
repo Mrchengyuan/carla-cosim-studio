@@ -350,6 +350,7 @@ void App::ConnectCarla(bool recover) {
                {"port", prefs_.value("carla_port", 2000)}, {"recover", recover}};
   Call("connect", args, [this](const json& r) {
     carla_connected_ = true;
+    rig_converting_ = false;  // an old rig whose conversion failed: try again with this connection
     server_info_ = r;
     run_note_.clear();  // it was about the previous connection (e.g. "CARLA 服务器已退出")
     SetWorld(r);
@@ -545,6 +546,18 @@ void App::StartView(const json& mount, float fov) {
   SendViews();
 }
 
+// A rig sensor's mount for a view: CarSim's vehicle frame relative to the
+// reference point, or, until it is converted, an older config's CARLA mount
+// (relative to the car, y right), which the backend takes as it is.
+json App::RigMount(const json& s) const {
+  json m = {{"x", s.value("x", 0.0)}, {"y", s.value("y", 0.0)}, {"z", s.value("z", 0.0)}, {"pitch", s.value("pitch", 0.0)},
+            {"yaw", s.value("yaw", 0.0)}, {"roll", s.value("roll", 0.0)}};
+  if (RigLegacy()) return m;
+  m["frame"] = "carsim";
+  m["ref"] = cfg_.contains("sync") ? cfg_["sync"].value("reference_point", json("front_axle")) : json("front_axle");
+  return m;
+}
+
 // Source id -> backend view spec ({kind, mode | mount, attrs}).
 json App::PaneSpec(const std::string& source, int w, int h) const {
   const bool bev = source == "lidar" || source == "radar";
@@ -565,9 +578,7 @@ json App::PaneSpec(const std::string& source, int w, int h) const {
       if (t != "rgb" && t != "depth" && t != "semantic" && t != "instance" && t != "lidar" && t != "radar")
         return json();  // e.g. an IMU: nothing to show as an image
       v["kind"] = t;
-      v["mount"] = json{{"x", s.value("x", 0.0)}, {"y", s.value("y", 0.0)}, {"z", s.value("z", 0.0)}, {"pitch", s.value("pitch", 0.0)},
-                        {"yaw", s.value("yaw", 0.0)}, {"roll", s.value("roll", 0.0)}, {"frame", "carsim"},
-                        {"ref", cfg_.contains("sync") ? cfg_["sync"].value("reference_point", json("front_axle")) : json("front_axle")}};
+      v["mount"] = RigMount(s);
       v["attrs"] = s.value("attributes", json::object());
       if (t == "lidar" || t == "radar") v["width"] = v["height"] = std::min(w, h);
       return v;
@@ -762,11 +773,15 @@ void App::LoadConfig(const std::string& user_path) {
     Log("无法读取配置：" + path, "error");
     return;
   }
-  // Configs from before rigs were in CarSim's vehicle frame (no "frame"):
-  // mark them; the backend converts them with the measured vehicle once CARLA
-  // is connected (see Frame()), the same way as for a run or the command line.
-  if (j.contains("rig") && j["rig"].is_object() && !j["rig"].contains("frame")) j["rig"]["frame"] = "carla";
+  // Configs from before rigs were in CarSim's vehicle frame (sensors, no
+  // "frame"): mark them; the backend converts them with the measured vehicle
+  // once CARLA is connected (see Frame()), the same way as for a run or the
+  // command line (settings.load_dict). A rig without sensors has nothing to convert.
+  if (j.contains("rig") && j["rig"].is_object() && !j["rig"].contains("frame") && j["rig"].contains("sensors") &&
+      j["rig"]["sensors"].is_array() && !j["rig"]["sensors"].empty())
+    j["rig"]["frame"] = "carla";
   cfg_.merge_patch(j);
+  rig_converting_ = false;  // a conversion that failed for the previous config: try this one
   ConformConfig();
   cfg_path_ = path;
   prefs_["last_config"] = path;
@@ -932,6 +947,7 @@ void App::OnEvent(const json& ev) {
     carla_connected_ = false;
     if (Running()) run_state_ = "error";
     busy_.clear();
+    rig_converting_ = false;
     view_on_ = false;
     ds_play_ = false;
     ds_pending_ = 0;

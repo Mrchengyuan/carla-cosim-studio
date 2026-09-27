@@ -551,7 +551,11 @@ class Backend:
                 # crashes development builds such as the modified CARLA.
                 pc = actor.get_physics_control()
                 actor.set_simulate_physics(False)
-                inv = actor.get_transform().get_inverse_matrix()
+                # The probe stands where it was spawned (physics off, never
+                # ticked). Not actor.get_transform(): in synchronous mode the
+                # client has no snapshot of the new actor yet and returns zeros,
+                # which would leave the wheel positions in world coordinates.
+                inv = tf.get_inverse_matrix()
                 local = []
                 for wh in pc.wheels:
                     p = [wh.position.x / 100.0, wh.position.y / 100.0, wh.position.z / 100.0, 1.0]

@@ -1248,8 +1248,8 @@ void App::DrawDock(float w, float h) {
   ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(fs * 0.5f, fs * 0.3f));
   ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(7 * ui::Scale(), 6 * ui::Scale()));
   ImGui::BeginChild("dock", ImVec2(w, h), ImGuiChildFlags_AlwaysUseWindowPadding, ImGuiWindowFlags_NoScrollbar);
-  int errors = 0, warns = 0;
-  for (const auto& l : log_) { errors += l.level == "error"; warns += l.level == "warn"; }
+  int errors = 0, warns = 0, algos = 0;
+  for (const auto& l : log_) { errors += l.level == "error"; warns += l.level == "warn"; algos += l.level == "algo"; }
   const std::string out_label = errors ? Fmt(ICON_FA_TERMINAL "  输出  (%d 错误)###out", errors) : std::string(ICON_FA_TERMINAL "  输出###out");
   auto flags = [&](int i) { return dock_tab_select_ == i ? ImGuiTabItemFlags_SetSelected : 0; };
   if (ImGui::BeginTabBar("docktabs")) {
@@ -1274,7 +1274,7 @@ void App::DrawDock(float w, float h) {
     }
     if (ImGui::BeginTabItem(out_label.c_str(), nullptr, flags(2))) {
       log_errors_ = 0;
-      DrawLogList(warns, errors);
+      DrawLogList(warns, errors, algos);
       ImGui::EndTabItem();
     }
     ImGui::EndTabBar();
@@ -1366,6 +1366,14 @@ void App::DrawVehicleState() {
     ui::KpiTile("实时倍率", have ? Fmt("%.2f", last_tel_.value("rt_factor", 0.0)).c_str() : "-", "x", tw);
     ImGui::SameLine();
     ui::KpiTile("帧", have ? Fmt("%d", last_tel_.value("frame", 0)).c_str() : "-", "", tw);
+    // The user's control() alone (CarSim runs with an algorithm): this frame and the longest so far.
+    const bool ctrl = have && last_tel_.contains("ctrl_ms");
+    ui::KpiTile("算法耗时  本帧 / 最长", ctrl ? Fmt("%.2f / %.2f", last_tel_.value("ctrl_ms", 0.0), last_tel_.value("ctrl_ms_max", 0.0)).c_str() : "-",
+                "ms", tw * 2 + gap);
+    if (ImGui::IsItemHovered())
+      ImGui::SetTooltip("你的 control() 每次调用花的时间（不含 CarSim、CARLA 和准备 scene 的时间）。\n"
+                        "比仿真步长（%.0f ms）长时，仿真就跑不到实时。运行结束时输出页有平均和最长值。",
+                        run_info_.value("frame_dt", cfg_["sync"].value("frame_dt", 0.02)) * 1000.0);
     // Controls
     ImGui::TableSetColumnIndex(1);
     ImGui::TextColored(p.text_dim, ICON_FA_SLIDERS "  控制输入");
@@ -1670,16 +1678,20 @@ void App::DrawSceneBev(const json& sc, ImVec2 size) {
   ImGui::Dummy(size);
 }
 
-void App::DrawLogList(int warns, int errors) {
+void App::DrawLogList(int warns, int errors, int algos) {
   const ui::Palette& p = ui::Colors();
   const float fs = ImGui::GetFontSize();
   ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(6, 1));
-  const char* names[] = {"全部", "警告", "错误"};
-  const int counts[] = {static_cast<int>(log_.size()), warns, errors};
-  for (int i = 0; i < 3; ++i) {
+  const char* names[] = {"全部", "警告", "错误", "算法"};  // 算法: what the control algorithm printed
+  const int counts[] = {static_cast<int>(log_.size()), warns, errors, algos};
+  bool to_end = dock_tab_select_ == 2;  // the status bar's "N 个错误": show the newest lines
+  for (int i = 0; i < 4; ++i) {
     if (i) ImGui::SameLine(0, 2);
     ImGui::PushStyleColor(ImGuiCol_Button, log_filter_ == i ? ui::WithAlpha(p.accent, 0.3f) : ImVec4(0, 0, 0, 0));
-    if (ImGui::SmallButton(Fmt("%s %d##lf%d", names[i], counts[i], i).c_str())) log_filter_ = i;
+    if (ImGui::SmallButton(Fmt("%s %d##lf%d", names[i], counts[i], i).c_str())) {
+      log_filter_ = i;
+      to_end = true;
+    }
     ui::RecordTarget(Fmt("log:filter%d", i));
     ImGui::PopStyleColor();
   }
@@ -1690,22 +1702,39 @@ void App::DrawLogList(int warns, int errors) {
   ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(fs * 0.5f, fs * 0.25f));
   ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(6, 2));
   ImGui::BeginChild("logscroll", ImVec2(0, 0), ImGuiChildFlags_Borders | ImGuiChildFlags_AlwaysUseWindowPadding);
+  // New lines scroll to the end only when it is shown (or the page was just
+  // opened): scrolled up, the user can read while the algorithm keeps printing.
+  to_end = to_end || ImGui::IsWindowAppearing();
+  const bool at_end = to_end || ImGui::GetScrollY() >= ImGui::GetScrollMaxY() - fs;
   ImFont* mono = ui::GetFonts().mono;
+  const auto last_algo = std::find_if(log_.rbegin(), log_.rend(), [](const LogLine& l) { return l.level == "algo"; });
+  bool other_shown = false;
   for (const auto& l : log_) {
     const int lv = l.level == "error" ? 2 : l.level == "warn" ? 1 : 0;
+    const bool algo = l.level == "algo";
     if (log_filter_ == 1 && lv < 1) continue;
     if (log_filter_ == 2 && lv < 2) continue;
+    if (log_filter_ == 3 && !algo) continue;
     const ImVec4 c = lv == 2 ? p.danger : lv == 1 ? p.warning : p.text;
     if (mono) ImGui::PushFont(mono);
     ImGui::TextColored(p.text_dim, "%s", l.time.c_str());
     if (mono) ImGui::PopFont();
     ImGui::SameLine(fs * 5.2f);
-    ImGui::TextColored(lv ? c : p.text_dim, "%s", lv == 2 ? ICON_FA_CIRCLE_XMARK : lv == 1 ? ICON_FA_TRIANGLE_EXCLAMATION : ICON_FA_CIRCLE_INFO);
+    ImGui::TextColored(algo ? p.accent : lv ? c : p.text_dim, "%s",
+                       algo ? ICON_FA_CODE : lv == 2 ? ICON_FA_CIRCLE_XMARK : lv == 1 ? ICON_FA_TRIANGLE_EXCLAMATION : ICON_FA_CIRCLE_INFO);
     ImGui::SameLine(fs * 6.6f);
-    ImGui::TextColored(c, "%s", l.text.c_str());
+    ImGui::TextColored(c, "%s", l.text.c_str());  // (a traceback is one entry of several lines)
+    // For the tour: the newest line of the algorithm and any other line on screen.
+    if (ImGui::IsItemVisible()) {
+      if (last_algo != log_.rend() && &l == &*last_algo) ui::RecordTarget("log:algo_last");
+      else if (!algo && !other_shown) {
+        ui::RecordTarget("log:other");
+        other_shown = true;
+      }
+    }
   }
-  if (log_scroll_) {
-    ImGui::SetScrollHereY(1.0f);
+  if (log_scroll_ || to_end) {
+    if (at_end) ImGui::SetScrollHereY(1.0f);
     log_scroll_ = false;
   }
   ImGui::EndChild();

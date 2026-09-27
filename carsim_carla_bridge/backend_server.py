@@ -37,7 +37,7 @@ import collector as coll
 import dataset as dsmod
 import rig as rigmod
 import settings as st
-from session import CarlaDriveSession, CoSimSession, check_run_config, check_run_files, control_busy
+from session import AlgoOutput, CarlaDriveSession, CoSimSession, check_run_config, check_run_files, control_busy
 from views import ViewStreamer
 
 WEATHER_PRESETS = [n for n in dir(carla.WeatherParameters)
@@ -103,6 +103,13 @@ class Backend:
 
     def _log(self, msg, level="info"):
         self.emit({"event": "log", "level": level, "msg": msg})
+
+    def _algo_output(self, ses=None, end=False):
+        """What the user's algorithm printed, and its traceback, to the 输出
+        page (level "algo"); backend.log has all of it already."""
+        out = getattr(self.session if ses is None else ses, "algo_out", None)
+        for line in out.take(end) if isinstance(out, AlgoOutput) else ():
+            self._log(line, "algo")
 
     def _set_cosim_state(self, s, detail=""):
         self.cosim_state, self.cosim_detail = s, detail
@@ -1152,6 +1159,7 @@ class Backend:
         req_dt = d["sync"]["frame_dt"]
         try:
             info = self.session.start()
+            self._algo_output()  # what the algorithm printed while loading
             # The session aligned frame_dt to CarSim's t_step: collect on that clock.
             col_cfg["frame_dt"] = d["sync"]["frame_dt"]
             col_cfg["capture_every"] = d["collect"]["capture_every"] = st.sample_every(d)
@@ -1335,6 +1343,11 @@ class Backend:
             if self.cosim_state in ("running", "paused"):
                 self._set_cosim_state(final, detail)
             return
+        self._algo_output(ses, end=True)
+        n = getattr(ses, "ctrl_n", 0)
+        if isinstance(n, int) and n > 0:  # the user's control() ran
+            self._log("算法耗时：control() 调用 %d 次，平均 %.2f ms，最长 %.2f ms（t = %.2f s）；仿真步长 %g ms" % (
+                n, ses.ctrl_ms_sum / n, ses.ctrl_ms_max, ses.ctrl_ms_max_t, ses.d["sync"]["frame_dt"] * 1000.0))
         self._try(lambda: ses.stop(release_vehicle=True))
         # Back to what the user had before co-sim (usually async), so the
         # world does not stay frozen in sync mode with nobody ticking.
@@ -1370,6 +1383,7 @@ class Backend:
             return
         try:
             tel = self.session.step()
+            self._algo_output()
             warning = tel.pop("warning", "")
             if warning:  # e.g. the run record stopped: disk full
                 self._log(warning, "warn")
@@ -1388,6 +1402,7 @@ class Backend:
                     tel["done"] = True
         except (Exception, SystemExit) as e:  # SystemExit: e.g. argparse in a user controller
             traceback.print_exc()
+            self._algo_output()  # what the algorithm printed, and where it failed, before the error
             if "time-out" in str(e):
                 self._check_carla(now=True)
                 if self.world is None:
@@ -1732,7 +1747,7 @@ def serve_clients(srv, backend, exit_with_client=False):
 
 
 if __name__ == "__main__":
-    # print() in the user's control() goes to backend.log. On Windows a
+    # print() in the user's control() also goes to backend.log. On Windows a
     # redirected stdout uses the ANSI code page (cp936), where printing e.g.
     # "✓" raises inside control() and stops the run.
     for stream in (sys.stdout, sys.stderr):

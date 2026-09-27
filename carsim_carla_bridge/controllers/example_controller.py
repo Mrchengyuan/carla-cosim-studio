@@ -20,6 +20,9 @@
              python_carsim_env 的默认顺序：[油门 0~1, 制动, 方向盘转角 deg（左正）]
 
 入口也可以是普通函数 control(exports, t, dt[, scene])，在界面“入口”里填函数名。
+
+print() 的内容显示在界面底部“输出”页（点“算法”只看这些），也写进 backend.log；
+“车辆状态”页的“算法耗时”是 control() 每次调用花的时间。
 """
 import math
 

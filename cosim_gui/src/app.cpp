@@ -261,7 +261,11 @@ void App::SavePrefs() {
 
 void App::Log(const std::string& msg, const std::string& level) {
   log_.push_back({level, NowStr(), msg});
-  while (log_.size() > 800) log_.pop_front();
+  // The control algorithm's print() output (level "algo") keeps 800 lines of
+  // its own: it never pushes the backend's messages out.
+  const bool algo = level == "algo";
+  auto same = [algo](const LogLine& l) { return (l.level == "algo") == algo; };
+  if (std::count_if(log_.begin(), log_.end(), same) > 800) log_.erase(std::find_if(log_.begin(), log_.end(), same));
   log_scroll_ = true;
   if (level == "error") ++log_errors_;
   if (!tour_dir_.empty()) std::printf("[%s] %s\n", level.c_str(), msg.c_str());
@@ -1052,6 +1056,12 @@ void App::BuildTour() {
   const std::string ds = (fs::u8path(tour_dir_) / "tour_dataset").u8string();
   const fs::path dir = fs::absolute(fs::u8path(tour_dir_));  // the backend resolves relative paths in its own folder
   const std::string cfg_file = (dir / "tour_config.json").u8string(), bad_ctrl = (dir / "tour_bad_controller.py").u8string();
+  const std::string print_ctrl = (dir / "tour_print_controller.py").u8string();
+  static const std::string kPrinted = "tour: control() 第 3 次调用";
+  auto printed = [this] {  // the last line of the algorithm's own output is the one the tour controller printed
+    const auto l = std::find_if(log_.rbegin(), log_.rend(), [](const LogLine& x) { return x.level == "algo"; });
+    return l != log_.rend() && l->text == kPrinted;
+  };
   tour_ = new std::vector<TourStep>{
       {kPanelConnect, [this] { ConnectBackend(); }, [this] { return be_.Connected(); }, ""},
       {kPanelConnect, [this] { ConnectCarla(); }, [this, idle] { return carla_connected_ && idle(); }, "01_connect"},
@@ -1208,6 +1218,21 @@ void App::BuildTour() {
          return idle() && !Running() && run_note_.rfind("运行没有启动：", 0) == 0 && run_note_.find("NameError") != std::string::npos &&
                 ui::TargetShown("log:filter0");
        }, "11c_start_failed"},
+      // What the algorithm prints goes to the 输出 page: the 算法 filter shows it, and only it.
+      {kPanelDrive, [this, print_ctrl] {
+         std::ofstream(fs::u8path(print_ctrl)) << "print('tour: 算法已加载')\nN = [0]\n\n\ndef control(exports, t, dt):\n"
+                                                  "    N[0] += 1\n    if N[0] == 3:\n        print('" << kPrinted << "')\n"
+                                                  "    return [0.0, 0.0, 0.0]\n";
+         cfg_["run"]["controller"]["path"] = print_ctrl;
+         cfg_["run"]["controller"]["entry"] = "control";
+         click_target_ = "运行";
+       }, [this, printed] { return run_state_ == "running" && last_tel_.contains("ctrl_ms") && printed(); }, ""},
+      {kPanelDrive, [this] { click_target_ = "log:filter3"; }, [this, printed] {
+         return log_filter_ == 3 && printed() && ui::TargetShown("log:algo_last") && !ui::TargetShown("log:other");
+       }, "11d_algo_output"},
+      {kPanelDrive, [this] { click_target_ = "log:filter0"; }, [this] { return log_filter_ == 0; }, ""},
+      {kPanelDrive, [this] { cfg_["run"]["controller"]["entry"] = "Controller"; click_target_ = "停止"; },
+       [this] { return run_state_ == "stopped" && last_tel_.empty(); }, ""},
       {kPanelDrive, [this] { cfg_["run"]["controller"]["path"] = "controllers/scene_controller.py"; click_target_ = "dock:scene"; },
        [this] { return ui::TargetShown("scene:moving_only") && !ui::TargetShown("log:filter0"); }, ""},
       {kPanelDrive, [this] { click_target_ = "view:wheel"; },

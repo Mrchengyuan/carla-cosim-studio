@@ -5,6 +5,7 @@ both run exactly the same code path.
 """
 
 import ast
+import contextlib
 import ctypes
 import importlib.util
 import inspect
@@ -188,12 +189,12 @@ def reset_env(env):
         raise RuntimeError(_reset_failed(env, e)) from e
 
 
-def make_driver(d, ex, n_imports=None, scene=None):
+def make_driver(d, ex, n_imports=None, scene=None, output=None):
     drv = d["run"]["driver"]
     if drv == "demo":
         return lambda obs, t: demo_driver(t)
     if drv == "custom":
-        return load_controller(d, ex, n_imports, scene)
+        return load_controller(d, ex, n_imports, scene, output)
     raise ValueError("unknown CarSim driver '%s'" % drv)
 
 
@@ -251,6 +252,163 @@ def _user_error(what, e, path):
     if isinstance(e, SyntaxError) and e.lineno:  # possibly in a module the algorithm imports
         msg, where = e.msg, "（%s 第 %d 行）" % (_short(e.filename or path, os.path.dirname(path)), e.lineno)
     return "%s：%s: %s%s" % (what, type(e).__name__, msg, where)
+
+
+def _own_trace(e, path):
+    """The traceback of e in the algorithm's own files (and of the exceptions
+    it came from), outermost first, for the 输出 page:
+
+        出错位置（只列你的文件，外层在前）：
+          my_ctrl.py 第 12 行 control：u = mpc.solve(x)
+          mpc.py 第 2 行 solve：return 1.0 / x
+        ZeroDivisionError: float division by zero
+
+    Library and backend frames are left out; '' when no frame is the user's."""
+    folder = os.path.dirname(path)
+
+    def own(f):
+        return os.path.abspath(f) == path or _own_file(f, folder)
+    chain = [(e, "")]  # (exception, how it follows the one printed before it)
+    while len(chain) < 5:
+        x = chain[-1][0]
+        if x.__cause__ is not None:
+            nxt, how = x.__cause__, "上面的异常引起了下面的异常："
+        elif x.__context__ is not None and not x.__suppress_context__:
+            nxt, how = x.__context__, "处理上面的异常时又出错："
+        else:
+            break
+        if any(nxt is c for c, _ in chain):
+            break
+        chain[-1] = (x, how)
+        chain.append((nxt, ""))
+    out = []
+    for x, how in reversed(chain):  # the first cause first, like Python
+        frames = [(f.filename, f.lineno, f.name, f.line) for f in traceback.extract_tb(x.__traceback__) if own(f.filename)]
+        if isinstance(x, SyntaxError) and x.filename and x.lineno and own(x.filename):
+            frames.append((x.filename, x.lineno, "", x.text))
+        if not frames:
+            continue
+        if out and how:
+            out.append(how)
+        if len(frames) > 12:  # e.g. a RecursionError
+            frames = frames[:3] + [len(frames) - 11] + frames[-8:]
+        for fr in frames:
+            if isinstance(fr, int):
+                out.append("  ……（中间省略 %d 层）" % fr)
+                continue
+            f, n, name, text = fr
+            out.append("  %s 第 %d 行%s：%s" % (_short(f, folder), n, " 模块顶层" if name == "<module>" else
+                                                (" " + name if name else ""), (text or "").strip()[:200]))
+        msg = str(x)
+        out.append("%s: %s" % (type(x).__name__, msg[:500]) if msg else type(x).__name__)
+    return "出错位置（只列你的文件，外层在前）：\n" + "\n".join(out) if out else ""
+
+
+class _AlgoStream:
+    """sys.stdout / sys.stderr while the algorithm runs (AlgoOutput): every
+    write goes on to the real stream (backend.log); the algorithm thread's
+    writes are also kept for the GUI. Anything else (encoding, fileno,
+    isatty ...) is the real stream's. One pair for every run: a logging
+    handler the algorithm made on its first run keeps writing into it."""
+    real = None
+    out = None  # the AlgoOutput capturing right now
+
+    def __init__(self, i):
+        self._i = i
+
+    def write(self, s):
+        if self.real is not None:
+            self.real.write(s)
+        out = self.out
+        if out is not None and out._thread == threading.get_ident() and isinstance(s, str):
+            out._feed(self._i, s)
+        return len(s)
+
+    def flush(self):
+        if self.real is not None:
+            self.real.flush()
+
+    def __getattr__(self, name):
+        return getattr(self.real, name)
+
+
+_ALGO_STREAMS = (_AlgoStream(0), _AlgoStream(1))
+
+
+class AlgoOutput:
+    """What the user's algorithm prints (print(), sys.stderr, warnings) while
+    it is loaded and while its control() runs, for the GUI's 输出 page, and
+    the traceback of its own files when it raises. `with out:` around the
+    algorithm's code swaps sys.stdout / sys.stderr for that time only, and
+    keeps only the writes of the calling thread (not the backend's other
+    threads); everything still reaches the real streams (backend.log). At
+    most RATE lines a second are kept, then one '（省略 N 行）' line."""
+    RATE = 20      # lines a second for the GUI
+    PENDING = 200  # kept until take(): run_cosim.py never takes them
+    MAX_LEN = 1000  # characters of one line
+    clock = time.monotonic
+
+    def __init__(self):
+        self.path = ""  # the algorithm file (load_controller): the traceback shows its folder's frames
+        self._part = ["", ""]  # a line not ended yet, per stream
+        self._lines, self._n, self._skipped, self._window = [], 0, 0, None
+        self._thread = self._saved = None
+
+    def __enter__(self):
+        self._saved = (sys.stdout, sys.stderr)
+        for s, real in zip(_ALGO_STREAMS, self._saved):
+            if real is not s:
+                s.real = real
+            s.out = self
+        sys.stdout, sys.stderr = _ALGO_STREAMS
+        self._thread = threading.get_ident()
+        return self
+
+    def __exit__(self, et, e, tb):
+        self._thread = None
+        for s in _ALGO_STREAMS:
+            s.out = None
+        sys.stdout, sys.stderr = self._saved
+        for i, part in enumerate(self._part):  # print(..., end=""): shown now
+            if part:
+                self._part[i] = ""
+                self._add(part)
+        if e is not None and self.path:
+            trace = _own_trace(e, self.path)
+            if trace:
+                self._lines.append(trace)  # not limited: the run stops with it
+        return False
+
+    def _feed(self, i, s):
+        *done, part = (self._part[i] + s).split("\n")
+        for line in done:
+            self._add(line)
+        self._part[i] = part[:self.MAX_LEN + 1]  # the rest of a very long line is not shown anyway
+
+    def _add(self, line):
+        now = self.clock()
+        if self._window is None or now - self._window >= 1.0:
+            self._roll(now)
+        if self._n < self.RATE and len(self._lines) < self.PENDING:
+            self._n += 1
+            line = line.rstrip("\r").expandtabs(4)
+            self._lines.append(line if len(line) <= self.MAX_LEN else line[:self.MAX_LEN] + " …")
+        else:
+            self._skipped += 1
+
+    def _roll(self, now):
+        if self._skipped and len(self._lines) < self.PENDING:
+            self._lines.append("（省略 %d 行，全部输出见 backend.log）" % self._skipped)
+            self._skipped = 0
+        self._window, self._n = now, 0
+
+    def take(self, end=False):
+        """The lines to show since the last take; at the end of a run (end)
+        also how many lines the limit left out."""
+        if self._skipped and (end or self.clock() - self._window >= 1.0):
+            self._roll(self.clock())
+        lines, self._lines = self._lines, []
+        return lines
 
 
 def _scene_miss(k, sel, rig=()):
@@ -365,7 +523,7 @@ def _wants_scene(fn):
     return len([p for p in ps if p.kind in (p.POSITIONAL_ONLY, p.POSITIONAL_OR_KEYWORD)]) >= 4
 
 
-def load_controller(d, ex, n_imports=None, scene=None):
+def load_controller(d, ex, n_imports=None, scene=None, output=None):
     """The user's control algorithm, loaded fresh from its file at every run
     start (edits apply on the next run). The entry is a class (instantiated,
     reset() called if present, then control() every frame) or a function:
@@ -375,7 +533,10 @@ def load_controller(d, ex, n_imports=None, scene=None):
                                           the car (scene.py; scene() returns it)
 
     exports is {name: value} of every CarSim export, in CarSim units.
-    See controllers/example_controller.py.
+    See controllers/example_controller.py. output: an AlgoOutput that gets
+    what the algorithm prints (loading, reset(), every control() call) and
+    its traceback. The returned driver's .ms is how long the last
+    control() call took (ms).
     """
     global _last_folder
     c = d["run"]["controller"]
@@ -412,21 +573,25 @@ def load_controller(d, ex, n_imports=None, scene=None):
     mod = importlib.util.module_from_spec(spec)
     sys.modules["user_controller"] = mod  # dataclasses & co. look the module up here
     entry = c.get("entry") or "Controller"
+    cap = contextlib.nullcontext() if output is None else output
+    if output is not None:
+        output.path = path
     try:
-        spec.loader.exec_module(mod)
-        obj = getattr(mod, entry, None)
-        if obj is None:
-            found = ["%s（%s）" % (n, "类" if isinstance(v, type) else "函数") for n, v in vars(mod).items()
-                     if not n.startswith("_") and (n == "control" and callable(v) or
-                                                   isinstance(v, type) and callable(getattr(v, "control", None)))]
-            raise ValueError("%s 里没有找到 %s；%s" % (
-                os.path.basename(path), entry, "找到了：%s——把“入口”改成其中一个" % "、".join(found) if found
-                else "“入口”要填带 control() 方法的类名，或 control(exports, t, dt) 这样的函数名"))
-        if isinstance(obj, type):
-            obj = obj()
-            if hasattr(obj, "reset"):
-                obj.reset()
-            obj = obj.control
+        with cap:
+            spec.loader.exec_module(mod)
+            obj = getattr(mod, entry, None)
+            if obj is None:
+                found = ["%s（%s）" % (n, "类" if isinstance(v, type) else "函数") for n, v in vars(mod).items()
+                         if not n.startswith("_") and (n == "control" and callable(v) or
+                                                       isinstance(v, type) and callable(getattr(v, "control", None)))]
+                raise ValueError("%s 里没有找到 %s；%s" % (
+                    os.path.basename(path), entry, "找到了：%s——把“入口”改成其中一个" % "、".join(found) if found
+                    else "“入口”要填带 control() 方法的类名，或 control(exports, t, dt) 这样的函数名"))
+            if isinstance(obj, type):
+                obj = obj()
+                if hasattr(obj, "reset"):
+                    obj.reset()
+                obj = obj.control
     except SystemExit as e:  # e.g. argparse at module level: must not end the backend
         raise RuntimeError("控制算法 %s 在加载时调用了 sys.exit（常见原因：模块顶层用了 argparse）：%s%s"
                            % (os.path.basename(path), e, _where(_tb(e), path)))
@@ -444,7 +609,11 @@ def load_controller(d, ex, n_imports=None, scene=None):
         exports = {n: ex.raw(obs, n) for n in names}
         control.running = (time.time(), threading.get_ident())  # for control_busy()
         try:
-            out = obj(exports, t, dt, scene() if scene else None) if with_scene else obj(exports, t, dt)
+            args = (exports, t, dt, scene() if scene else None) if with_scene else (exports, t, dt)
+            with cap:
+                t0 = time.perf_counter()
+                out = obj(*args)
+                control.ms = (time.perf_counter() - t0) * 1000.0  # the algorithm's own time (GUI: 算法耗时)
         except KeyError as e:
             k = e.args[0] if len(e.args) == 1 and isinstance(e.args[0], str) else None
             no_export = "导出变量里没有 %r（导出变量在“CarSim 动力学”页设置，现有：%s）" % (
@@ -479,7 +648,7 @@ def load_controller(d, ex, n_imports=None, scene=None):
             # CarSim would silently fill missing imports with 0 (e.g. no steering).
             raise RuntimeError("控制算法返回了 %d 个值，但 .sim 里有 %d 个导入变量；应%s" % (len(vals), n, want))
         return vals
-    control.path, control.running = path, None
+    control.path, control.running, control.ms = path, None, None
     return control
 
 
@@ -581,6 +750,9 @@ class CoSimSession:
         self.end_reason = ""
         self.last_action = None  # what control() returned last (CarSim imports)
         self.state = None        # the SyncedState of the current step
+        self.algo_out = AlgoOutput()  # what the user's algorithm prints, for the GUI
+        # How long the user's control() took: calls, sum, longest and its t (ms, s).
+        self.ctrl_n, self.ctrl_ms_sum, self.ctrl_ms_max, self.ctrl_ms_max_t = 0, 0.0, 0.0, 0.0
 
     # --------------------------------------------------------------- lifecycle
     def start(self):
@@ -633,7 +805,7 @@ class CoSimSession:
                 self.vehicle, self._speed, frame_dt).to_carsim(sw_max, scale)
         else:
             self.driver = make_driver(d, self.sync.ex, lambda: self.env.config.get("n_import"),
-                                      lambda: self.scene.view())
+                                      lambda: self.scene.view(), self.algo_out)
         folder = os.path.dirname(getattr(self.driver, "path", ""))
         if folder:  # make_env put python_carsim_env first: the algorithm's own modules go before it again
             if folder in sys.path:
@@ -709,6 +881,12 @@ class CoSimSession:
         """Advance one CARLA frame. Returns a telemetry dict."""
         env, frame_dt = self.env, self.d["sync"]["frame_dt"]
         action = self.driver(self.obs, env.t_current)
+        ms = getattr(self.driver, "ms", None)  # the user's control() only, not the test drivers
+        if ms is not None:
+            self.ctrl_n += 1
+            self.ctrl_ms_sum += ms
+            if ms >= self.ctrl_ms_max:
+                self.ctrl_ms_max, self.ctrl_ms_max_t = ms, env.t_current
         if not all(math.isfinite(a) for a in action):
             raise RuntimeError("控制算法输出了无效数值（NaN / 无穷大）：%s" % list(action))
         self.last_action = [float(a) for a in action]
@@ -751,6 +929,7 @@ class CoSimSession:
             "wheel_rotation": list(state.wheel_rotation),
             "wheel_suspension_mm": [x * 1000.0 for x in state.wheel_suspension],
             "action": [float(a) for a in action],
+            **({"ctrl_ms": ms, "ctrl_ms_max": self.ctrl_ms_max} if ms is not None else {}),
             "warnings": warnings,
             "world_frame": world_frame,
             "dynamics": "CarSim",

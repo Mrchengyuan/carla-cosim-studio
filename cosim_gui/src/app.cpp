@@ -392,7 +392,9 @@ void App::ConnectBackend(bool quiet) {
   Log("已连接后端");
   // A git pull updates the Python side at once, this program only when it is
   // rebuilt: say so instead of misbehaving silently.
-  be_.Request("hello", json::object(), [this](bool ok, const json& r, const std::string&) {
+  be_.Request("hello", json::object(), [this](bool ok, const json& r, const std::string& err) {
+    // A lost connection fails it too; only an old backend does not know the command.
+    if (!ok && err.find("未知命令") == std::string::npos) return;
     const int theirs = ok && r.is_object() && r.contains("protocol") && r["protocol"].is_number_integer()
                            ? r["protocol"].get<int>() : 0;
     if (theirs != kBackendProtocol)

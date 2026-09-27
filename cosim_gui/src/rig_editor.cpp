@@ -156,7 +156,8 @@ void App::DrawPanelRig() {
   json& sensors = RigSensors();
 
   ui::BeginCard(ICON_FA_SATELLITE_DISH, "传感器套件");
-  ui::Row("预设方案", "安装位置会按当前车型的长宽高自动计算");
+  ui::Row("预设方案", carla_connected_ ? "安装位置会按当前车型的长宽高自动计算"
+                                       : "安装位置要按当前车型实测的长宽高计算，连接 CARLA 后才能加载");
   std::vector<std::string> ids, names;
   for (const json& pr : rig_presets_) {
     ids.push_back(pr.value("id", std::string()));
@@ -168,8 +169,12 @@ void App::DrawPanelRig() {
   }
   ComboStr("##preset", rig_preset_choice_, ids, &names);
   ImGui::SameLine();
-  ImGui::BeginDisabled(!busy_.empty() || Running());
+  // The backend measures the vehicle for the preset; without CARLA it would
+  // fit the generic car, and the loaded mounts are kept as they are.
+  ImGui::BeginDisabled(!busy_.empty() || Running() || !carla_connected_);
   if (ui::Button(ICON_FA_WAND_MAGIC_SPARKLES, "加载预设", ui::Kind::Primary)) LoadRigPreset(rig_preset_choice_);
+  if (!carla_connected_ && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+    ImGui::SetTooltip("连接 CARLA 后才能加载：安装位置要按当前车型实测的长宽高计算");
   ImGui::EndDisabled();
   ui::Row("添加传感器");
   struct A { const char* type; const char* label; };
@@ -192,7 +197,7 @@ void App::DrawPanelRig() {
   const json* spec = SelectedVehicleSpec();
   if (!spec) {
     ImGui::TextColored(p.warning, ICON_FA_CIRCLE_INFO "  当前车型还没测量尺寸，按 4.8 × 2.0 × 1.5 m 的轿车画图；"
-                                  "在“车辆与视角”页点“测量”后会更准确");
+                                  "%s在“车辆与视角”页点“测量”后会更准确", carla_connected_ ? "" : "连接 CARLA，");
   }
   if (RigLegacy()) {
     // Still marked as converting with nothing busy: the conversion failed (see Frame()).

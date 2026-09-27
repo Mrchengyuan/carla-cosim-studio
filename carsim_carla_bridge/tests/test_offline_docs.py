@@ -2,7 +2,7 @@
 resolve, the training-code snippet in the guides builds CarlaVehicleSync from
 the GUI's config in synchronous mode (run once against fakes), command-line
 --sim examples say how long they run, the bottom-panel tabs, and the
-sampling, lidar, speed-limit and scene-panel statements of the spec."""
+sampling, lidar, speed-limit, scene-panel and run-record-unit statements."""
 
 import glob
 import inspect
@@ -225,8 +225,15 @@ class SpecTests(unittest.TestCase):
         for name, pat in (("scene.py", r'"rotation_frequency", str\(1\.0 / self\.frame_dt\)'),
                           ("collector.py", r'"rotation_frequency", str\(1\.0 / c\["frame_dt"\]\)')):
             self.assertTrue(re.search(pat, read(os.path.join(BRIDGE, name))), name)
+        # Rays that hit nothing give no point, and CARLA's default dropoff_general_rate
+        # (0.45) is left alone, so a saved sweep has fewer points than rays.
+        for f in glob.glob(os.path.join(BRIDGE, "*.py")):
+            self.assertNotIn("dropoff", read(f), rel(f))
         for doc in (SPEC, MANUAL):
-            self.assertIn("一圈的点数 = 每秒点数 × 仿真步长", read(doc), rel(doc))
+            text = read(doc)
+            self.assertIn("每圈发射的激光束数 = 每秒点数 × 仿真步长", text, rel(doc))
+            self.assertIn("`dropoff_general_rate`", text, rel(doc))
+            self.assertNotIn("一圈的点数", text, rel(doc))
 
     def test_speed_limit_is_carlas_vehicle_limit(self):
         self.assertIn("self.ego.get_speed_limit()", read(os.path.join(BRIDGE, "scene.py")))
@@ -244,10 +251,19 @@ class SpecTests(unittest.TestCase):
         self.assertIn("不受", row)
         self.assertNotIn("算法这一帧收到", row)
 
-    def test_run_record_units_and_overwrite(self):
-        spec = read(SPEC)
-        self.assertIn("文件里不写单位", spec)
-        self.assertIn("**覆盖**", spec)
+    def test_run_record_units(self):
+        # The record gets CarSim's exports as they are; only the scene quantities follow the page.
+        src = read(os.path.join(BRIDGE, "session.py"))
+        m = re.search(r"ses\.recorder\.write\(ses\.scene\.record_view\(\), (ses\.exports\(\)|exports),", src)
+        self.assertTrue(m)
+        if m.group(1) == "exports":
+            self.assertIn("exports = ses.exports()", src)
+        self.assertIn("return {n: ex.raw(self.obs, n) for n in ex.index}", src)
+        for doc in (SPEC, MANUAL):
+            line = next(line for line in read(doc).splitlines() if "CSV 里不写单位" in line)
+            for s in ("`ego_`", "CarSim 动力学", "CarSim 原样的数值", ".sim", "`u1` … `un`"):
+                self.assertIn(s, line, rel(doc))
+        self.assertIn("相对路径以 `carsim_carla_bridge` 目录为准。CSV 里不写单位", read(MANUAL))
 
 
 class InstructionTests(unittest.TestCase):

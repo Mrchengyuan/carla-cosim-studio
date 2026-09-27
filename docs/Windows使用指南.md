@@ -85,7 +85,7 @@ git clone https://github.com/Mrchengyuan/python_carsim_env.git
 
 ## 4. 安装 CARLA（原版）
 
-原版 CARLA 不用编译，下载解压就能用。界面会自动使用“兼容模式”：车身、转向、车轮转动完全同步，只是速度 / IMU 陀螺仪读数为 0，也没有悬架动画（要这些见第 9 步）。
+原版 CARLA 不用编译，下载解压就能用。界面会自动使用“兼容模式”：车身、转向、车轮转动完全同步，只是速度读数和 IMU 陀螺仪读数为 0（加速度计为摆放位置的差分、噪声大），也没有悬架动画（要这些见第 9 步）。
 
 1. 下载 <https://downloads.carlasim.com/Windows/CARLA_0.9.16.zip>（约 8 GB）。
 2. 解压到 `C:\carla-cosim-studio\CARLA_0.9.16\`。

@@ -343,5 +343,19 @@ class ViewAndExportTests(unittest.TestCase):
             self.assertIn("缺图", res.get("warning", ""))
 
 
+class TrafficManagerPortTests(unittest.TestCase):
+    def test_port_follows_the_carla_server(self):
+        # Stock (2000) and modified (3000) CARLA side by side: each backend needs its own port.
+        for carla_port, tm_port in ((2000, 8000), (3000, 9000), (60000, 8000)):
+            backend = Backend()
+            asked = []
+            tm = SimpleNamespace(set_synchronous_mode=lambda on: None)
+            backend.client = SimpleNamespace(get_trafficmanager=lambda p: asked.append(p) or tm)
+            backend.world = SimpleNamespace(get_settings=lambda: SimpleNamespace(synchronous_mode=False))
+            backend.carla_addr = ("localhost", carla_port)
+            self.assertIs(backend._need_tm(), tm)
+            self.assertEqual(asked, [tm_port])
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -191,7 +191,10 @@ class Backend:
         answering (the modified carla package fixes that): no traffic, no
         traffic manager."""
         if self.tm is None:
-            self.tm = self.client.get_trafficmanager(8000)
+            # One traffic manager port per CARLA server (2000 -> 8000, 3000 -> 9000):
+            # with one shared port, a second backend on the other CARLA cannot start its own.
+            port = self.carla_addr[1] + 6000 if self.carla_addr else 8000
+            self.tm = self.client.get_trafficmanager(port if port < 65536 else 8000)
             self.tm.set_synchronous_mode(self.world.get_settings().synchronous_mode)
         return self.tm
 

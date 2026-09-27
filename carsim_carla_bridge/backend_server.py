@@ -35,7 +35,7 @@ import collector as coll
 import dataset as dsmod
 import rig as rigmod
 import settings as st
-from session import CarlaDriveSession, CoSimSession
+from session import CarlaDriveSession, CoSimSession, check_run_config, check_run_files
 from views import ViewStreamer
 
 WEATHER_PRESETS = [n for n in dir(carla.WeatherParameters)
@@ -954,6 +954,7 @@ class Backend:
         if self.cosim_state in ("running", "paused"):
             raise RuntimeError("已经有仿真在运行")
         d = st.load_dict(None, config or {})
+        check_run_config(d)
         c = d["carla"]
         col_cfg = dict(d["collect"])
         col_cfg["frame_dt"] = d["sync"]["frame_dt"]
@@ -972,6 +973,7 @@ class Backend:
                 raise RuntimeError(di["error"])
             if est["total_gb"] > di["free_gb"] - coll.DISK_RESERVE_GB:
                 raise RuntimeError("预计需要 %.1f GB，磁盘只剩 %.1f GB" % (est["total_gb"], di["free_gb"]))
+        check_run_files(d)  # controller, .sim, python_carsim_env, CarSim solver
         # Every run starts with a fresh ego at the chosen spawn point, like a
         # CarSim run starts from its initial conditions. A teleported vehicle
         # keeps stale traffic-manager state (autopilot then brakes forever),
@@ -1036,8 +1038,12 @@ class Backend:
             self._try(lambda: w.apply_settings(pre))
             self._try(lambda: self._tm_sync(pre.synchronous_mode))
             raise
+        req_dt = d["sync"]["frame_dt"]
         try:
             info = self.session.start()
+            # The session aligned frame_dt to CarSim's t_step: collect on that clock.
+            col_cfg["frame_dt"] = d["sync"]["frame_dt"]
+            col_cfg["capture_every"] = d["collect"]["capture_every"] = st.sample_every(d)
             if col_cfg["enabled"]:
                 ses, sc = self.session, self.session.scene
                 self.collector = coll.DataCollector(w, self.ego, sensors, col_cfg,
@@ -1059,11 +1065,17 @@ class Backend:
         if info.get("server_api") is not None:
             self.server_api = info["server_api"]
         if cosim:
-            self._log("联合仿真开始：%s，参考点 %s，每帧 %d 个 CarSim 步，驾驶：%s" % (
+            self._log("联合仿真开始%s：%s，参考点 %s，每帧 %d 个 CarSim 步，驾驶：%s" % (
+                "（模拟 CarSim）" if info["mock"] else "",
                 "改版 CARLA 接口" if info["external_api"] else "原版兼容模式",
                 info["reference_point"], info["inner_steps"], d["run"]["driver"]))
-            if info["clock_warning"]:
-                self._log("frame_dt 不是 CarSim t_step 的整数倍，两边时钟会漂移", "warn")
+            if abs(info["frame_dt"] - req_dt) > 1e-9:
+                self._log("仿真步长已对齐到 CarSim t_step（%g s）的整数倍：%g s → %g s" % (
+                    info["t_step"], req_dt, info["frame_dt"]), "warn")
+            if not info["mock"] and info["t_stop"] > 0:
+                self._log("这次运行最晚在 CarSim 的结束时间 t = %.1f s 停止（.sim 里设定）" % info["t_stop"])
+            for msg in info["warnings"]:
+                self._log(msg, "warn")
         else:
             self._log("仿真开始：CARLA 物理，驾驶：%s" % d["drive"]["carla_driver"])
         for hit in info.get("collisions", []):  # touching at the start: counted once, here
@@ -1140,9 +1152,16 @@ class Backend:
     def cmd_disk_info(self, path="."):
         return coll.disk_info(path)
 
+    def _pause_clock(self, paused):
+        """The real-time factor counts running time only."""
+        clock = getattr(self.session, "clock", None)
+        if clock is not None:
+            clock.pause() if paused else clock.resume()
+
     def cmd_cosim_pause(self):
         if self.cosim_state == "running":
             self._set_cosim_state("paused")
+            self._pause_clock(True)
             # Telemetry goes out every 2nd frame: send the frame we stopped on,
             # so the GUI shows exactly the paused state (and a step is +1).
             if self._unsent_tel is not None:
@@ -1153,13 +1172,16 @@ class Backend:
     def cmd_cosim_resume(self):
         if self.cosim_state == "paused":
             self._set_cosim_state("running")
+            self._pause_clock(False)
         return self.cosim_state
 
     def cmd_cosim_step(self):
         """Single frame while paused."""
         if self.cosim_state != "paused":
             raise RuntimeError("仅在暂停时可单步")
+        self._pause_clock(False)  # the step's own time counts, the pause does not
         self._cosim_frame(always_emit=True)
+        self._pause_clock(True)
         return True
 
     def cmd_cosim_stop(self):

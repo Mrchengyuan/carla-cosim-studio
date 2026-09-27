@@ -229,7 +229,7 @@ export COSIM_PYTHON=/home/me/miniconda3/envs/carla/bin/python
 CarSim 的求解器通常在 **Windows** 上运行，所以真实 CarSim 联合仿真一般在 Windows 上做，见 [Windows 使用指南](Windows使用指南.md)。在 Ubuntu 上：
 
 - **没有 Linux 版 CarSim**：在界面“CarSim 动力学”页勾选 **模拟 CarSim**，用内置的简单车辆模型跑通整条链路（驾驶、同步、采集都能测）。
-- **有 Linux 版 CarSim 求解器**（`libcarsim.so` 和许可证）：`python_carsim_env` 本身支持 Linux，在“CarSim 动力学”页填 `.sim` 文件路径即可。`.sim` 里需要有 `SOFILE` 或 `PROGDIR` 指向求解器。
+- **有 Linux 版 CarSim 求解器**（`libcarsim.so` 和许可证）：`python_carsim_env` 本身支持 Linux，在“CarSim 动力学”页填 `.sim` 文件路径即可。`.sim` 里需要有 `SOFILE` 或 `PROGDIR` 指向求解器；求解器加载失败时，报错里有系统给出的原因（例如缺少的 `.so` 库）。
 
 导出变量怎么配，见 [CarSim 导出变量清单](../carsim_carla_bridge/docs/CarSim导出变量清单.md)。
 

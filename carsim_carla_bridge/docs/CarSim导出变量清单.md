@@ -68,6 +68,7 @@ IMU 陀螺仪读数就是 CarSim 的真实值（原版 CARLA 里物理关闭后�
 ## 5. 坐标原点对齐
 
 CarSim 全局原点 (0,0,0)、yaw=0 会放到 CARLA 的一个 spawn point 上（`--spawn-index` 选择）。
+CarSim 的初始位置（t = 0 的 Xo、Yo、Yaw）也相对这个原点：不为 0 时车从离出生点相应距离处出发、车头方向与出生点方向差相应角度，运行开始时日志会警告。
 如果 CarSim 用的是自己的道路，而 CARLA 地图道路不同，车辆会"开出路面"，这只是地图不一致，
 不是同步问题。解决办法有两种：
 - 在 CarSim 里导入和 CARLA 地图一致的道路：CARLA 地图有 OpenDRIVE 文件，路网中心线可以导出后作为 CarSim 的路径和路面。

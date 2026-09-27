@@ -239,7 +239,7 @@ Import（输入）保持你原来的三个，REPLACE 模式：油门、制动、
      `exports` 按变量名取 CarSim 导出变量；返回值按 .sim 里导入变量的顺序。每次点“运行”都会重新加载文件，改完代码直接再运行。
      想用原来的 SimplePathFollower，就填 `controllers\simple_path_follower.py`（需要导出 `LatErr`）。
      要用 CARLA 场景里的周围车辆、行人、障碍物和车道，把 `control` 写成 4 个参数 `control(self, exports, t, dt, scene)`，示例 `controllers\scene_controller.py`，说明见 [界面操作手册](界面操作手册.md) 的“驾驶模式”一节。
-   - 仿真步长 = 控制周期，用 CarSim `t_step` 的整数倍，例如 `t_step = 0.001` 时用 `0.02`。
+   - 仿真步长 = 控制周期，用 CarSim `t_step` 的整数倍，例如 `t_step = 0.001` 时用 `0.02`（不是整数倍时自动对齐，日志里提示实际步长）。
    - “测试用驾驶方式”折叠栏里的演示 / 路线跟随 / 键盘驾驶，只在还没有算法、想先检查链路时用。
 4. 把 **运行记录 CSV** 填上（例如 `cosim_log.csv`），点顶部 **运行**。
 5. 检查同步：打开“实时画面”的“前轮特写”，看转向和车轮转动；运行结束后打开 `cosim_log.csv`，`ego_X / ego_Y / ego_Yaw`（车在 CARLA 里的实际位置，换算到 CarSim 坐标）应该和 `Xo / Yo / Yaw` 一致。
@@ -308,7 +308,7 @@ world.tick()
 | 双击快捷方式后 CARLA 没起来 / 界面没打开 | 看命令行窗口里的错误，或 `%LOCALAPPDATA%\carla_cosim_studio\launch_stock.log`（改版是 `launch_mod.log`）。提示“端口 … 被其他程序占用，不是 CARLA”：关掉占着端口的程序，或在 `env.bat` 里改 `CARLA_PORT` / `CARLA_MOD_PORT` |
 | 提示 57100 端口被占用 | 上次的后端还在：任务管理器结束 `python.exe`，或 `netstat -ano \| findstr 57100` 找到进程号后 `taskkill /PID <号> /F` |
 | `No module named agents` | 找不到 CARLA 路径规划模块：在 `env.bat` 设置 `CARLA_PYTHONAPI` |
-| CarSim 报找不到 DLL / 许可证错误 | 用 64 位 Python；确认 `.sim` 里的求解器路径正确、许可证服务在运行；先单独跑通 `python_carsim_env` |
+| CarSim 报找不到 DLL / 许可证错误 | 用 64 位 Python；确认 `.sim` 里的求解器路径正确（报错里有程序算出的求解器路径）、许可证服务在运行；先单独跑通 `python_carsim_env` |
 | 车辆在 CARLA 里浮空或陷进地面 | 参考点或高度不一致：“CarSim 动力学”页改参考点，或把高度模式改成“贴合 CARLA 路面” |
 | 车辆方向反了 / 转向反了 | 检查 CarSim 导出的角度单位（deg / rad）和导出变量顺序 |
 | 车停着不动 | ① 工具栏显示“已完成”、画面上方有黄色提示条：运行时长到了，把“驾驶模式 → 运行时长”设为 0；② CARLA 自动驾驶在等红灯（视口上方有提示），变绿后会自己走；③ CarSim 的制动输入比例太大。“路线跟随”不看红绿灯 |

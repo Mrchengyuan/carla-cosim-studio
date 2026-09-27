@@ -1,6 +1,9 @@
 // All pages except the sensor-rig editor.
 #include <algorithm>
 #include <cmath>
+#include <filesystem>
+#include <map>
+#include <utility>
 
 #include "app.h"
 #include "imgui.h"
@@ -29,6 +32,37 @@ bool EditString(json& obj, const char* key) {
     return true;
   }
   return false;
+}
+
+// Under a path field the run needs: the path the backend will use (relative
+// paths are taken from its folder, see App::UserPath) with a check or a cross,
+// so a typo or an empty field shows before “运行”. need: the file that must be
+// inside that directory.
+void PathStatus(const std::string& resolved, const char* need = nullptr) {
+  namespace fs = std::filesystem;
+  bool ok = false;
+  if (!resolved.empty()) {
+    const std::string probe = need ? (fs::u8path(resolved) / need).u8string() : resolved;
+    static std::map<std::string, std::pair<bool, double>> cache;  // look at the disk once a second, not every frame
+    if (cache.size() > 64) cache.clear();
+    const double now = ImGui::GetTime();
+    auto it = cache.find(probe);
+    if (it == cache.end() || now - it->second.second > 1.0) {
+      std::error_code ec;
+      it = cache.insert_or_assign(probe, std::make_pair(fs::is_regular_file(fs::u8path(probe), ec), now)).first;
+    }
+    ok = it->second.first;
+  }
+  const ui::Palette& p = ui::Colors();
+  ImGui::SetCursorPosX(ui::LabelWidth());
+  ImGui::TextColored(ok ? p.success : p.danger, "%s", ok ? ICON_FA_CIRCLE_CHECK : ICON_FA_CIRCLE_XMARK);
+  ImGui::SameLine();
+  ImGui::PushStyleColor(ImGuiCol_Text, ok ? p.text_dim : p.danger);
+  if (ok) ImGui::TextWrapped("%s", resolved.c_str());
+  else if (resolved.empty()) ImGui::TextWrapped("未设置");
+  else if (need) ImGui::TextWrapped("%s 里没有 %s", resolved.c_str(), need);
+  else ImGui::TextWrapped("找不到：%s", resolved.c_str());
+  ImGui::PopStyleColor();
 }
 
 // Radio option row used for mode choices (dynamics / driver): radio mark,
@@ -493,6 +527,7 @@ void App::DrawPanelDrive() {
       ImGui::Dummy(ImVec2(0, fs * 0.2f));
       ui::Row("算法文件 .py", "相对路径以 carsim_carla_bridge 目录为准。每次点“运行”都会重新加载，改完代码直接再点运行", fs * 30);
       EditString(ctl, "path");
+      PathStatus(UserPath(ctl.value("path", std::string())));
       ui::Row("入口", "文件里的类名（带 control 方法）或函数名", fs * 8);
       EditString(ctl, "entry");
       ui::DimWrapped("接口：control(exports, t, dt) -> [油门, 制动, 方向盘角]，exports 是按变量名取值的 CarSim 导出变量");
@@ -565,10 +600,14 @@ void App::DrawPanelDrive() {
   }
 
   ui::BeginCard(ICON_FA_CLOCK, "运行设置");
-  ui::Row("仿真步长 s", "CARLA 每帧的仿真时间。CarSim 每帧内部积分 步长 / t_step 步", fs * 8);
-  EditDouble(cfg_["sync"], "frame_dt", 0.005, "%.3f", 0.001, 0.5);
-  ui::Row("运行时长 s", "0 = 一直运行，直到点“停止”（默认）。设了时长，到时会自动结束并停车", fs * 8);
+  ui::Row("仿真步长 s", "CARLA 每帧的仿真时间，最大 0.1 s。CarSim 每帧内部积分 步长 / t_step 步；"
+                        "不是 t_step 的整数倍时，运行时自动对齐到最近的整数倍", fs * 8);
+  EditDouble(cfg_["sync"], "frame_dt", 0.005, "%.3f", 0.001, 0.1);
+  ui::Row("运行时长 s", "0 = 直到点“停止”，或 CarSim 到达 .sim 的结束时间（默认）。设了时长，到时会自动结束并停车", fs * 8);
   EditDouble(cfg_["sync"], "duration", 1.0, "%.1f", 0.0, 1e6);
+  if (run_info_.contains("t_stop") && !run_info_.value("mock", true))
+    ui::DimWrapped("上次运行：CarSim 结束时间 t = %.1f s，仿真步长 %g s（%d × t_step %g s）", run_info_.value("t_stop", 0.0),
+                   run_info_.value("frame_dt", 0.0), run_info_.value("inner_steps", 0), run_info_.value("t_step", 0.0));
   ui::Row("运行记录 CSV", "每个采样时刻的自车状态、CarSim 导出变量和控制算法的输出 u1 … un；旁边另写 _objects.csv（障碍物）和 _lane.csv（车道）。"
                           "记录哪些量在“场景信息”页勾选，采样周期在“数据采集”页设置；空 = 不记录。"
                           "每次运行覆盖上一次的文件；磁盘剩余不到 10 GB 时停止写记录");
@@ -811,8 +850,10 @@ void App::DrawPanelCoSim() {
   ImGui::BeginDisabled(mock);
   ui::Row(".sim 文件");
   EditString(cs, "sim_path");
+  if (!mock) PathStatus(UserPath(cs.value("sim_path", std::string())));
   ui::Row("python_carsim_env 目录");
   EditString(cs, "repo_path");
+  if (!mock) PathStatus(UserPath(cs.value("repo_path", std::string())), "carsim_env.py");
   ImGui::EndDisabled();
   ui::EndCard();
 

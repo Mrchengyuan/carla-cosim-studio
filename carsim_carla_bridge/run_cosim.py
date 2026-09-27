@@ -2,7 +2,8 @@
 
 Each CARLA frame (fixed_delta_seconds = frame_dt):
   1. controller computes [throttle, brake, steering_wheel_deg]
-  2. CarSim integrates frame_dt / t_step solver steps (control_step)
+  2. CarSim integrates frame_dt / t_step solver steps (control_step; frame_dt
+     is aligned to a whole number of t_step)
   3. bridge pushes the resulting state to the CARLA vehicle
   4. world.tick() renders the frame / runs the sensors
 CARLA runs in synchronous mode, so both simulators share one clock.
@@ -22,7 +23,7 @@ import argparse
 import carla
 
 import settings as st
-from session import CoSimSession
+from session import CoSimSession, check_run_config, check_run_files
 
 
 def main():
@@ -43,7 +44,7 @@ def main():
     ap.add_argument("--no-external-api", action="store_true", help="force the stock-CARLA fallback")
     args = ap.parse_args()
 
-    o = {"carla": {}, "carsim": {}, "sync": {}, "run": {}}
+    o = {"carla": {}, "carsim": {}, "sync": {}, "run": {}, "drive": {"dynamics": "cosim"}}  # always CarSim here
     for key, sect, name in (("host", "carla", "host"), ("port", "carla", "port"),
                             ("spawn_index", "carla", "spawn_index"), ("vehicle", "carla", "vehicle"),
                             ("sim", "carsim", "sim_path"), ("carsim_repo", "carsim", "repo_path"),
@@ -63,6 +64,12 @@ def main():
     d = st.load_dict(args.config, o)
     if not d["carsim"]["mock"] and not d["carsim"]["sim_path"]:
         ap.error("--sim (or carsim.sim_path in --config) is required unless --mock is given")
+    try:
+        # The GUI backend's pre-flight, before CARLA is touched.
+        check_run_config(d)
+        check_run_files(d)
+    except (ValueError, RuntimeError) as e:
+        ap.error(str(e))
 
     client = carla.Client(d["carla"]["host"], d["carla"]["port"])
     client.set_timeout(30.0)
@@ -79,12 +86,15 @@ def main():
         world.apply_settings(s)
         for _ in range(30):
             world.tick()
+        req_dt = d["sync"]["frame_dt"]
         info = session.start()
         print("external-dynamics API:", "yes (modified CARLA)" if info["external_api"] else "no (stock fallback)")
         print("CarSim reference point in vehicle frame [m]:", info["reference_point"])
-        if info["clock_warning"]:
-            print("warning: frame_dt is not a multiple of CarSim t_step; clocks will drift")
+        if abs(info.get("frame_dt", req_dt) - req_dt) > 1e-9:
+            print("frame_dt %g s -> %g s (a whole number of CarSim t_step)" % (req_dt, info["frame_dt"]))
         print("CarSim t_step=%g s, %d solver steps per CARLA frame" % (info["t_step"], info["inner_steps"]))
+        for w in info.get("warnings", []):
+            print("warning:", w)
         for hit in info.get("collisions", []):  # touching at the start: counted once, here
             print("collision at t=%.2f s with %s (id %s)" % (info["t"], hit["model"], hit["id"]))
         if info.get("warning"):

@@ -299,7 +299,7 @@ venv_build/bin/pip install --force-reinstall --no-deps carla_src/PythonAPI/carla
 - **第一次启动要编译着色器，可能需要 20–40 分钟**（桌面图标最多等 1 小时），以后每次约 40 秒（本机实测 42 秒）。
 - 改版 CARLA 是以“编辑器游戏模式”运行的，**第一次切换到某张地图也要现场编译，会很慢**。需要频繁切换地图时，可以打包成正式版：`cd carla_src && make package`（再需要 1–2 小时和约 20 GB 空间），打包版切换地图约 6 秒。
 - 只测试接口、不需要画面时：`./scripts/carla_mod_server.sh --norender`。
-- 验证改版接口：`venv_build/bin/python carsim_carla_bridge/tests/test_modified_carla.py --port 3000`，应该 10 项全部 PASS。
+- 验证改版接口：`venv_build/bin/python carsim_carla_bridge/tests/test_modified_carla.py --port 3000`，应该全部 PASS（最后一行是 `ALL MODIFIED-CARLA TESTS PASSED`；有一项 FAIL 时退出码为 1）。
 
 编译过程中我们遇到并已在脚本里处理的问题（供参考）：
 - CARLA 0.9.16 的 `Setup.sh` 里 libpng 下载地址已失效 → `carla_patches/carla_0.9.16_linux_libpng_url_fix.patch`。
@@ -362,6 +362,7 @@ python tests/test_modified_carla.py --port 3000      # 改版 CARLA 接口（需
 | 运行出错：“控制算法返回了 2 个值，但 .sim 里有 3 个导入变量” | 你的 `control()` 返回值个数要和 `.sim` 里的导入变量个数一致、顺序一致；CarSim 自己会把缺的导入变量默默填 0（例如方向盘一直是 0），所以这里直接报错。控制算法抛出的异常会显示类型和你文件里的行号 |
 | 提示“主车已不在 CARLA 里” | 主车开出了地图边界、掉出了世界（CARLA 会自动删除掉出世界的车），或被别的程序删除了。运行会带着这个原因停止；重新生成主车即可。CarSim 的路线要落在 CARLA 地图的道路范围内 |
 | 连接 CARLA 超时 | CARLA 还没启动好（`ss -ltn \| grep 2000` 看端口），或端口填错（原版 2000，改版 3000） |
+| 双击桌面图标后提示“端口 3000 被其他程序占用，不是 CARLA” | 别的程序（常见的是网页服务）占着 CARLA 的端口，启动器不会把界面连到它上面：关掉那个程序，或在 `scripts/env.sh` 里改 `CARLA_MOD_PORT`（原版是 `CARLA_PORT`） |
 | 日志提示 `57100` 端口被占用 | 上次的后端还在：`pkill -f backend_server.py` |
 | 路线跟随报 `No module named agents` | 找不到 CARLA 的路径规划模块：设置 `CARLA_PYTHONAPI`（见第 4 步） |
 | 车停住不动 | ① 工具栏显示“已完成”、画面上方有黄色提示条：运行时长到了，车被停住；把“驾驶模式 → 运行时长”设为 0（一直运行）。② CARLA 自动驾驶在等红灯（视口上方提示“正在等红灯”），变绿后会自己走；也可以勾选忽略红绿灯。注意“路线跟随”不看红绿灯 |

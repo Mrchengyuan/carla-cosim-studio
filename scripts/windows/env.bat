@@ -15,12 +15,18 @@ if exist "%CARLA_ROOT%\WindowsNoEditor\CarlaUE4.exe" set "CARLA_ROOT=%CARLA_ROOT
 rem Modified CARLA: folder that contains CarlaUE4.exe from "make package"
 rem (e.g. C:\carla\Build\UE4Carla\0.9.16\WindowsNoEditor). "make package" names
 rem the version folder after git describe (e.g. 0.9.16-dirty or a commit id):
-rem when the default is not there, the first build found under C:\carla is used.
+rem the newest build found under C:\carla is used.
 if defined CARLA_MOD_ROOT goto mod_root_done
 set "CARLA_MOD_ROOT=C:\carla\Build\UE4Carla\0.9.16\WindowsNoEditor"
-if exist "C:\carla\Build\UE4Carla\0.9.16\WindowsNoEditor\CarlaUE4.exe" goto mod_root_done
-for /d %%D in ("C:\carla\Build\UE4Carla\*") do if exist "%%~D\WindowsNoEditor\CarlaUE4.exe" set "CARLA_MOD_ROOT=%%~D\WindowsNoEditor"
+for /f "delims=" %%D in ('dir /b /ad /o-d "C:\carla\Build\UE4Carla" 2^>nul') do if exist "C:\carla\Build\UE4Carla\%%D\WindowsNoEditor\CarlaUE4.exe" (
+  set "CARLA_MOD_ROOT=C:\carla\Build\UE4Carla\%%D\WindowsNoEditor"
+  goto mod_root_done
+)
 :mod_root_done
+rem Full paths with "\" (one set by hand may use "/" or ".."): stop_carla.bat
+rem stops the CARLA that start_studio.bat started by its path prefix.
+for %%I in ("%CARLA_ROOT%") do set "CARLA_ROOT=%%~fI"
+for %%I in ("%CARLA_MOD_ROOT%") do set "CARLA_MOD_ROOT=%%~fI"
 
 rem GUI: the unzipped release, or your own build.
 if not defined STUDIO_EXE set "STUDIO_EXE=%COSIM_ROOT%\CARLA_CoSim_Studio_Windows\carla_cosim_studio.exe"

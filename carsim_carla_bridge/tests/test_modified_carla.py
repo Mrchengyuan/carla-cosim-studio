@@ -1,12 +1,14 @@
 """Checks the external-dynamics API of the *modified* CARLA server.
 
 Needs the patched server and the patched Python client (carla wheel built
-from carla_src). Rendering is not required (-nullrhi is fine).
+from carla_src). Rendering is not required (-nullrhi is fine). Exits with 1
+when a check fails.
 
     python tests/test_modified_carla.py --port 3000
 """
 import math
 import sys
+import time
 
 import numpy as np
 import carla
@@ -33,8 +35,8 @@ def main():
     sp = w.get_map().get_spawn_points()[3]
     v = w.spawn_actor(bl.find("vehicle.tesla.model3"), sp)
     imu = w.spawn_actor(bl.find("sensor.other.imu"), carla.Transform(), attach_to=v)
-    gyro = []
-    imu.listen(lambda m: gyro.append((m.frame, m.gyroscope.z)))
+    samples = []                                          # (frame, gyro z, accel x, accel y)
+    imu.listen(lambda m: samples.append((m.frame, m.gyroscope.z, m.accelerometer.x, m.accelerometer.y)))
     try:
         for _ in range(20):
             w.tick()
@@ -54,7 +56,7 @@ def main():
             v.apply_external_state(tf, vel, carla.Vector3D(0, 0, yaw_rate),
                                    wheel_steer=steer, wheel_rotation=[k * 20.0] * 4, wheel_suspension=susp,
                                    throttle=0.5, steer=-0.1, brake=0.0, gear=3)
-            w.tick()
+            frame = w.tick()
             got = v.get_transform()
             errs.append(got.location.distance(loc))
             gv = v.get_velocity()
@@ -80,22 +82,30 @@ def main():
         ok &= check("per-wheel steer applied", abs(fl - 5.0) < 1e-3 and abs(fr - 4.0) < 1e-3, "FL %.2f FR %.2f" % (fl, fr))
         snap = w.get_snapshot().find(v.id)
         ok &= check("world snapshot carries the velocity", abs(math.hypot(snap.get_velocity().x, snap.get_velocity().y) - speed) < 0.01)
-        if gyro:
-            gz = gyro[-1][1]
-            ok &= check("IMU gyroscope sees the yaw rate", abs(abs(gz) - math.radians(yaw_rate)) < 0.01,
-                        "gyro z = %.4f rad/s (expected %.4f)" % (gz, math.radians(yaw_rate)))
+        # IMU of the last frame (sensor data arrives asynchronously); no data fails.
+        # It reads in CARLA's frame (x forward, y right, z up): the growing yaw is
+        # +z, and the centripetal acceleration of the circle (v * yaw rate, toward
+        # its centre on the right) is +y.
+        deadline = time.time() + 5
+        while not any(s[0] == frame for s in samples) and time.time() < deadline:
+            time.sleep(0.01)
+        _, gz, ax, ay = next((s for s in samples if s[0] == frame), (frame, math.nan, math.nan, math.nan))
+        omega = math.radians(yaw_rate)
+        ok &= check("IMU gyroscope sees the yaw rate", abs(gz - omega) < 0.01,
+                    "gyro z = %.4f rad/s (expected %.4f), %d samples" % (gz, omega, len(samples)))
+        ok &= check("IMU accelerometer sees the centripetal acceleration", abs(ay - speed * omega) < 0.1 and abs(ax) < 0.2,
+                    "x %.3f y %.3f m/s^2 (expected 0, %.3f)" % (ax, ay, speed * omega))
 
         # Suspension: wheel bones should move by the commanded travel (cm in bone space).
-        try:
-            names = v.get_bone_names()
-            rel = v.get_bone_relative_transforms()
-            idx = {n: i for i, n in enumerate(names)}
-            fl_z = rel[idx["Wheel_Front_Left"]].location.z
-            fr_z = rel[idx["Wheel_Front_Right"]].location.z
-            check("suspension moves wheel bones (FL up, FR down)", fl_z - fr_z > 0.02,
-                  "FL-FR bone height difference %.3f m (expected 0.04)" % (fl_z - fr_z))
-        except Exception as e:
-            print("INFO bone check skipped:", e)
+        # A missing wheel bone fails the check.
+        names = v.get_bone_names()
+        rel = v.get_bone_relative_transforms()
+        idx = {n: i for i, n in enumerate(names)}
+        wheels = ("Wheel_Front_Left", "Wheel_Front_Right")
+        fl_z, fr_z = (rel[idx[n]].location.z if n in idx else math.nan for n in wheels)
+        ok &= check("suspension moves wheel bones (FL up, FR down)", fl_z - fr_z > 0.02,
+                    "FL-FR bone height difference %.3f m (expected 0.04)%s"
+                    % (fl_z - fr_z, "".join(", no bone " + n for n in wheels if n not in idx)))
 
         # Hand the car back to PhysX: it should keep moving with the last velocity.
         v.restore_physx_physics()
@@ -109,6 +119,7 @@ def main():
         v.destroy()
         w.apply_settings(orig)
     print("ALL MODIFIED-CARLA TESTS PASSED" if ok else "SOME TESTS FAILED")
+    sys.exit(0 if ok else 1)
 
 
 if __name__ == "__main__":

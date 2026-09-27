@@ -167,7 +167,8 @@ void App::Frame() {
 }
 
 void App::FrameBody() {
-  if (!be_.Connected() && plat::IsAlive(backend_proc_) && tour_dir_.empty() && frame_ % 30 == 0) ConnectBackend(true);
+  if (!be_.Connected() && plat::IsAlive(backend_proc_) && !backend_rejected_ && tour_dir_.empty() && frame_ % 30 == 0)
+    ConnectBackend(true);
   if (tour_) TourTick();
   // Desktop launcher: connect to CARLA as soon as the backend answers.
   if (auto_connect_ && be_.Connected() && busy_.empty() && be_.PendingCount() == 0) {

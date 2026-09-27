@@ -197,8 +197,19 @@ void App::DrawPanelWorld() {
   ImGui::BeginDisabled(!busy_.empty() || map_choice_.empty() || Running());
   if (ui::Button(ICON_FA_FOLDER_OPEN, "加载地图", ui::Kind::Primary)) LoadMap(map_choice_);
   ImGui::SameLine();
-  if (ui::Button(ICON_FA_ROTATE, "重载当前地图"))
-    Call("reload_world", json::object(), [this](const json& r) { SetWorld(r); RefreshAfterMapChange(); }, "正在重载地图 ...");
+  if (ui::Button(ICON_FA_ROTATE, "重载当前地图")) {
+    busy_ = "正在重载地图 ...";
+    be_.Request("reload_world", json::object(), [this](bool ok, const json& r, const std::string& err) {
+      busy_.clear();
+      if (ok) {
+        SetWorld(r);
+      } else {
+        Log(err, "error");
+        if (!carla_connected_) return;  // (the ego and the traffic are gone all the same)
+      }
+      RefreshAfterMapChange();
+    });
+  }
   ImGui::EndDisabled();
   ui::EndCard();
 
@@ -326,7 +337,12 @@ void App::DrawPanelActors() {
       if (ui::IconButton(ICON_FA_TRASH, "删除", Fmt("del%d", id).c_str())) destroy = id;
     }
     ImGui::EndTable();
-    if (destroy >= 0) Call("destroy_actor", {{"id", destroy}}, [this](const json&) { RefreshActors(); RefreshWorld(); });
+    if (destroy >= 0)
+      Call("destroy_actor", {{"id", destroy}}, [this](const json& r) {
+        if (r.is_object()) traffic_count_ = r;  // a traffic car or pedestrian: the traffic left
+        RefreshActors();
+        RefreshWorld();
+      });
   }
   ui::EndCard();
 }

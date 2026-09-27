@@ -172,6 +172,7 @@ class App {
   std::string draw_error_;  // what the last frame cut short by a bad value threw (logged once)
   bool auto_connect_ = false;  // --auto-connect: connect to CARLA once the backend is up
   bool recover_connect_ = false;  // after RestartBackend: reconnect and clear what the old one left
+  bool backend_rejected_ = false;  // the backend on our port serves another GUI window: stop reconnecting
   bool rig_converting_ = false;   // an old config's rig (CARLA frame) is being converted by the backend,
                                   // or that failed (retried on the next CARLA connection / config load)
   std::string busy_task_;         // what the backend worker has been busy with ("busy" heartbeat)

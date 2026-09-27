@@ -281,6 +281,7 @@ const json* App::SelectedVehicleSpec() const {
 void App::StartBackend() {
   if (plat::IsAlive(backend_proc_)) return;
   if (backend_proc_.valid()) plat::Kill(backend_proc_, true);  // gone already: just release it
+  backend_rejected_ = false;
   if (!backend_problem_.empty()) {
     // Started by hand after a crash or hang: clear what the old one left in CARLA.
     backend_problem_.clear();
@@ -398,6 +399,7 @@ void App::RefreshWorld() {
 }
 
 void App::RefreshAfterMapChange() {
+  traffic_count_ = json::object();  // the backend removed its traffic (connect, map change)
   RefreshWorld();
   RefreshSpawnPoints();
   RefreshActors();
@@ -411,12 +413,21 @@ void App::RefreshDisk() {
 }
 
 void App::LoadMap(const std::string& name) {
-  Call("load_map", {{"name", name}}, [this](const json& r) {
+  busy_ = "正在加载地图 " + name + " ...";
+  be_.Request("load_map", {{"name", name}}, [this](bool ok, const json& r, const std::string& err) {
+    busy_.clear();
+    if (!ok) {
+      Log(err, "error");
+      // The backend removed the ego and the traffic before loading, and may
+      // have followed CARLA to the map it is on now.
+      if (carla_connected_) RefreshAfterMapChange();
+      return;
+    }
     SetWorld(r);
     map_choice_ = r.value("map", std::string());
     Log("地图已切换为 " + r.value("map", std::string()));
     RefreshAfterMapChange();
-  }, "正在加载地图 " + name + " ...");
+  });
 }
 
 void App::ApplyWeatherPreset(const std::string& preset) {
@@ -797,6 +808,7 @@ void App::OnEvent(const json& ev) {
   const std::string type = ev.value("event", std::string());
   if (type == "log") {
     Log(ev.value("msg", std::string()), ev.value("level", std::string("info")));
+    if (ev.value("rejected", false)) backend_rejected_ = true;  // it closes the connection now
   } else if (type == "cosim_state") {
     run_state_ = ev.value("state", std::string());
     // Say clearly why a run ended on its own; a parked car otherwise looks stuck.
@@ -938,6 +950,8 @@ void App::OnEvent(const json& ev) {
     // Nothing the backend owned is valid any more: never stay "running" or busy.
     carla_connected_ = false;
     if (Running()) run_state_ = "error";
+    world_ = json::object();
+    traffic_count_ = json::object();
     busy_.clear();
     rig_converting_ = false;
     view_on_ = false;

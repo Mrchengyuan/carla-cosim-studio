@@ -36,6 +36,7 @@ target_link_libraries(imgui PUBLIC glfw OpenGL::GL)
 add_executable(carla_cosim_studio
   src/main.cpp
   src/app.cpp
+  src/config_file.cpp
   src/ui_kit.cpp
   src/ui_layout.cpp
   src/panels.cpp

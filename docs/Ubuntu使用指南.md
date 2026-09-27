@@ -343,6 +343,8 @@ python tests/test_scene.py                           # 交给控制算法的周�
 python tests/test_offline_fixes.py                   # 不需要 CARLA：采集命名、容量上限、失败时恢复
 python tests/test_offline_recording.py               # 不需要 CARLA：从 t = 0 起的采样、控制输出 u1 … un、第一帧场景、开始时的碰撞
 python tests/test_recording_carla.py                 # 运行记录和 5 帧采集的采样时刻与内容（测完自动删除）
+python tests/test_offline_config.py                  # 不需要 CARLA：界面保存的配置在命令行上照样运行；界面的配置代码（需要 C++ 编译器）
+python tests/test_config_carla.py                    # 界面保存的配置用 run_cosim.py --config 运行（文件里的 CARLA、你的控制算法）
 python tests/test_all_vehicles.py                    # 每种车型都当一次主车联合仿真，服务器不能崩
 python tests/test_carla_restart.py                   # 运行中关掉并重启 CARLA（会真的重启它；改版加 --mod）
 python tests/test_modified_carla.py --port 3000      # 改版 CARLA 接口（需要改版 CARLA 和 venv_build）

@@ -42,14 +42,19 @@ class App {
   void BeforeNewFrame() { TourClick(); }
   void AfterRender(int fb_w, int fb_h);
   bool WantsQuit() const { return quit_; }
+  // The window's close button and 文件 → 退出: with unsaved config changes, ask first.
+  void AskQuit();
+  std::string WindowTitle() const;  // ends in " *" while the config has unsaved changes
   std::string FontPathOverride() const { return font_path_; }
   bool DarkTheme() const { return dark_; }
   bool ThemeChanged() { bool c = theme_changed_; theme_changed_ = false; return c; }
 
  private:
   // ---------------------------------------------------------- layout (ui_layout.cpp)
+  void FrameBody();  // Frame() after polling the backend
   void DrawMenuBar();
   void DrawAbout();
+  void DrawConfirmDialogs();  // unsaved changes on quit, "默认" on the CarSim page
   void HandleShortcuts();
   void DrawToolbar();
   void DrawNav();
@@ -137,6 +142,7 @@ class App {
   void LoadConfig(const std::string& path);
   void ConformConfig();
   void SaveConfig(const std::string& path);
+  bool ConfigDirty() const { return cfg_ != saved_cfg_; }
   void SavePrefs();
   void OnEvent(const json& ev);
   void Log(const std::string& msg, const std::string& level = "info");
@@ -160,7 +166,10 @@ class App {
   std::string prefs_path_;
   json cfg_;                // run config, same schema as settings.py
   std::string cfg_path_;
+  json saved_cfg_;          // cfg_ as last loaded or saved: unsaved changes = cfg_ != saved_cfg_
   bool quit_ = false;
+  bool quit_ask_ = false, reset_ask_ = false;  // open that confirmation dialog next frame
+  std::string draw_error_;  // what the last frame cut short by a bad value threw (logged once)
   bool auto_connect_ = false;  // --auto-connect: connect to CARLA once the backend is up
   bool recover_connect_ = false;  // after RestartBackend: reconnect and clear what the old one left
   bool rig_converting_ = false;   // an old config's rig (CARLA frame) is being converted by the backend,

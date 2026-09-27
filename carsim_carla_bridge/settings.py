@@ -5,7 +5,7 @@ The JSON file is what the C++ GUI edits; the same file drives run_cosim.py
 
 JSON layout (all keys optional, missing ones fall back to config.py):
 {
-  "carla":  {"host": "localhost", "port": 2000, "map": "", "weather": "",
+  "carla":  {"host": "localhost", "port": 2000,
              "vehicle": "vehicle.tesla.model3", "spawn_index": 0},
   "carsim": {"sim_path": "", "repo_path": "../python_carsim_env", "mock": false,
              "export_names": [...], "units": {"angle": "deg", ...}},
@@ -30,7 +30,9 @@ import config as _defaults
 
 def default_dict():
     return {
-        "carla": {"host": "localhost", "port": 2000, "map": "", "weather": "",
+        # host / port: the CARLA server run_cosim.py connects to (the GUI
+        # writes the one it is connected to when it saves).
+        "carla": {"host": "localhost", "port": 2000,
                   "vehicle": "vehicle.tesla.model3", "spawn_index": 0},
         "carsim": {"sim_path": "", "repo_path": "../python_carsim_env", "mock": False,
                    "export_names": list(_defaults.EXPORT_NAMES),

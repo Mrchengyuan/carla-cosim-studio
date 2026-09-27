@@ -243,7 +243,9 @@ void App::DrawPanelRig() {
       ImGui::TableNextRow();
       ImGui::TableSetColumnIndex(0);
       bool en = s.value("enabled", true);
+      ImGui::BeginDisabled(Running());  // the running session keeps its sensors
       if (ImGui::Checkbox(Fmt("##en%d", i).c_str(), &en)) s["enabled"] = en;
+      ImGui::EndDisabled();
       ImGui::TableSetColumnIndex(1);
       ImGui::PushStyleColor(ImGuiCol_Text, TypeColor(t));
       ImGui::TextUnformatted(TypeIcon(t));

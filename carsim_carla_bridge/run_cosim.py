@@ -9,7 +9,8 @@ Each CARLA frame (fixed_delta_seconds = frame_dt):
 CARLA runs in synchronous mode, so both simulators share one clock.
 
 Settings come from config.py, then --config JSON (the file the GUI edits),
-then the command-line flags below.
+then the command-line flags below. Only the CarSim co-simulation runs here: a
+config with drive.dynamics = "carla" (CARLA physics) is refused.
 
 Examples
   python run_cosim.py --mock --duration 20                       # no CarSim needed
@@ -62,6 +63,9 @@ def main():
     if args.duration is None and not args.config:
         o["sync"]["duration"] = 20.0   # a CLI run without --duration is a short demo
     d = st.load_dict(args.config, o)
+    if d["drive"]["dynamics"] != "cosim":
+        ap.error("配置里 drive.dynamics = %r：命令行只支持 CarSim 联合仿真（\"cosim\"），"
+                 "CARLA 物理请在界面里运行" % d["drive"]["dynamics"])
     if not d["carsim"]["mock"] and not d["carsim"]["sim_path"]:
         ap.error("--sim (or carsim.sim_path in --config) is required unless --mock is given")
     try:

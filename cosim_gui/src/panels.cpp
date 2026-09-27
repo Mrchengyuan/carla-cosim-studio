@@ -232,7 +232,8 @@ void App::DrawPanelTraffic() {
   ImGui::SliderInt("##tv", &traffic_vehicles_, 0, 150);
   ui::Row("行人数");
   ImGui::SliderInt("##tw", &traffic_walkers_, 0, 150);
-  ui::Row("随机种子", "同一种子 + 同一地图 = 同样的交通布置，便于复现实验", ImGui::GetFontSize() * 8);
+  ui::Row("随机种子", "同一种子 + 同一地图 + 同一主车位置 = 同样的车辆和行人布置。交通生成后就开始走动，"
+                      "点“运行”时交通走到了哪里还取决于生成后世界推进了多久", ImGui::GetFontSize() * 8);
   ImGui::InputInt("##seed", &traffic_seed_);
   ui::Row("只生成小汽车", "不生成摩托车、自行车和卡车");
   ImGui::Checkbox("##safe", &traffic_safe_);

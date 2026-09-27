@@ -16,6 +16,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 sys.dont_write_bytecode = True  # files rewritten within the same second must not come from a stale .pyc
 
 import backend_server  # noqa: E402
+from bridge import CarSimExports  # noqa: E402
 import session  # noqa: E402
 import settings as st  # noqa: E402
 from backend_server import Backend  # noqa: E402
@@ -201,7 +202,7 @@ class ControllerTests(unittest.TestCase):
         repo = os.path.dirname(self.write("repo/carsim_env.py", (
             "class CarSimEnv:\n    def __init__(self, sim):\n"
             "        self.config, self.t_current = {'n_import': 3, 't_step': 0.01}, 0.0\n\n"
-            "    def reset(self):\n        return [0.0, 0.0]\n")))
+            "    def reset(self):\n        return [0.0] * 64\n")))
         self.write("repo/helper.py", "V = 2.0\n")
         self.write("algo/helper.py", "V = 1.0\n")
         path = self.write("algo/ctrl.py", "def control(e, t, dt):\n    import helper\n    return [helper.V, 0.0, 0.0]\n")
@@ -210,15 +211,20 @@ class ControllerTests(unittest.TestCase):
         d["carsim"].update(mock=False, sim_path=os.path.join(repo, "x.sim"), repo_path=repo)
         settings = SimpleNamespace(synchronous_mode=False, fixed_delta_seconds=None)
         world = SimpleNamespace(get_settings=lambda: settings, apply_settings=lambda s: None, tick=lambda: 1)
-        sync = SimpleNamespace(ex=Ex(["Xo", "Vx"]), sync=lambda *a: SimpleNamespace(velocity=None),
+        bfg = st.to_bridge_cfg(d)
+        sync = SimpleNamespace(ex=CarSimExports(bfg.EXPORT_NAMES, bfg.UNITS), wheel_radius_m=[0.35] * 4,
+                               sync=lambda *a: SimpleNamespace(velocity=None),
                                ref_local=[0.0, 0.0, 0.0], external_api=False, server_api=None)
-        ses = session.CoSimSession(world, None, None, d)
+        box = SimpleNamespace(location=SimpleNamespace(z=0.7), extent=SimpleNamespace(z=0.7))
+        ses = session.CoSimSession(world, SimpleNamespace(bounding_box=box), None, d)
         with mock.patch.object(session, "CarlaVehicleSync", lambda *a, **k: sync), \
-                mock.patch.object(session, "start_scene", lambda *a, **k: None):
+                mock.patch.object(session, "check_carsim",
+                                  lambda d: (d["carsim"]["sim_path"], session._carsim_module(d["carsim"]["repo_path"]))), \
+                mock.patch.object(session, "start_scene", lambda *a, **k: {"collisions": []}):
             ses.start()
         self.assertEqual(sys.path[0], os.path.dirname(path))
         self.assertIn(repo, sys.path)
-        self.assertEqual(ses.driver([0.0, 0.0], 0.0)[0], 1.0)
+        self.assertEqual(ses.driver(ses.obs, 0.0)[0], 1.0)
 
     # ------------------------------------------------------- A17: SystemExit
     def test_sys_exit_in_control(self):
@@ -293,7 +299,7 @@ class BackendReasonTests(unittest.TestCase):
         backend.emit = events.append
         settings = SimpleNamespace(synchronous_mode=False, fixed_delta_seconds=None)
         backend.world = SimpleNamespace(get_settings=lambda: settings, apply_settings=lambda s: None,
-                                        tick=lambda: 1)
+                                        tick=lambda: 1, reset_all_traffic_lights=lambda: None)
         backend.cmd_spawn_ego = lambda *args: setattr(backend, "ego", SimpleNamespace(is_alive=False))
         why = "加载控制算法出错：NameError: name 'x' is not defined（c.py 第 1 行）"
 
@@ -313,7 +319,8 @@ class BackendReasonTests(unittest.TestCase):
                 mock.patch.object(backend_server.rigmod, "preset_reference", lambda *a: [0.0, 0.0, 0.0]), \
                 mock.patch.object(backend_server.traceback, "print_exc"):
             with self.assertRaisesRegex(RuntimeError, "NameError"):
-                backend.cmd_cosim_start({"drive": {"dynamics": "cosim"}})
+                backend.cmd_cosim_start({"drive": {"dynamics": "cosim"}, "carsim": {"mock": True},
+                                         "run": {"driver": "demo"}})  # passes the pre-flight
         states = [e for e in events if e.get("event") == "cosim_state"]
         self.assertEqual(states[-1]["state"], "error")
         self.assertEqual(states[-1]["detail"], why)

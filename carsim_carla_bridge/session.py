@@ -160,7 +160,7 @@ def _vs_error(env):
         return ""
 
 
-def _reset_failed(env, err=None):
+def _reset_failed(env, err):
     """Why CarSim could not start the run: the solver's own message, else what python_carsim_env saw."""
     cfg = env.config if isinstance(getattr(env, "config", None), dict) else {}
     why = _vs_error(env)
@@ -177,14 +177,12 @@ def _reset_failed(env, err=None):
 def reset_env(env):
     """env.reset() with CarSim's own reason when the .sim cannot run:
     python_carsim_env never asks the solver and only says that the import /
-    export counts are invalid."""
+    export counts are invalid. A reset that returned is a started run: the
+    solver's error flag may be left over from an earlier failed start."""
     try:
-        obs = env.reset()
+        return env.reset()
     except Exception as e:
         raise RuntimeError(_reset_failed(env, e)) from e
-    if _vs_error(env):
-        raise RuntimeError(_reset_failed(env))
-    return obs
 
 
 def make_driver(d, ex, n_imports=None, scene=None):
@@ -415,8 +413,8 @@ class CoSimSession:
             raise RuntimeError("CarSim 给出的 t_step = %r，无法运行" % t_step)
         frame_dt = d["sync"]["frame_dt"]
         self.inner = max(1, int(round(frame_dt / t_step)))
-        if self.inner > 1 and self.inner * t_step > MAX_FRAME_DT + 1e-9:
-            self.inner -= 1
+        # Never past CARLA's longest frame (run_cosim and the backend refuse a longer frame_dt first).
+        self.inner = min(self.inner, max(1, int((MAX_FRAME_DT + 1e-9) / t_step)))
         if abs(self.inner * t_step - frame_dt) > 1e-9:
             # CarSim advances whole t_steps: CARLA's frame, the controller's dt
             # and the frame count all use that period, so the clocks agree.
@@ -460,10 +458,13 @@ class CoSimSession:
         ex = self.sync.ex
         x0, y0, yaw0 = ex.raw(self.obs, "Xo"), ex.raw(self.obs, "Yo"), ex.angle(self.obs, "Yaw")
         self.warnings = []
-        if math.hypot(x0, y0) > 5.0 or abs((yaw0 + 180.0) % 360.0 - 180.0) > 10.0:
-            self.warnings.append("CarSim 的初始位置不在原点（Xo = %.1f m，Yo = %.1f m，Yaw = %.1f°）：CarSim 原点放在出生点上，"
-                                 "车会从离出生点 %.1f m 的地方出发。想从出生点出发，把 .sim 里的初始位置和航向设为 0，"
-                                 "或换一个出生点" % (x0, y0, yaw0, math.hypot(x0, y0)))
+        dist, dyaw = math.hypot(x0, y0), abs((yaw0 + 180.0) % 360.0 - 180.0)
+        off = (["车会从离出生点 %.1f m 的地方出发" % dist] if dist > 5.0 else []) + \
+              (["车头方向与出生点方向差 %.0f°" % dyaw] if dyaw > 10.0 else [])
+        if off:
+            self.warnings.append("CarSim 的初始位姿不在原点（Xo = %.1f m，Yo = %.1f m，Yaw = %.1f°）：CarSim 原点放在出生点上、"
+                                 "x 轴沿出生点方向，%s。想从出生点沿出生点方向出发，把 .sim 里的初始位置和航向设为 0，"
+                                 "或换一个出生点" % (x0, y0, yaw0, "，".join(off)))
         # Put the car at CarSim's t0 pose (relative to its origin, the spawn
         # point) before the first control() call, so its scene shows the real start.
         state0 = self.sync.sync(self.obs, self.env.t_current, frame_dt)

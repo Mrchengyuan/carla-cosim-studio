@@ -1,6 +1,8 @@
 """Regression checks for collection and startup paths that need no CARLA server."""
 
+import contextlib
 import copy
+import io
 import json
 import os
 import sys
@@ -176,8 +178,8 @@ class CliTests(unittest.TestCase):
                 self.done = False
 
             def start(self):
-                return {"external_api": False, "reference_point": [0, 0, 0],
-                        "clock_warning": False, "t_step": 0.001, "inner_steps": 20}
+                return {"external_api": False, "reference_point": [0, 0, 0], "t_step": 0.001, "inner_steps": 33,
+                        "frame_dt": 0.033, "t_stop": 0.0, "mock": True, "warnings": ["CarSim 的初始位姿不在原点"]}
 
             def step(self):
                 self.done = True
@@ -187,10 +189,15 @@ class CliTests(unittest.TestCase):
                 pass
 
         client = SimpleNamespace(set_timeout=lambda timeout: None, get_world=lambda: world)
+        out = io.StringIO()
         with mock.patch.object(run_cosim.carla, "Client", return_value=client), \
                 mock.patch.object(run_cosim, "CoSimSession", Session), \
-                mock.patch.object(sys, "argv", ["run_cosim.py", "--mock", "--duration", "0.02"]):
+                mock.patch.object(sys, "argv", ["run_cosim.py", "--mock", "--duration", "0.02", "--driver", "demo",
+                                                "--frame-dt", "0.0333"]), \
+                contextlib.redirect_stdout(out):
             run_cosim.main()
+        self.assertIn("frame_dt 0.0333 s -> 0.033 s", out.getvalue())
+        self.assertIn("warning: CarSim 的初始位姿不在原点", out.getvalue())
         self.assertEqual(world.settings.__dict__, original.__dict__)
         vehicle.destroy.assert_called_once()
 

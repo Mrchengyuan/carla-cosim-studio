@@ -34,28 +34,32 @@ bool EditString(json& obj, const char* key) {
   return false;
 }
 
-// Under a path field: the path the backend will use (relative paths are taken
-// from its folder, see App::UserPath) with a check or a cross, so a typo shows
-// before “运行”. need: the file that must be inside that directory.
+// Under a path field the run needs: the path the backend will use (relative
+// paths are taken from its folder, see App::UserPath) with a check or a cross,
+// so a typo or an empty field shows before “运行”. need: the file that must be
+// inside that directory.
 void PathStatus(const std::string& resolved, const char* need = nullptr) {
-  if (resolved.empty()) return;
   namespace fs = std::filesystem;
-  const std::string probe = need ? (fs::u8path(resolved) / need).u8string() : resolved;
-  static std::map<std::string, std::pair<bool, double>> cache;  // look at the disk once a second, not every frame
-  if (cache.size() > 64) cache.clear();
-  const double now = ImGui::GetTime();
-  auto it = cache.find(probe);
-  if (it == cache.end() || now - it->second.second > 1.0) {
-    std::error_code ec;
-    it = cache.insert_or_assign(probe, std::make_pair(fs::is_regular_file(fs::u8path(probe), ec), now)).first;
+  bool ok = false;
+  if (!resolved.empty()) {
+    const std::string probe = need ? (fs::u8path(resolved) / need).u8string() : resolved;
+    static std::map<std::string, std::pair<bool, double>> cache;  // look at the disk once a second, not every frame
+    if (cache.size() > 64) cache.clear();
+    const double now = ImGui::GetTime();
+    auto it = cache.find(probe);
+    if (it == cache.end() || now - it->second.second > 1.0) {
+      std::error_code ec;
+      it = cache.insert_or_assign(probe, std::make_pair(fs::is_regular_file(fs::u8path(probe), ec), now)).first;
+    }
+    ok = it->second.first;
   }
-  const bool ok = it->second.first;
   const ui::Palette& p = ui::Colors();
   ImGui::SetCursorPosX(ui::LabelWidth());
   ImGui::TextColored(ok ? p.success : p.danger, "%s", ok ? ICON_FA_CIRCLE_CHECK : ICON_FA_CIRCLE_XMARK);
   ImGui::SameLine();
   ImGui::PushStyleColor(ImGuiCol_Text, ok ? p.text_dim : p.danger);
   if (ok) ImGui::TextWrapped("%s", resolved.c_str());
+  else if (resolved.empty()) ImGui::TextWrapped("未设置");
   else if (need) ImGui::TextWrapped("%s 里没有 %s", resolved.c_str(), need);
   else ImGui::TextWrapped("找不到：%s", resolved.c_str());
   ImGui::PopStyleColor();

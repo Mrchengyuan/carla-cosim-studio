@@ -471,9 +471,11 @@ void App::DrawToolbar() {
     x += w;
   };
   const int nf = last_tel_.value("n_frames", 0);
-  // Duration set: its end; otherwise real CarSim ends at the .sim's t_stop.
-  const double dur = nf > 0 ? nf * run_info_.value("frame_dt", cfg_["sync"].value("frame_dt", 0.02))
-                     : run_info_.value("mock", true) ? 0.0 : run_info_.value("t_stop", 0.0);
+  // The run ends at the set duration or, with real CarSim, at the .sim's
+  // t_stop, whichever comes first.
+  const double t_end = run_info_.value("mock", true) ? 0.0 : run_info_.value("t_stop", 0.0);
+  double dur = nf > 0 ? nf * run_info_.value("frame_dt", cfg_["sync"].value("frame_dt", 0.02)) : 0.0;
+  if (t_end > 0) dur = dur > 0 ? std::min(dur, t_end) : t_end;
   field("时间", have ? Fmt("%.2f", last_tel_.value("t", 0.0)) : std::string("-"), "s", fs * 8.0f);
   field("车速", have ? Fmt("%.1f", last_tel_.value("speed_kmh", 0.0)) : std::string("-"), "km/h", fs * 9.0f);
   field("实时", have ? Fmt("%.2f", last_tel_.value("rt_factor", 0.0)) : std::string("-"), "x", fs * 6.8f);

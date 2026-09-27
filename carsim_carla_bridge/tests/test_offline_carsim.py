@@ -9,7 +9,11 @@ run the real python_carsim_env against it (a copy in a temp dir; the original
 is only read). They are skipped without a compiler or python_carsim_env.
 """
 
+import contextlib
 import copy
+import io
+import json
+import math
 import os
 import shutil
 import subprocess
@@ -23,6 +27,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(HERE, ".."))
 
 import backend_server  # noqa: E402
+import run_cosim  # noqa: E402
 import session as ses  # noqa: E402
 import settings as st  # noqa: E402
 from bridge import REQUIRED_EXPORTS, CarSimExports  # noqa: E402
@@ -36,7 +41,7 @@ FAKE_SOLVER_C = r"""
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-static int n_exp, err;
+static int n_exp, err, mode;
 static double t_stop, t_step, stop_at, x0;
 static double param(const char* sim, const char* key, double d) {
   char line[512];
@@ -51,26 +56,27 @@ static double param(const char* sim, const char* key, double d) {
 int vs_run(const char* p) { return 0; }
 void vs_initialize(double t, int a, int b) {}
 void vs_read_configuration(const char* p, int* ni, int* ne, double* t0, double* t1, double* dt) {
-  int mode = (int)param(p, "FAKE_MODE", 0);  /* 1: no license (the solver says why), 2: no I/O, no message */
+  /* 1: no license (the solver says why), 2: no I/O, no message, 3: an error without a message at FAKE_STOP_AT */
+  mode = (int)param(p, "FAKE_MODE", 0);
   err = mode == 1;
-  n_exp = mode ? 0 : (int)param(p, "FAKE_NEXP", 8);
+  n_exp = mode == 1 || mode == 2 ? 0 : (int)param(p, "FAKE_NEXP", 8);
   t_stop = param(p, "FAKE_TSTOP", 2.0);
   t_step = param(p, "FAKE_TSTEP", 0.001);
   stop_at = param(p, "FAKE_STOP_AT", -1.0);
   x0 = param(p, "FAKE_X0", 0.0);
-  *ni = mode ? 0 : 3; *ne = n_exp; *t0 = 0.0; *t1 = t_stop; *dt = t_step;
+  *ni = n_exp ? 3 : 0; *ne = n_exp; *t0 = 0.0; *t1 = t_stop; *dt = t_step;
 }
 static void fill(double* e) { for (int i = 0; i < n_exp; ++i) e[i] = 0.0; if (n_exp) e[0] = x0; }
 int vs_integrate_io(double t, double* im, double* ex) {
   fill(ex);
-  if (stop_at >= 0 && t + t_step >= stop_at - 1e-9) return 1;   /* a stop condition of the model */
+  if (stop_at >= 0 && t + t_step >= stop_at - 1e-9) { err = mode == 3; return 1; }  /* a stop condition of the model */
   return t + t_step >= t_stop - 1e-9;                            /* TSTOP */
 }
 void vs_copy_export_vars(double* e) { fill(e); }
 int vs_terminate_run(double t) { return 0; }
 int vs_error_occurred(void) { return err; }
 void vs_set_opt_error_dialog(int on) {}
-const char* vs_get_error_message(void) { return err ? "License not available (fake solver)" : ""; }
+const char* vs_get_error_message(void) { return err && mode == 1 ? "License not available (fake solver)" : ""; }
 #ifndef NO_ROAD_L
 double vs_road_l(double x, double y) { return 0.0; }
 #endif
@@ -213,6 +219,10 @@ class FramePeriodTests(SessionCase):
         s = self.session(cfg(sync={"frame_dt": 0.0004}))
         self.assertEqual(s.start()["frame_dt"], 0.001)
 
+    def test_long_frame_capped_at_carla_limit(self):
+        info = self.session(cfg(sync={"frame_dt": 0.2})).start()  # run_cosim / backend refuse it before this
+        self.assertEqual((info["inner_steps"], info["frame_dt"]), (100, 0.1))
+
     def test_aligned_frame_stays_within_carla_limit(self):
         s = self.session(cfg(sync={"frame_dt": 0.1}), MockCarSimEnv(NAMES, t_step=0.0007, t_stop=1e9))
         info = s.start()
@@ -242,7 +252,25 @@ class StartChecksTests(SessionCase):
         info = self.session(cfg(), Station(NAMES)).start()
         self.assertEqual(len(info["warnings"]), 1)
         self.assertIn("不在原点", info["warnings"][0])
-        self.assertIn("150.0", info["warnings"][0])
+        self.assertIn("离出生点 150.0 m", info["warnings"][0])
+        self.assertNotIn("方向差", info["warnings"][0])
+
+    def test_heading_only_warning_names_the_heading(self):
+        class Turned(MockCarSimEnv):
+            def reset(self):
+                super().reset()
+                self.psi = math.radians(90.0)
+                return self._exports()
+        info = self.session(cfg(), Turned(NAMES)).start()
+        self.assertEqual(len(info["warnings"]), 1)
+        self.assertIn("车头方向与出生点方向差 90°", info["warnings"][0])
+        self.assertNotIn("离出生点", info["warnings"][0])
+
+    def test_left_over_solver_error_does_not_refuse_a_good_start(self):
+        class Stale(MockCarSimEnv):
+            solver = SimpleNamespace(dll_handle=SimpleNamespace(vs_error_occurred=lambda: 1,
+                                                                vs_get_error_message=lambda: b"old error"))
+        self.assertEqual(self.session(cfg(), Stale(NAMES)).start()["warnings"], [])
 
     def test_start_reports_t_stop_and_mock(self):
         info = self.session(cfg(sync={"duration": 5.0})).start()
@@ -365,6 +393,27 @@ class BackendTests(unittest.TestCase):
             self.assertTrue(any(m["level"] == "warn" and "不在原点" in m["msg"] for m in logs))
 
 
+class CliTests(unittest.TestCase):
+    def test_bad_config_refused_before_carla(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            conf = os.path.join(tmp, "carla_dyn.json")
+            with open(conf, "w") as f:
+                json.dump({"drive": {"dynamics": "carla"}, "run": {"driver": "pid"}}, f)
+            for argv, text in ((["--mock", "--frame-dt", "0.2"], "仿真步长 0.2 s 超出范围"),
+                               (["--mock", "--frame-dt", "0"], "仿真步长 0 s 超出范围"),
+                               (["--mock", "--controller", os.path.join(tmp, "no.py")], "控制算法文件不存在"),
+                               (["--sim", os.path.join(tmp, "no.sim"), "--driver", "demo"], "CarSim .sim 文件不存在"),
+                               (["--mock", "--config", conf], "未知的驾驶方式 'pid'")):  # the CLI always runs CarSim
+                with self.subTest(text=text):
+                    err = io.StringIO()
+                    with mock.patch.object(run_cosim.carla, "Client") as client, \
+                            mock.patch.object(sys, "argv", ["run_cosim.py"] + argv), \
+                            contextlib.redirect_stderr(err), self.assertRaises(SystemExit):
+                        run_cosim.main()
+                    client.assert_not_called()
+                    self.assertIn(text, err.getvalue())
+
+
 @unittest.skipUnless(can_build(), "needs Linux, a C compiler and python_carsim_env")
 class FakeSolverTests(SessionCase):
     """The real python_carsim_env on a fake solver: what the user reads when CarSim cannot start or stops."""
@@ -446,6 +495,12 @@ class FakeSolverTests(SessionCase):
         tel = self.run_to_end(s)
         self.assertAlmostEqual(tel["t"], 0.1, places=6)
         self.assertEqual(s.end_reason, "")
+
+    def test_solver_error_without_message(self):
+        s = self.session(self.real(mode=3, tstop=1.0, stop_at=0.1))
+        s.start()
+        with self.assertRaisesRegex(RuntimeError, "CarSim 报错（t = 0.10 s）：求解器没有给出错误信息"):
+            self.run_to_end(s)
 
     def test_off_origin_start_from_the_solver(self):
         self.assertIn("不在原点", self.session(self.real(x0=150)).start()["warnings"][0])

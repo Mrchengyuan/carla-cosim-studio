@@ -115,6 +115,8 @@ class FakeService:
                 if req is None:
                     break
                 self.requests.append(req)
+                if "cmd" not in req:  # a notice (e.g. "replaced"): nothing to answer
+                    continue
                 res = self.answer(req)
                 if res is not None:
                     self.lines.send({"id": req["id"], "ok": True, "result": res})
@@ -565,6 +567,19 @@ class ConnectionTests(LinkCase):
         self.assertEqual(self.link.status(), {"connected": True, "host": "pc-2", "platform": "win32"})
         env2 = carsim_remote.RemoteCarSimEnv(d, self.link)
         self.assertEqual(len(env2.reset()), len(d["carsim"]["export_names"]))
+
+    def test_a_replaced_service_stops_instead_of_taking_over_again(self):
+        old, old_console = self.service("--mock")
+        self.connected()
+        new, _ = self.service("--mock")
+        wait(lambda: old.poll() is not None)  # the older one gave up
+        self.assertEqual(old.returncode, 0)
+        self.assertIn("另一个 CarSim 服务", old_console())
+        conn = self.link.conn
+        time.sleep(3)  # longer than the retry interval: nobody takes over again
+        self.assertIs(self.link.conn, conn)
+        self.assertTrue(self.link.status()["connected"])
+        self.assertIsNone(new.poll())
 
     def test_only_the_carsim_service_of_this_protocol(self):
         self.fake(host="pc-1")

@@ -144,6 +144,8 @@ def serve(lines, carsim, where):
             return True
         if not isinstance(req, dict):
             continue
+        if req.get("type") == "replaced":
+            return "replaced", str(req.get("host") or "")
         try:
             reply = {"id": req.get("id"), "ok": True, "result": carsim.handle(req)}
         except Exception as e:
@@ -176,6 +178,9 @@ def run(host, port, mock):
             except Exception as e:
                 print(str(e) or type(e).__name__, flush=True)
             sock.close()
+        if isinstance(served, tuple):  # another CarSim service took over: reconnecting would push it out
+            state("另一个 CarSim 服务（%s）连上了云端，这个窗口不再连接，可以关掉" % served[1])
+            return
         if served:
             state("连接断开，正在重连…")
         time.sleep(RETRY)

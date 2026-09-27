@@ -43,6 +43,7 @@ class _Conn:
         self.closed = threading.Event()
         self._replies = queue.Queue()
         self._lock = threading.Lock()  # one request at a time, pings included
+        self._send_lock = threading.Lock()  # a request's line and notify() never interleave
         self._n = 0
         self._last = time.monotonic()  # when the last request ended
 
@@ -75,6 +76,14 @@ class _Conn:
         self.sock.close()
         self._on_close(self)
 
+    def notify(self, msg):
+        """A line the service does not answer (e.g. that it was replaced)."""
+        with self._send_lock:
+            try:
+                self.lines.send(msg)
+            except OSError:
+                pass
+
     def request(self, cmd, **args):
         """The service's result for cmd; RemoteCarSimError with its own words
         when it failed, with LOST when the connection is gone or it did not
@@ -91,7 +100,8 @@ class _Conn:
             raise RemoteCarSimError(LOST % self.why)
         self._n += 1
         try:
-            self.lines.send(dict(args, id=self._n, cmd=cmd))
+            with self._send_lock:
+                self.lines.send(dict(args, id=self._n, cmd=cmd))
         except OSError as e:
             self.close("网络出错：%s" % e)
             raise RemoteCarSimError(LOST % self.why)
@@ -201,6 +211,8 @@ class ServiceLink:
         with self._lock:
             old, self.conn = self.conn, conn
         if old is not None:
+            # It stops for good: reconnecting would take the newer one's place again, and so on.
+            old.notify({"type": "replaced", "host": conn.host})
             old.close("Windows 上的服务重新连上了云端，这次运行的 CarSim 已经结束")
         conn.start()
         print("CarSim service connected: %s (%s, Python %s)" % (conn.host, conn.platform, hello.get("python")),

@@ -45,7 +45,7 @@ def main():
     ap.add_argument("--no-external-api", action="store_true", help="force the stock-CARLA fallback")
     args = ap.parse_args()
 
-    o = {"carla": {}, "carsim": {}, "sync": {}, "run": {}, "drive": {"dynamics": "cosim"}}  # always CarSim here
+    o = {"carla": {}, "carsim": {}, "sync": {}, "run": {}}
     for key, sect, name in (("host", "carla", "host"), ("port", "carla", "port"),
                             ("spawn_index", "carla", "spawn_index"), ("vehicle", "carla", "vehicle"),
                             ("sim", "carsim", "sim_path"), ("carsim_repo", "carsim", "repo_path"),

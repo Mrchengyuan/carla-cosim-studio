@@ -401,14 +401,14 @@ class BackendTests(unittest.TestCase):
 class CliTests(unittest.TestCase):
     def test_bad_config_refused_before_carla(self):
         with tempfile.TemporaryDirectory() as tmp:
-            conf = os.path.join(tmp, "carla_dyn.json")
+            conf = os.path.join(tmp, "bad_driver.json")
             with open(conf, "w") as f:
-                json.dump({"drive": {"dynamics": "carla"}, "run": {"driver": "pid"}}, f)
+                json.dump({"run": {"driver": "pid"}}, f)  # a CARLA-physics config is refused first (test_offline_config)
             for argv, text in ((["--mock", "--frame-dt", "0.2"], "仿真步长 0.2 s 超出范围"),
                                (["--mock", "--frame-dt", "0"], "仿真步长 0 s 超出范围"),
                                (["--mock", "--controller", os.path.join(tmp, "no.py")], "控制算法文件不存在"),
                                (["--sim", os.path.join(tmp, "no.sim"), "--driver", "demo"], "CarSim .sim 文件不存在"),
-                               (["--mock", "--config", conf], "未知的驾驶方式 'pid'")):  # the CLI always runs CarSim
+                               (["--mock", "--config", conf], "未知的驾驶方式 'pid'")):
                 with self.subTest(text=text):
                     err = io.StringIO()
                     with mock.patch.object(run_cosim.carla, "Client") as client, \

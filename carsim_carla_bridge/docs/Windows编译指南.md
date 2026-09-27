@@ -111,7 +111,7 @@ make launch
    第一行应打印 `external-dynamics API: yes (modified CARLA)`。
 3. 接真实 CarSim：
    ```bat
-   python run_cosim.py --sim C:\path\to\simfile.sim --carsim-repo ..\python_carsim_env
+   python run_cosim.py --sim C:\path\to\simfile.sim --carsim-repo ..\python_carsim_env --duration 0
    ```
 
 ## 5. 补丁改了什么

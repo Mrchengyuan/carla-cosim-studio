@@ -1,8 +1,9 @@
 # CarSim 导出变量清单（桥接到 CARLA 所需）
 
 在 CarSim 的 Import/Export 界面（或 `.sim` 对应的 I/O Channels: Export 数据集）里按下表添加 Export 变量，
-然后把 **同样的顺序** 写进 `config.py` 的 `EXPORT_NAMES`。桥接代码按名字查找变量，
-所以你原来已有的导出变量（横向误差、车速等）可以保留在任意位置，只要 `EXPORT_NAMES` 顺序与 `.sim` 一致。
+然后在界面 **“CarSim 动力学”页** 按 **同样的顺序** 填导出变量（存进配置文件 `cosim_config.json` 的 `carsim.export_names`，命令行 `--config` 和训练代码读同一份配置）。桥接代码按名字查找变量，
+所以你原来已有的导出变量（横向误差、车速等）可以保留在任意位置，只要页上的顺序与 `.sim` 一致。
+`config.py` 里的 `EXPORT_NAMES`、`UNITS` 等只是默认值（新配置、“恢复默认”和不带 `--config` 的命令行用它），界面运行时改 `config.py` 不起作用。
 
 > 变量名以 CarSim 标准命名为准。不同 CarSim 版本/车型（尤其是后轴转向、多轴车）个别名字可能不同，
 > 添加时请在 CarSim 的 Export 变量选择列表里核对拼写。
@@ -57,19 +58,19 @@ IMU 陀螺仪读数就是 CarSim 的真实值（原版 CARLA 里物理关闭后�
 ## 4. 单位与坐标约定
 
 - 桥接默认 CarSim 导出的是**用户单位**（deg、km/h、deg/s、rpm）。你的项目里车速和 50 km/h 的目标车速比较、
-  转向输入按度计算，也说明导出的是用户单位。如果你的 run 导出的是 SI 内部单位，改 `config.py` 里的 `UNITS`。
+  转向输入按度计算，也说明导出的是用户单位。如果你的 run 导出的是 SI 内部单位，在“CarSim 动力学”页的“单位与坐标”里改。
 - CarSim 使用 ISO 8855 坐标系（X 前、Y 左、Z 上），CARLA/UE4 是 X 前、Y 右、Z 上。
   换算规则：`y → -y`，`yaw → -yaw`，`pitch → -pitch`，`roll` 不变，车轮转角取反。
   这些都已写在 `coords.py` 里，并在 CARLA 0.9.16 上用实测数据验证过。
 - **参考点**：CarSim 的 `Xo/Yo/Zo` 是簧载质量坐标原点，桥接默认它位于**前轴中心、地面高度**，
   会自动用 CARLA 车型的前轴位置换算到 CARLA 车辆原点。验证方法：静止时 `Zo` 应接近 0。
-  如果你的模型不是这样，在 `config.py` 里把 `CARSIM_REFERENCE_POINT` 改成实际偏移。
+  如果你的模型不是这样，在“CarSim 动力学”页取消“参考点在前轴中心”，填写实际位置。
 
 ## 5. 坐标原点对齐
 
-CarSim 全局原点 (0,0,0)、yaw=0 会放到 CARLA 的一个 spawn point 上（`--spawn-index` 选择）。
+CarSim 全局原点 (0,0,0)、yaw=0 会放到 CARLA 的一个 spawn point 上（界面“车辆与视角”页选的出生点；命令行用 `--spawn-index`）。
 CarSim 的初始位置（t = 0 的 Xo、Yo、Yaw）也相对这个原点：不为 0 时车从离出生点相应距离处出发、车头方向与出生点方向差相应角度，运行开始时日志会警告。
 如果 CarSim 用的是自己的道路，而 CARLA 地图道路不同，车辆会"开出路面"，这只是地图不一致，
 不是同步问题。解决办法有两种：
 - 在 CarSim 里导入和 CARLA 地图一致的道路：CARLA 地图有 OpenDRIVE 文件，路网中心线可以导出后作为 CarSim 的路径和路面。
-- 把 `config.py` 的 `Z_MODE` 设为 `"ground"`，高度贴合 CARLA 路面，平面运动仍用 CarSim 的结果。
+- 在“CarSim 动力学”页把“高度模式”设为“贴合 CARLA 路面”：高度贴合 CARLA 路面，平面运动仍用 CarSim 的结果。

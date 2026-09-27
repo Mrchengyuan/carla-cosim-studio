@@ -15,8 +15,9 @@ config with drive.dynamics = "carla" (CARLA physics) is refused.
 Examples
   python run_cosim.py --mock --duration 20                       # no CarSim needed
   python run_cosim.py --config cosim.json                        # GUI-saved settings
-  python run_cosim.py --sim C:/CarSim/simfile.sim --carsim-repo ../python_carsim_env
-  python run_cosim.py --sim C:/CarSim/simfile.sim --controller my_ctrl.py   # your control algorithm
+  python run_cosim.py --sim C:/CarSim/simfile.sim --carsim-repo ../python_carsim_env --duration 0
+  python run_cosim.py --sim C:/CarSim/simfile.sim --controller my_ctrl.py --duration 0   # your control algorithm
+Without --duration (or --config) a run lasts 20 s; --duration 0 runs until the .sim's end time.
 """
 
 import argparse

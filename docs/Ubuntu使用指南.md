@@ -318,21 +318,39 @@ python run_cosim.py --mock --duration 20                      # 模拟 CarSim + 
 python run_cosim.py --config cosim_config.json                # 用界面保存的配置（界面把它存在本目录）
 python run_cosim.py --sim /path/to/simfile.sim --controller controllers/my_controller.py --duration 0   # 真实 CarSim + 你的控制算法（--duration 0：一直运行到 .sim 的结束时间；不写默认只跑 20 秒）
 ```
-在自己的训练代码里使用（每个 `env.control_step()` 之后加两行）：
+在自己的训练代码里使用（初始化一次，之后每个 `env.control_step()` 之后加两行）：
 ```python
+import os, sys
+BRIDGE = os.path.expanduser("~/carla-cosim-studio/carsim_carla_bridge")   # 本仓库的桥接目录
+sys.path.insert(0, BRIDGE)
+import settings as st
 from bridge import CarlaVehicleSync
-sync = CarlaVehicleSync(world, vehicle, anchor_transform)      # 初始化一次
+
+# 初始化一次：env.reset() 之后，vehicle 已经生成在 anchor_transform（出生点 = CarSim 原点）
+d = st.load_dict(os.path.join(BRIDGE, "cosim_config.json"))   # 界面保存的配置
+frame_dt = inner_steps * env.t_step                           # CARLA 一帧 = 一次 control_step 积分的时长
+s = world.get_settings()
+s.synchronous_mode, s.fixed_delta_seconds = True, frame_dt   # 必须是同步模式：两边共用一个时钟
+world.apply_settings(s)
+for _ in range(30):
+    world.tick()                                              # 让刚生成的车先落地（run_cosim.py 也这样做）
+sync = CarlaVehicleSync(world, vehicle, anchor_transform, settings=st.to_bridge_cfg(d))
+
+# 每一步
 obs, r, done, info = env.control_step(action, inner_steps)
 sync.sync(obs, env.t_current, frame_dt)
 world.tick()
 ```
+- `settings=st.to_bridge_cfg(d)`：用界面“CarSim 动力学”页的导出变量顺序、单位、参考点和高度模式。不传时用 `config.py` 里的默认值，和你的 `.sim` 不一致时车的位置会错，而且不报错。
+- 这样用只同步车辆：交给算法的 `scene`（周围的车、行人、车道）、运行记录和数据采集只在界面和 `run_cosim.py` 里有。
+
 更多说明见 [桥接说明](../carsim_carla_bridge/README.md)。
 
 ---
 
 ## 10. 测试
 
-CARLA 启动后，在 `carsim_carla_bridge` 目录执行（测改版 CARLA 时每条命令后面加 `--port 3000`，`test_tests_carla.py` 和 `test_carla_restart.py` 除外：它们加 `--mod`）：
+CARLA 启动后，在 `carsim_carla_bridge` 目录执行（测改版 CARLA 时，连 CARLA 的测试后面加 `--port 3000`；标着“不需要 CARLA”的和 `test_coords.py` 不加；`test_tests_carla.py` 和 `test_carla_restart.py` 加 `--mod`，`test_carla_restart.py` 的端口和 `scripts/env.sh` 一样，可用环境变量 `CARLA_PORT` / `CARLA_MOD_PORT` 改）：
 ```bash
 python tests/test_coords.py                          # 坐标换算（不需要 CARLA）
 python tests/test_backend.py                         # 界面后端全部命令，约 2 分钟
@@ -363,6 +381,8 @@ python tests/test_offline_guimisc.py                 # 不需要 CARLA：界面�
 python tests/test_guimisc_carla.py                   # 同上经过界面后端，运行后自动驾驶试开已取消、停止后端时清理
 python tests/test_offline_tests.py                   # 不需要 CARLA：启动 / 停止脚本、test_modified_carla.py 失败时退出码非 0
 python tests/test_tests_carla.py                     # 启动 / 停止脚本（改版加 --mod，不是 --port）
+python tests/test_offline_docs.py                    # 不需要 CARLA：文档和代码一致（链接、训练代码示例、命令行示例、底部页签、采样周期）
+python tests/test_docs_carla.py                      # 按文档的训练代码示例同步车辆；联合仿真的车经过限速牌时 speed_limit 是否更新（只报告）
 python tests/test_all_vehicles.py                    # 每种车型都当一次主车联合仿真，服务器不能崩
 python tests/test_carla_restart.py                   # 运行中关掉并重启 CARLA（会真的重启它；改版加 --mod）
 python tests/test_modified_carla.py --port 3000      # 改版 CARLA 接口（需要改版 CARLA 和 venv_build）

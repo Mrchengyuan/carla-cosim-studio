@@ -537,15 +537,16 @@ void App::StartRun() {
   // The scene tab shows this run's data in the units it was started with.
   const json units = cfg_.contains("carsim") ? cfg_["carsim"].value("units", json::object()) : json::object();
   busy_ = "正在启动 ...";
+  starting_ = true;
   be_.Request("cosim_start", {{"config", cfg_}}, [this, units](bool ok, const json& r, const std::string& err) {
     busy_.clear();
+    starting_ = false;
     if (!ok) {
       // The run did not start (e.g. an error in the control algorithm): say
-      // why on the viewport and show the output. A start that failed once the
-      // run existed has just logged the reason (cosim_state "error").
-      if (log_.empty() || log_.back().text != RunErrorNote(err)) Log(err, "error");
+      // why on the viewport and show the output.
       run_note_level_ = "error";
       run_note_ = "运行没有启动：" + err;
+      Log(run_note_, "error");
       run_note_ego_ = -1;  // about the ego the failed start leaves (it respawns it), see SetWorld
       log_open_ = true;
       dock_tab_select_ = 2;
@@ -802,7 +803,9 @@ void App::OnEvent(const json& ev) {
     if (run_state_ == "finished" || run_state_ == "error") {
       const double dur = cfg_.contains("sync") ? cfg_["sync"].value("duration", 0.0) : 0.0;
       const double t = last_tel_.value("t", 0.0);
-      if (run_state_ == "error") {
+      if (run_state_ == "error" && starting_) {
+        return;  // a failed start: the cosim_start reply says why ("运行没有启动")
+      } else if (run_state_ == "error") {
         run_note_level_ = "error";
         run_note_ = RunErrorNote(ev.value("detail", std::string()));
       } else if (!ev.value("detail", std::string()).empty()) {
@@ -931,6 +934,7 @@ void App::OnEvent(const json& ev) {
     else
       Log("导出失败：" + ev.value("error", std::string()), "error");
   } else if (type == "disconnected") {
+    starting_ = false;
     // Nothing the backend owned is valid any more: never stay "running" or busy.
     carla_connected_ = false;
     if (Running()) run_state_ = "error";
@@ -1257,6 +1261,10 @@ void App::TourClick() {
     }
     return;
   }
+  // A target still moving (its panel scrolling it into view) would get the press in one
+  // place and the release in another, which ImGui does not count as a click: wait until it holds still.
+  if (click_phase_ <= 2 && (c.x != click_last_.x || c.y != click_last_.y)) click_phase_ = 0;
+  click_last_ = c;
   ImGuiIO& io = ImGui::GetIO();
   // Every frame: with the window focused (e.g. on Windows) the GLFW backend
   // reports the real cursor each frame, which would move the press elsewhere.

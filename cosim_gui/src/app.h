@@ -182,6 +182,7 @@ class App {
   bool dark_ = true, theme_changed_ = false;
   int panel_ = kPanelConnect;
   std::string busy_;
+  bool starting_ = false;         // cosim_start sent, reply not back yet
   std::string font_path_;
 
   bool carla_connected_ = false;
@@ -300,6 +301,7 @@ class App {
   void TourClick();                 // feeds a pending tour click to ImGui as real mouse events
   std::string click_target_;
   int click_phase_ = 0;
+  ImVec2 click_last_{-1.0f, -1.0f};  // target position last frame
   int tour_mark_ = 0;               // value remembered by a tour step (e.g. the frame before a single step)
   json tour_kept_;                  // what the tour's config steps change, put back after them
 

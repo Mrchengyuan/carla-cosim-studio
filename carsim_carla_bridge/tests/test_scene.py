@@ -201,7 +201,7 @@ def main():
         r["collect"]["capture_every"] = 5
         r["run"]["log_path"] = os.path.join(tmp, "run", "mylog.csv")
         c.events.clear()
-        c.call("cosim_start", config=r, timeout=120)
+        run_dir = c.call("cosim_start", config=r, timeout=120)["record_dir"]  # the run's own folder
         # Traffic added and removed during the run: CARLA must not tick on its own.
         c.wait_event(lambda e: e.get("event") == "telemetry" and e["data"]["t"] > 2.0, 60)
         tr = c.call("spawn_traffic", vehicles=6, walkers=6, seed=3, timeout=60)
@@ -218,11 +218,11 @@ def main():
         recs = records()
         check("algorithm gets its own selection", recs[5]["obj_keys"] == ["dist", "id", "type"] and "lane" not in recs[5]["keys"]
               and sorted(recs[5]["ego"]) == ["Speed", "X"], "%s, scene keys %s" % (recs[5]["obj_keys"], recs[5]["keys"]))
-        main = read_csv(os.path.join(tmp, "run", "mylog.csv"))
-        objs = read_csv(os.path.join(tmp, "run", "mylog_objects.csv"))
+        main = read_csv(os.path.join(run_dir, "mylog.csv"))
+        objs = read_csv(os.path.join(run_dir, "mylog_objects.csv"))
         check("records keep their own selection", list(main[0]) == ["t", "frame", "ego_X", "Xo", "Vx", "u1", "u2", "u3"]
               and list(objs[0]) == ["t", "frame", "id", "type", "rel_x"]
-              and not os.path.exists(os.path.join(tmp, "run", "mylog_lane.csv")), list(main[0]))
+              and not os.path.exists(os.path.join(run_dir, "mylog_lane.csv")), list(main[0]))
         frames = [int(x["frame"]) for x in main]
         dt5 = 5 * r["sync"]["frame_dt"]  # every 5th run step from t = 0 (not CARLA's frame counter)
         check("run record every 5th frame", all(abs(float(x["t"]) - i * dt5) < 1e-6 for i, x in enumerate(main))

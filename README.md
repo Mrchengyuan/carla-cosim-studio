@@ -126,7 +126,7 @@ git clone https://github.com/Mrchengyuan/python_carsim_env
 | **CarSim 联合仿真** | CarSim 与 CARLA 同步步进；四轮实际转向角（阿克曼、转向柔度一比一）、车轮转速（可看出打滑 / 抱死）、悬架行程、车身侧倾俯仰全部同步；导出变量可视化编辑与校验 |
 | **驾驶模式** | **CarSim 联合仿真**：你的 Python 控制算法（每次运行自动重新加载，改完代码直接再运行）控制 CarSim，CARLA 照 CarSim 结果同步；测试用演示 / 路线跟随 / 键盘驾驶。**CARLA 物理**（不需要 CarSim）：路线跟随、CARLA 自动驾驶（遵守红绿灯、跟车）、键盘驾驶 |
 | **场景信息（给控制算法）** | 每帧把 CARLA 场景里自车 50 m 内的**车辆、行人、停放车辆**（全局和相对自车的位置、速度、航向、中心距离、包围盒间距、尺寸）、**前方车道**（车道宽、偏离量、航向偏差、曲率、中心线、车道线、相邻车道、限速、路口、红绿灯）和可选的**传感器数据**（numpy 图像 / 点云 / 雷达）交给你的 Python 控制算法；**一切按 CarSim 的坐标系和单位**；像 CarSim 选输出变量一样**勾选**要哪些量（给算法和写进记录分开选）；**碰撞检测**（CarSim 的车在 CARLA 里撞上也不会停）可选停止运行或记录；底部“场景”标签实时显示（俯视图 + 表格） |
-| **运行记录** | 每次运行从开始时刻起按采样周期把勾选的自车量、障碍物、车道、CarSim 导出变量和控制算法的输出写成 CSV（障碍物每行一个），和数据采集同一套采样时刻 |
+| **运行记录** | 每次运行一个文件夹（`runs/时间_算法文件名/`，不覆盖以前的）：从开始时刻起按采样周期把勾选的自车量、障碍物、车道、CarSim 导出变量和控制算法的输出写成 CSV（障碍物每行一个，和数据采集同一套采样时刻），另存这次的配置、算法文件副本和 `run.json`（地图、出生点、种子、结束原因、运行指标）；运行结束时输出窗口给出文件夹和运行指标（车道偏移、航向偏差、碰撞、前方最小间距、行驶距离、最大 \|Ay\|，CarSim 单位） |
 | **传感器套件** | 预设 单前视 / KITTI / nuScenes / 量产车 / 感知真值，按车型尺寸自动布置；俯视图 + 侧视图拖动安装，显示视场角；相机、深度、语义、实例、激光雷达、毫米波雷达、IMU、GNSS |
 | **数据采集** | 所有传感器同一帧同步采样；图像 JPG/PNG、点云 .bin/.npy、雷达 CSV；自动生成标定文件（内参 K、外参）、3D 真值框、车辆状态；采集前估算数据量，没有停止条件或空间不足时拒绝开始 |
 | **数据浏览与导出** | 逐帧浏览已采集的数据（相机图上叠加 3D 真值框、激光雷达 / 毫米波雷达俯视图、目标列表、播放）；一键导出为 **KITTI** 或 **nuScenes** 格式（nuScenes 可直接用官方工具读取）；删除不需要的数据集 |
@@ -223,8 +223,12 @@ class Controller:
         vx = exports["Vx"]                    # 按变量名取 CarSim 导出变量（CarSim 单位）
         ...                                   # 你的算法
         return [throttle, brake, steer_sw]    # 按 .sim 里导入变量的顺序
+
+    def finish(self, reason):                 # 可选，每次运行结束调用一次（reason = 结束原因）
+        ...
 ```
 - `exports`：全部 CarSim 导出变量，键是导出变量名；`t`：CarSim 时间；`dt`：控制周期（= 仿真步长）。
+- `finish(reason)`：可选，运行结束（到时、碰撞停止、停止、出错）时调用一次，`reason` 与输出窗口里的结束原因相同；入口是函数时写模块级 `finish(reason)`。出错只提示，不影响收尾。
 - 界面里的相对路径以 `carsim_carla_bridge` 目录为准（命令行里以当前目录为准）；每次点“运行”都会重新加载这个文件（连同它从同一目录和子目录 import 的文件），改完代码直接再运行，不用重启界面。
 - 示例：`controllers/example_controller.py`（定速 + 蛇形）、`controllers/scene_controller.py`（沿车道行驶，前方有车或障碍物就跟车 / 停车）、`controllers/simple_path_follower.py`（python_carsim_env 里的 SimplePathFollower）。
 
@@ -275,6 +279,8 @@ python run_cosim.py --mock --duration 20                                        
 | `tests/test_offline_disk.py` | 不需要 CARLA：输出目录在不存在的盘 / 网络共享上时不卡死、采集拒绝开始，CARLA 录制状态（重新连接、恢复、换地图、回放、CARLA 退出时停止或清除），运行记录 8 位有效数字、磁盘不足时停止写且每秒只查一次，旧的原始传感器命令和追尾相机截图已删除、开始时（第 0 步）停止写记录的提示写进输出 | 22/22 |
 | `tests/test_disk_carla.py` | 在 CARLA 上：CARLA 录制状态（world_info）、重新连接 / 崩溃恢复 / 开始回放 / 后端退出时停止录制、CARLA 建不了的录制文件、5 帧运行记录 8 位有效数字、旧的原始传感器命令已删除（临时文件测完删除） | 待在 CARLA 上运行 |
 | `tests/test_offline_recording.py` | 不需要 CARLA：运行记录和采集按运行步数从 t = 0 采样、控制输出 u1 … un（第一行为空）、第一次 `control()` 的场景有帧号和传感器数据、开始时已接触只算一次碰撞、`frames/` 里的 IMU 按 CarSim 坐标、`labels/` 含地图里停放的汽车（不含没人骑的自行车 / 摩托车）、`ego/` 速度取 CarSim 的值、第 0 步已结束运行（开始时碰撞且设为停止、采集帧数上限）时不再多走一步 | 12/12 |
+| `tests/test_offline_runs.py` | 不需要 CARLA：每次运行一个记录文件夹（`时间_算法文件名`，同一秒加 `_2`，旧配置的 `cosim_log.csv` 用它的目录和文件名），里面有 CSV、`config.json`、算法文件副本、`run.json`（开始时写、结束时补全）；第二次运行不动第一次的文件、没勾车道时没有旧的 `_lane.csv`；运行指标（车道偏移、航向偏差、不在车道上的时间、每帧的碰撞、前方最小间距、行驶距离、\|Ay\|）；磁盘不足时停写 CSV 但仍写 `run.json`；`finish(reason)`（实例或模块的）只调用一次、在记录关闭之前、出错只提示；后端和命令行传入结束原因并输出文件夹和指标 | 20/20 |
+| `tests/test_runs_carla.py` | 在 CARLA 上（模拟 CarSim，1 s）：记录文件夹的内容、`run.json` 的地图 / 出生点 / 结束原因 / 指标与 `log.csv` 一致、`finish(reason)` 收到到时的原因、输出窗口给出文件夹和指标、第二次运行是新文件夹（临时文件测完删除） | 待在 CARLA 上运行 |
 | `tests/test_recording_carla.py` | 同上在 CARLA 上：第一次 `control()` 有整数帧号和相机图像、两次运行采样时刻相同、u 列为上一步的控制输出、5 帧小采集（测完自动删除）的 `frames/`、`frames.csv`、`ego/`、`labels/` | 待在 CARLA 上运行 |
 | `tests/test_offline_config.py` | 不需要 CARLA：界面保存的配置用命令行运行时，用文件里的驾驶方式和 CARLA 地址（命令行参数仍优先）；CARLA 物理的配置在连接 CARLA 之前就被拒绝（退出码 2）；默认配置里没有不起作用的 `carla.map` / `carla.weather`。另用系统的 C++ 编译器编译运行界面的配置代码 `cosim_gui/tests/config_file_test.cpp`：载入时以默认配置为底、修正手改的类型（保留“CARLA 接口”和参考点）、保存时写入驾驶方式和 CARLA 地址、先写临时文件再替换（没有编译器时跳过） | 4/4（其中 C++ 23/23） |
 | `tests/test_config_carla.py` | 在 CARLA 上：界面保存的配置用 `run_cosim.py --config` 运行，连文件里的 CARLA、用你的控制算法（模拟 CarSim）、结束后世界恢复原样；CARLA 物理的配置被拒绝、不生成车辆 | 待在 CARLA 上运行 |

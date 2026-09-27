@@ -89,7 +89,7 @@ class ConfigFileTests(unittest.TestCase):
                 self.done = True
                 return {"t": 0.02, "rt_factor": 1.0}
 
-            def stop(self, release_vehicle):
+            def stop(self, release_vehicle, **end):
                 pass
 
         world = FakeWorld()

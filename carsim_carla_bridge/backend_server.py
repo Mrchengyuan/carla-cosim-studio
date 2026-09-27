@@ -1036,6 +1036,9 @@ class Backend:
             autopilot = not cosim and d["drive"]["carla_driver"] == "autopilot"
             self.session = CoSimSession(w, self.ego, self.anchor, d) if cosim else \
                 CarlaDriveSession(w, self.ego, d, self._need_tm() if autopilot else None, self.anchor)
+            # For the run record (run.json): the seed of the traffic around the car, if there is any.
+            self.session.run_meta = {"traffic_seed": self.traffic_seed if self.traffic["vehicles"] or
+                                     self.traffic["walkers"] else None}
         except BaseException:
             # Never leave the world in sync mode with nobody ticking it.
             pre, self._pre_cosim_settings = self._pre_cosim_settings, None
@@ -1224,7 +1227,15 @@ class Backend:
             if self.cosim_state in ("running", "paused"):
                 self._set_cosim_state(final, detail)
             return
-        self._try(lambda: ses.stop(release_vehicle=True))
+        # The algorithm's finish(), the run record's run.json: they get how and why the run ended.
+        summary = {}
+        self._try(lambda: summary.update(ses.stop(release_vehicle=True, end=final, reason=detail) or {}))
+        for msg in summary.get("errors", []):  # e.g. an error in the algorithm's finish()
+            self._log(msg, "warn")
+        if summary.get("record_dir"):
+            self._log("运行记录：%s" % summary["record_dir"])
+        if summary.get("kpi_text"):
+            self._log("运行指标：%s" % summary["kpi_text"])
         # Back to what the user had before co-sim (usually async), so the
         # world does not stay frozen in sync mode with nobody ticking.
         pre, self._pre_cosim_settings = getattr(self, "_pre_cosim_settings", None), None

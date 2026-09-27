@@ -310,7 +310,7 @@ class BackendReasonTests(unittest.TestCase):
             def start(self):
                 raise RuntimeError(why)
 
-            def stop(self, release_vehicle=True):
+            def stop(self, release_vehicle=True, **end):
                 pass
 
         with mock.patch.object(backend_server, "CoSimSession", Session), \

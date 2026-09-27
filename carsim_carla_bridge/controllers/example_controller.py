@@ -7,6 +7,8 @@
     class Controller:
         reset(self)                                   可选，每次运行开始调用一次
         control(self, exports, t, dt, scene) -> list  每帧调用一次
+        finish(self, reason)                          可选，每次运行结束调用一次（到时、碰撞停止、
+                                                      停止、出错），reason 是输出窗口里的结束原因
 
     exports  dict，CarSim 全部导出变量，按名字取值，CarSim 单位，跟随
              “CarSim 动力学”页的单位设置（默认 exports["Vx"] km/h，exports["Yaw"] deg）。
@@ -19,7 +21,8 @@
     返回值   按 .sim 里导入变量（REPLACE）的顺序给出的数值。
              python_carsim_env 的默认顺序：[油门 0~1, 制动, 方向盘转角 deg（左正）]
 
-入口也可以是普通函数 control(exports, t, dt[, scene])，在界面“入口”里填函数名。
+入口也可以是普通函数 control(exports, t, dt[, scene])，在界面“入口”里填函数名
+（结束时调用模块里的 finish(reason) 函数，如果有）。
 """
 import math
 

@@ -203,8 +203,14 @@ int main(int argc_raw, char** argv_raw) {
   ImGui_ImplGlfw_InitForOpenGL(window, true);
   ImGui_ImplOpenGL3_Init("#version 130");
 
-  while (!glfwWindowShouldClose(window) && !app.WantsQuit() && !g_quit_signal) {
+  std::string shown_title = "CARLA CoSim Studio";
+  while (!app.WantsQuit() && !g_quit_signal) {
     glfwPollEvents();
+    // Closing the window asks first when the config has unsaved changes.
+    if (glfwWindowShouldClose(window)) {
+      glfwSetWindowShouldClose(window, GLFW_FALSE);
+      app.AskQuit();
+    }
     if (app.ThemeChanged()) ApplyAllThemes(app.DarkTheme(), scale);
     ImGui_ImplOpenGL3_NewFrame();
     ImGui_ImplGlfw_NewFrame();
@@ -221,6 +227,8 @@ int main(int argc_raw, char** argv_raw) {
     ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
     app.AfterRender(w, h);
     glfwSwapBuffers(window);
+    const std::string title = app.WindowTitle();
+    if (title != shown_title) glfwSetWindowTitle(window, (shown_title = title).c_str());
   }
 
   // Destroy the app while GLFW is alive: it asks the backend to clean CARLA up.

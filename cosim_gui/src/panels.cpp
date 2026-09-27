@@ -490,10 +490,12 @@ void App::DrawPanelDrive() {
     if (cur == "custom") {
       json& ctl = cfg_["run"]["controller"];
       ImGui::Dummy(ImVec2(0, fs * 0.2f));
+      ImGui::BeginDisabled(Running());  // a run keeps the algorithm it started with
       ui::Row("算法文件 .py", "相对路径以 carsim_carla_bridge 目录为准。每次点“运行”都会重新加载，改完代码直接再点运行", fs * 30);
       EditString(ctl, "path");
       ui::Row("入口", "文件里的类名（带 control 方法）或函数名", fs * 8);
       EditString(ctl, "entry");
+      ImGui::EndDisabled();
       ui::DimWrapped("接口：control(exports, t, dt) -> [油门, 制动, 方向盘角]，exports 是按变量名取值的 CarSim 导出变量");
       ui::DimWrapped("要用周围的车、行人、障碍物和车道：写成 control(exports, t, dt, scene)，见“场景信息”页");
       ui::DimWrapped("示例：controllers/example_controller.py（定速 + 蛇形），controllers/scene_controller.py（沿车道跟车 / 停车），"
@@ -516,6 +518,7 @@ void App::DrawPanelDrive() {
     cards(kCarla, 3);
   }
   ImGui::Dummy(ImVec2(0, fs * 0.3f));
+  ImGui::BeginDisabled(Running());
   if (cur == "route") {
     float v = dr.value("target_speed_kmh", 40.0f);
     ui::Row("目标车速 km/h");
@@ -536,6 +539,7 @@ void App::DrawPanelDrive() {
     ui::Row("制动输入比例", "0..1 的制动指令乘以这个系数再送给 CarSim（例如 CarSim 用制动压力 MPa 时设为 10）", fs * 8);
     if (ImGui::InputFloat("##bscale", &b, 0.5f, 1.0f, "%.2f")) dr["brake_scale"] = std::max(0.0f, b);
   }
+  ImGui::EndDisabled();
   ui::EndCard();
 
   if (cur == "manual") {
@@ -564,6 +568,7 @@ void App::DrawPanelDrive() {
   }
 
   ui::BeginCard(ICON_FA_CLOCK, "运行设置");
+  ImGui::BeginDisabled(Running());  // the running session keeps the config it started with
   ui::Row("仿真步长 s", "CARLA 每帧的仿真时间。CarSim 每帧内部积分 步长 / t_step 步", fs * 8);
   EditDouble(cfg_["sync"], "frame_dt", 0.005, "%.3f", 0.001, 0.5);
   ui::Row("运行时长 s", "0 = 一直运行，直到点“停止”（默认）。设了时长，到时会自动结束并停车", fs * 8);
@@ -571,6 +576,7 @@ void App::DrawPanelDrive() {
   ui::Row("运行记录 CSV", "每个采样时刻的自车状态和 CarSim 导出变量；旁边另写 _objects.csv（障碍物）和 _lane.csv（车道）。"
                           "记录哪些量在“场景信息”页勾选，采样周期在“数据采集”页设置；空 = 不记录");
   EditString(cfg_["run"], "log_path");
+  ImGui::EndDisabled();
   ui::EndCard();
 }
 
@@ -802,6 +808,9 @@ void App::DrawPanelCoSim() {
     ImGui::Dummy(ImVec2(0, 4));
   }
 
+  // The running session keeps the config it started with (the scene tab
+  // shows its units from run_info_): nothing to edit here during a run.
+  ImGui::BeginDisabled(Running());
   ui::BeginCard(ICON_FA_FOLDER_OPEN, "CarSim 模型");
   bool mock = cs.value("mock", false);
   ui::Row("模拟 CarSim", "不需要 CarSim 许可证，用一个简单车辆模型代替，用来测试整条链路");
@@ -924,6 +933,7 @@ void App::DrawPanelCoSim() {
   ui::Row("方向盘满量程 °", "方向盘转这么多度对应 CARLA 的 steer = ±1", fs * 8);
   EditDouble(sy, "steering_wheel_max_deg", 10, "%.0f", 1, 3600);
   ui::EndCard();
+  ImGui::EndDisabled();
 
   ui::BeginCard(ICON_FA_FLOPPY_DISK, "配置文件");
   static std::string path, shown_cfg;
@@ -934,12 +944,15 @@ void App::DrawPanelCoSim() {
   ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - fs * 16);
   InputStr("##cfgpath", path);
   ImGui::SameLine();
+  ImGui::BeginDisabled(Running());
   if (ui::Button(ICON_FA_FOLDER_OPEN, "载入")) LoadConfig(path);
+  ImGui::EndDisabled();
   ImGui::SameLine();
   if (ui::Button(ICON_FA_FLOPPY_DISK, "保存")) SaveConfig(path);
   ImGui::SameLine();
-  if (ui::Button(ICON_FA_ROTATE_LEFT, "默认"))
-    Call("default_config", json::object(), [this](const json& r) { json carla = cfg_["carla"]; cfg_ = r; cfg_["carla"].update(carla); Log("已恢复默认配置"); });
+  ImGui::BeginDisabled(Running());
+  if (ui::Button(ICON_FA_ROTATE_LEFT, "默认")) reset_ask_ = true;  // resets every page: asks first
+  ImGui::EndDisabled();
   ui::DimWrapped("同一个 JSON 也能给命令行和强化学习训练用：python run_cosim.py --config <文件>");
   ui::EndCard();
 }
@@ -972,12 +985,15 @@ void App::DrawPanelCollect() {
   ImGui::EndDisabled();
   ImGui::SameLine();
   ui::Pill(en ? "开启" : "关闭", en ? p.success : p.text_dim);
+  ImGui::BeginDisabled(Running());  // the running collection keeps the settings it started with
   ui::Row("输出目录");
   if (EditString(c, "out_dir")) RefreshDisk();
   ui::Row("场景名称", "空 = 按时间自动命名，例如 session_20260925_143000");
   EditString(c, "session");
+  ImGui::EndDisabled();
   ui::EndCard();
 
+  ImGui::BeginDisabled(Running());
   ui::BeginCard(ICON_FA_SLIDERS, "采集内容与格式");
   // Stored in seconds: changing the simulation step keeps the sampling period.
   // 0 = every capture_every frames (every frame by default), whatever the step.
@@ -1041,6 +1057,7 @@ void App::DrawPanelCollect() {
   if (ImGui::InputFloat("##mg", &mg, 0.5f, 5.0f, "%.1f")) c["max_gb"] = std::max(0.0f, mg);
   if (mf == 0 && ms <= 0 && mg <= 0) ImGui::TextColored(p.danger, ICON_FA_TRIANGLE_EXCLAMATION "  没有任何停止条件，后端会拒绝开始采集");
   ui::EndCard();
+  ImGui::EndDisabled();
 
   DrawRigEstimate(false);
 

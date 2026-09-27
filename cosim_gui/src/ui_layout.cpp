@@ -130,6 +130,29 @@ bool ToolTab(const char* label, bool active, float height) {
 void App::Frame() {
   ++frame_;
   be_.Poll([this](const json& ev) { OnEvent(ev); });
+  // A value of a type the pages do not expect (e.g. a sensor attribute a
+  // hand-edited config wrote as text) must not end the program, and with it
+  // the backend and any run: unwind ImGui to here, skip the rest of this
+  // frame and say once what it was.
+  ImGuiErrorRecoveryState state;
+  ImGui::ErrorRecoveryStoreState(&state);
+  try {
+    FrameBody();
+  } catch (const json::exception& e) {
+    ImGuiIO& io = ImGui::GetIO();
+    const bool asserts = io.ConfigErrorRecoveryEnableAssert, tooltip = io.ConfigErrorRecoveryEnableTooltip;
+    io.ConfigErrorRecoveryEnableAssert = io.ConfigErrorRecoveryEnableTooltip = false;
+    ImGui::ErrorRecoveryTryToRecoverState(&state);
+    io.ConfigErrorRecoveryEnableAssert = asserts;
+    io.ConfigErrorRecoveryEnableTooltip = tooltip;
+    if (draw_error_ != e.what()) {
+      draw_error_ = e.what();
+      Log("界面有一部分没能显示（多半是配置里某个值的类型不对）：" + draw_error_, "error");
+    }
+  }
+}
+
+void App::FrameBody() {
   if (!be_.Connected() && plat::IsAlive(backend_proc_) && tour_dir_.empty() && frame_ % 30 == 0) ConnectBackend(true);
   if (tour_) TourTick();
   // Desktop launcher: connect to CARLA as soon as the backend answers.
@@ -257,12 +280,18 @@ void App::Frame() {
   DrawStatusBar();
   ImGui::PopStyleVar();
   DrawAbout();
+  DrawConfirmDialogs();
   ImGui::End();
 }
 
 // --------------------------------------------------------------------------
 void App::HandleShortcuts() {
   const ImGuiIO& io = ImGui::GetIO();
+  // Also while a text field has focus (text fields use neither chord): Ctrl+S
+  // right after typing a path must save it.
+  if (io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_S, false))
+    SaveConfig(cfg_path_.empty() ? std::string("cosim_config.json") : cfg_path_);
+  if (io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_L, false)) log_open_ = !log_open_;
   if (io.WantTextInput) return;
   const bool can_run = !Running() && carla_connected_ && busy_.empty();
   if (ImGui::IsKeyPressed(ImGuiKey_F5, false)) {
@@ -276,9 +305,6 @@ void App::HandleShortcuts() {
   }
   if (ImGui::IsKeyPressed(ImGuiKey_F6, false) && run_state_ == "running") RunCommand("cosim_pause");
   if (ImGui::IsKeyPressed(ImGuiKey_F10, false) && run_state_ == "paused") RunCommand("cosim_step");
-  if (io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_S, false))
-    SaveConfig(cfg_path_.empty() ? std::string("cosim_config.json") : cfg_path_);
-  if (io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_L, false)) log_open_ = !log_open_;
 }
 
 // --------------------------------------------------------------------------
@@ -290,7 +316,7 @@ void App::DrawMenuBar() {
     if (ImGui::MenuItem(ICON_FA_FLOPPY_DISK "  保存配置", "Ctrl+S")) SaveConfig(cfg);
     if (ImGui::MenuItem(ICON_FA_FOLDER_OPEN "  配置文件 ...")) { panel_ = kPanelCoSim; monitor_open_ = true; }
     ImGui::Separator();
-    if (ImGui::MenuItem(ICON_FA_POWER_OFF "  退出")) quit_ = true;
+    if (ImGui::MenuItem(ICON_FA_POWER_OFF "  退出")) AskQuit();
     ImGui::EndMenu();
   }
   if (ImGui::BeginMenu("仿真")) {
@@ -372,6 +398,78 @@ void App::DrawAbout() {
   ImGui::PopStyleVar(2);
 }
 
+void App::AskQuit() {
+  if (ConfigDirty() && tour_dir_.empty()) quit_ask_ = true;
+  else quit_ = true;
+}
+
+std::string App::WindowTitle() const { return ConfigDirty() ? "CARLA CoSim Studio *" : "CARLA CoSim Studio"; }
+
+// Confirmations: leaving with unsaved config changes (文件 → 退出, closing
+// the window) and "默认" on the CarSim page, which resets every page.
+void App::DrawConfirmDialogs() {
+  const ui::Palette& p = ui::Colors();
+  const float fs = ImGui::GetFontSize();
+  static bool save_failed = false;
+  if (quit_ask_) {
+    ImGui::OpenPopup("未保存的配置");
+    quit_ask_ = save_failed = false;
+  }
+  if (reset_ask_) {
+    ImGui::OpenPopup("恢复默认配置");
+    reset_ask_ = false;
+  }
+  const ImVec2 c = ImGui::GetMainViewport()->GetCenter();
+  const ImVec2 bsize(fs * 7, 0);
+  ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(16, 14));
+  ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(8, 6));
+  ImGui::SetNextWindowPos(c, ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
+  if (ImGui::BeginPopupModal("未保存的配置", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+    const std::string cfg = cfg_path_.empty() ? std::string("cosim_config.json") : cfg_path_;
+    ImGui::TextUnformatted("配置有未保存的更改，退出前要保存吗？");
+    ImGui::TextColored(p.text_dim, "保存到 %s", UserPath(cfg).c_str());
+    if (save_failed) ImGui::TextColored(p.danger, ICON_FA_TRIANGLE_EXCLAMATION "  保存失败，原因见底部“输出”");
+    if (ui::Button(ICON_FA_FLOPPY_DISK, "保存并退出", ui::Kind::Primary, bsize)) {
+      SaveConfig(cfg);
+      save_failed = ConfigDirty();
+      if (!save_failed) {
+        quit_ = true;
+        ImGui::CloseCurrentPopup();
+      }
+    }
+    ImGui::SameLine();
+    if (ui::Button("", "不保存", ui::Kind::Danger, bsize)) {
+      quit_ = true;
+      ImGui::CloseCurrentPopup();
+    }
+    ImGui::SameLine();
+    if (ui::Button("", "取消", ui::Kind::Secondary, bsize)) ImGui::CloseCurrentPopup();
+    ImGui::EndPopup();
+  }
+  ImGui::SetNextWindowPos(c, ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
+  if (ImGui::BeginPopupModal("恢复默认配置", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+    ImGui::TextUnformatted("所有页面的设置都恢复为默认值：");
+    ImGui::TextUnformatted("驾驶模式、控制算法文件、传感器套件、场景信息、数据采集和 CarSim。");
+    ImGui::TextColored(p.text_dim, "车型和出生点保留。配置文件不会改动，点“保存”后才写入。");
+    ImGui::BeginDisabled(Running());
+    if (ui::Button(ICON_FA_ROTATE_LEFT, "恢复默认", ui::Kind::Danger, bsize)) {
+      Call("default_config", json::object(), [this](const json& r) {
+        json carla = cfg_["carla"];
+        cfg_ = r;
+        cfg_["carla"].update(carla);
+        ConformConfig();
+        Log("已恢复默认配置（车型和出生点保留），点“保存”才会写入配置文件");
+      });
+      ImGui::CloseCurrentPopup();
+    }
+    ImGui::EndDisabled();
+    ImGui::SameLine();
+    if (ui::Button("", "取消", ui::Kind::Secondary, bsize)) ImGui::CloseCurrentPopup();
+    ImGui::EndPopup();
+  }
+  ImGui::PopStyleVar(2);
+}
+
 // --------------------------------------------------------------------------
 void App::DrawToolbar() {
   const ui::Palette& p = ui::Colors();
@@ -414,7 +512,8 @@ void App::DrawToolbar() {
   if (ui::ToolButton(ICON_FA_PLUG, carla_connected_ ? "重连" : "连接", p.accent, "连接 CARLA 服务器", bh)) ConnectCarla();
   ImGui::EndDisabled();
   ImGui::SameLine();
-  if (ui::ToolButton(ICON_FA_FLOPPY_DISK, "保存", p.text_dim, "保存当前配置 (Ctrl+S)", bh))
+  // "*": changes that are not in the config file yet.
+  if (ui::ToolButton(ICON_FA_FLOPPY_DISK, ConfigDirty() ? "保存*" : "保存", p.text_dim, "保存当前配置 (Ctrl+S)", bh))
     SaveConfig(cfg_path_.empty() ? std::string("cosim_config.json") : cfg_path_);
   ui::ToolSeparator(bh);
 
@@ -1247,7 +1346,8 @@ void App::DrawSceneTab() {
     ImGui::TextColored(p.text_dim, "控制算法收到哪些量在“场景信息”页勾选；算法里写 control(exports, t, dt, scene) 就能用。");
     return;
   }
-  const json units = cfg_.contains("carsim") ? cfg_["carsim"].value("units", json::object()) : json::object();
+  // In the units of the run that sent it (the CarSim page may have changed since).
+  const json units = run_info_.value("units", json::object());
   const std::string su = units.value("speed", std::string("km/h")), au = units.value("angle", std::string("deg"));
   const ImVec2 avail = ImGui::GetContentRegionAvail();
   const float bev = std::max(fs * 8.0f, std::min(avail.y, avail.x * 0.4f));
@@ -1350,7 +1450,8 @@ void App::DrawSceneBev(const json& sc, ImVec2 size) {
   dl->AddRectFilled(o, e, ImGui::GetColorU32(ImVec4(0.05f, 0.06f, 0.07f, 1)), 3.0f);
   dl->PushClipRect(o, e, true);
   const double range = 50.0;
-  const bool rad = cfg_.contains("carsim") && cfg_["carsim"].value("units", json::object()).value("angle", std::string("deg")) == "rad";
+  const json units = run_info_.value("units", json::object());  // of the run that sent this scene
+  const bool rad = units.value("angle", std::string("deg")) == "rad";
   const double to_rad = rad ? 1.0 : 3.14159265 / 180.0;
   // Origin = CarSim reference point, a little below the centre: more room ahead.
   const ImVec2 ego(o.x + size.x * 0.5f, o.y + size.y * 0.62f);
@@ -1392,7 +1493,7 @@ void App::DrawSceneBev(const json& sc, ImVec2 size) {
   std::vector<std::string> hit_ids;
   if (sc.contains("collisions") && sc["collisions"].is_array())
     for (const json& c : sc["collisions"]) hit_ids.push_back(JId(c));
-  const double spd = cfg_.contains("carsim") && cfg_["carsim"].value("units", json::object()).value("speed", std::string("km/h")) == "km/h" ? 3.6 : 1.0;
+  const double spd = units.value("speed", std::string("km/h")) == "km/h" ? 3.6 : 1.0;
   for (const json& ob : sc["objects"]) {
     if (scene_moving_only_ && ob.value("parked", false)) continue;
     const std::string id = JId(ob);

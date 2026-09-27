@@ -245,7 +245,7 @@ class Controller:
 命令行和强化学习训练用同一份配置：
 ```bash
 cd carsim_carla_bridge                     # 配置里的相对路径（控制算法、日志）都以这个目录为准
-python run_cosim.py --config cosim_config.json                                   # 界面保存的配置
+python run_cosim.py --config cosim_config.json                                   # 界面保存的配置（只支持 CarSim 联合仿真）
 python run_cosim.py --sim simfile.sim --controller controllers/my_controller.py --duration 0
 python run_cosim.py --mock --duration 20                                         # 不需要 CarSim
 ```

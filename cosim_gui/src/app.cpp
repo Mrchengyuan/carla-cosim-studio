@@ -1,6 +1,7 @@
 #include "app.h"
 
 #include <algorithm>
+#include <cctype>
 #include <cfloat>
 #include <cmath>
 #include <cstdarg>
@@ -119,6 +120,39 @@ void PushHist(std::vector<float>& h, float v, size_t max) {
   if (h.size() > max) h.erase(h.begin(), h.begin() + static_cast<std::ptrdiff_t>(h.size() - max));
 }
 
+// Writes the file next to the target and renames it over the target, so a
+// full disk or a crash never leaves a truncated file. false + err on failure.
+bool WriteFileReplace(const std::string& path, const std::string& text, std::string& err) {
+  const fs::path target = fs::u8path(path), tmp = fs::u8path(path + ".tmp");
+  std::error_code ec;
+  {
+    std::ofstream f(tmp);
+    if (f) {
+      f << text;
+      f.close();
+    }
+    if (!f) {
+      fs::remove(tmp, ec);
+      err = "写入失败（目录不存在、没有写权限或磁盘已满）";
+      return false;
+    }
+  }
+  fs::rename(tmp, target, ec);
+#ifdef _WIN32
+  if (ec) {  // some runtimes do not replace an existing file
+    std::error_code ec2;
+    fs::remove(target, ec2);
+    fs::rename(tmp, target, ec);
+  }
+#endif
+  if (ec) {
+    err = ec.message();
+    fs::remove(tmp, ec);
+    return false;
+  }
+  return true;
+}
+
 }  // namespace
 
 bool appui::Base64(const std::string& in, std::vector<unsigned char>& out) { return Base64Decode(in, out); }
@@ -136,6 +170,7 @@ struct TourStep {
 App::App() {
   // Minimal config so panels can render before the backend sends defaults.
   cfg_ = {{"carla", {{"vehicle", "vehicle.tesla.model3"}, {"spawn_index", 0}}}};
+  saved_cfg_ = cfg_;
 }
 
 App::~App() {
@@ -231,8 +266,9 @@ void App::SavePrefs() {
         if (prefs_file_.contains(kv.key())) out[kv.key()] = prefs_file_[kv.key()];
         else out.erase(kv.key());
       }
-  std::ofstream f(fs::u8path(prefs_path_));
-  if (f) f << out.dump(2, ' ', false, json::error_handler_t::replace);
+  std::string err;
+  if (!WriteFileReplace(prefs_path_, out.dump(2, ' ', false, json::error_handler_t::replace), err))
+    Log("无法保存界面设置到 " + prefs_path_ + "：" + err, "warn");
 }
 
 void App::Log(const std::string& msg, const std::string& level) {
@@ -334,11 +370,12 @@ void App::ConnectBackend(bool quiet) {
   // pages read exists.
   Call("default_config", json::object(), [this](const json& r) {
     json cur = cfg_.is_object() ? cfg_ : json::object();
+    const bool clean = !ConfigDirty();
     cfg_defaults_ = r;
     cfg_ = r;
     cfg_.merge_patch(cur);
     ConformConfig();
-    if (!cfg_["drive"].contains("cosim_driver")) cfg_["drive"]["cosim_driver"] = cfg_["run"].value("driver", std::string("custom"));
+    if (clean) saved_cfg_ = cfg_;  // filling in the defaults is no change of the user's
     RefreshDisk();
   });
   Call("rig_presets", json::object(), [this](const json& r) { rig_presets_ = r; });
@@ -512,22 +549,32 @@ void App::RefreshActors() {
        [this](const json& r) { actors_ = r; });
 }
 
+// The GUI keeps the CarSim driver in drive.cosim_driver; the backend and
+// run_cosim.py read run.driver: a run and a saved file always get the same.
+void App::SyncRunDriver() {
+  if (cfg_.contains("drive") && cfg_["drive"].contains("cosim_driver"))
+    cfg_["run"]["driver"] = cfg_["drive"]["cosim_driver"];
+}
+
 void App::StartRun() {
   if (vehicle_sel_ >= 0 && vehicle_sel_ < static_cast<int>(vehicles_.size()))
     cfg_["carla"]["vehicle"] = vehicles_[static_cast<size_t>(vehicle_sel_)]["id"];
-  // The GUI keeps the CarSim driver in drive.cosim_driver; the backend reads run.driver.
-  if (cfg_.contains("drive") && cfg_["drive"].contains("cosim_driver"))
-    cfg_["run"]["driver"] = cfg_["drive"]["cosim_driver"];
-  for (auto* h : {&h_t_, &h_speed_, &h_steer_fl_, &h_steer_fr_, &h_rt_, &h_thr_, &h_brk_}) h->clear();
-  for (auto& h : h_susp_) h.clear();
-  trail_x_.clear();
-  trail_y_.clear();
-  last_tel_ = json::object();
-  last_scene_ = json();
-  scene_hover_.clear();
-  collect_stats_ = json::object();
-  Call("cosim_start", {{"config", cfg_}}, [this](const json& r) {
-    run_info_ = r;
+  SyncRunDriver();
+  // The scene tab shows this run's data in the units it was started with.
+  const json units = cfg_.contains("carsim") ? cfg_["carsim"].value("units", json::object()) : json::object();
+  Call("cosim_start", {{"config", cfg_}}, [this, units](const json& r) {
+    // Only once the run has started: a refused start (e.g. a typo in the
+    // controller) keeps the last run's curves, trail and scene to compare with.
+    for (auto* h : {&h_t_, &h_speed_, &h_steer_fl_, &h_steer_fr_, &h_rt_, &h_thr_, &h_brk_}) h->clear();
+    for (auto& h : h_susp_) h.clear();
+    trail_x_.clear();
+    trail_y_.clear();
+    last_tel_ = json::object();
+    last_scene_ = json();
+    scene_hover_.clear();
+    collect_stats_ = json::object();
+    run_info_ = r.is_object() ? r : json::object();
+    run_info_["units"] = units;
     RefreshWorld();
   }, "正在启动 ...");
 }
@@ -691,9 +738,41 @@ std::string App::UserPath(const std::string& path) const {
 }
 
 namespace {
+// "1600" -> 1600, "0.5" -> 0.5: numbers written as text (hand-edited files,
+// CARLA-style sensor attributes). false when v is no such string.
+bool NumberFromString(const json& v, json& out) {
+  if (!v.is_string() || v.get_ref<const std::string&>().empty()) return false;
+  const std::string& s = v.get_ref<const std::string&>();
+  char* end = nullptr;
+  const double d = std::strtod(s.c_str(), &end);
+  if (end != s.c_str() + s.size() || !std::isfinite(d)) return false;
+  if (s.find_first_of(".eE") == std::string::npos && std::fabs(d) < 9e15) out = static_cast<long long>(d);
+  else out = d;
+  return true;
+}
+
+// 1 / 0, "true" / "false": what a hand-edited "enabled" may hold. false when v is none of these.
+bool BoolFrom(const json& v, bool& out) {
+  if (v.is_number()) {
+    out = v.get<double>() != 0.0;
+    return true;
+  }
+  if (!v.is_string()) return false;
+  std::string s = v.get<std::string>();
+  for (char& c : s) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+  if (s != "true" && s != "false" && s != "1" && s != "0") return false;
+  out = s == "true" || s == "1";
+  return true;
+}
+
+// Sensor attributes the pages read as numbers (rig editor, estimate, previews).
+const char* const kSensorNumberAttrs[] = {"image_size_x", "image_size_y", "fov", "max_distance", "channels", "range",
+                                          "points_per_second", "rotation_frequency", "upper_fov", "lower_fov",
+                                          "horizontal_fov", "vertical_fov"};
+
 // Makes v match the shape of def (the backend's default config): values of the
-// wrong type (a hand-edited file) would make the pages throw. Returns how
-// many values were replaced.
+// wrong type (a hand-edited file) would make the pages throw. Numbers written
+// as text become numbers. Returns how many values were changed.
 int Conform(json& v, const json& def) {
   int fixed = 0;
   if (def.is_object()) {
@@ -703,11 +782,14 @@ int Conform(json& v, const json& def) {
       else fixed += Conform(v[kv.key()], kv.value());
     }
   } else if (def.is_number()) {
+    json n;
+    if (NumberFromString(v, n)) { v = n; return 1; }
     if (!v.is_number()) { v = def; return 1; }
   } else if (def.is_string()) {
     if (!v.is_string()) { v = def; return 1; }
   } else if (def.is_boolean()) {
-    if (!v.is_boolean()) { v = def; return 1; }
+    bool b = false;
+    if (!v.is_boolean()) { v = BoolFrom(v, b) ? json(b) : def; return 1; }
   } else if (def.is_array()) {
     if (!v.is_array()) { v = def; return 1; }
     if (!def.empty()) {  // element type from the first default element
@@ -738,20 +820,38 @@ void App::ConformConfig() {
   }
   int fixed = Conform(cfg_, cfg_defaults_);
   if (!ref.is_null()) cfg_["sync"]["reference_point"] = ref;
-  // Rig sensors: objects with numbers where numbers belong.
+  // Never read by anything (older configs have them): not kept, so that a
+  // saved file does not suggest they set the map or the weather.
+  for (const char* k : {"map", "weather"}) cfg_["carla"].erase(std::string(k));
+  // The GUI keeps the CarSim driver in drive.cosim_driver (not in the
+  // defaults); a file without it (hand-written, settings.save_dict) runs run.driver.
+  json& dr = cfg_["drive"];
+  if (dr.contains("cosim_driver") && !dr["cosim_driver"].is_string()) { dr.erase("cosim_driver"); ++fixed; }
+  if (!dr.contains("cosim_driver")) dr["cosim_driver"] = cfg_["run"]["driver"];
+  // Rig sensors: objects with numbers where numbers belong; numbers written
+  // as text (CARLA attributes often are) become numbers.
   json& sensors = cfg_["rig"]["sensors"];
   json keep = json::array();
   for (auto& s : sensors) {
     if (!s.is_object()) { ++fixed; continue; }
     for (const char* k : {"x", "y", "z", "pitch", "yaw", "roll"})
-      if (s.contains(k) && !s[k].is_number()) { s[k] = 0.0; ++fixed; }
+      if (s.contains(k) && !s[k].is_number()) { json n; s[k] = NumberFromString(s[k], n) ? n : json(0.0); ++fixed; }
     for (const char* k : {"name", "type"})
       if (!s.value(k, json()).is_string()) { s[k] = std::string(k) == "type" ? "rgb" : "sensor"; ++fixed; }
+    bool en = true;
+    if (s.contains("enabled") && !s["enabled"].is_boolean()) { s["enabled"] = BoolFrom(s["enabled"], en) ? en : true; ++fixed; }
     if (!s.value("attributes", json()).is_object()) { s["attributes"] = json::object(); ++fixed; }
+    json& a = s["attributes"];
+    for (auto& kv : a.items()) {
+      json n;
+      if (NumberFromString(kv.value(), n)) kv.value() = n;
+    }
+    for (const char* k : kSensorNumberAttrs)
+      if (a.contains(k) && !a[k].is_number()) { a.erase(std::string(k)); ++fixed; }  // the default is used
     keep.push_back(s);
   }
   sensors = keep;
-  if (fixed) Log(Fmt("配置里有 %d 个值的类型不对（多半是手改过），已换成默认值", fixed), "warn");
+  if (fixed) Log(Fmt("配置里有 %d 个值的类型不对（多半是手改过），已改正：写成文字的数字换成数字，其余换成默认值", fixed), "warn");
 }
 
 void App::LoadConfig(const std::string& user_path) {
@@ -766,8 +866,19 @@ void App::LoadConfig(const std::string& user_path) {
   // mark them; the backend converts them with the measured vehicle once CARLA
   // is connected (see Frame()), the same way as for a run or the command line.
   if (j.contains("rig") && j["rig"].is_object() && !j["rig"].contains("frame")) j["rig"]["frame"] = "carla";
-  cfg_.merge_patch(j);
+  // Like settings.load_dict (run_cosim.py): the file over the defaults, not
+  // over the config loaded before, whose sections a partial file would keep.
+  // Only the vehicle and spawn point picked on the 车辆 page stay unless the
+  // file sets them. (Without the defaults yet, ConnectBackend lays them under.)
+  json n = cfg_defaults_.is_object() ? cfg_defaults_ : cfg_;
+  if (cfg_defaults_.is_object() && cfg_.contains("carla") && cfg_["carla"].is_object())
+    for (const char* k : {"vehicle", "spawn_index"})
+      if (cfg_["carla"].contains(k)) n["carla"][k] = cfg_["carla"][k];
+  n.merge_patch(j);
+  cfg_ = n;
   ConformConfig();
+  saved_cfg_ = cfg_;
+  if (carla_connected_) RefreshVehicles();  // a run uses the selected vehicle: select the file's
   cfg_path_ = path;
   prefs_["last_config"] = path;
   SavePrefs();
@@ -776,13 +887,17 @@ void App::LoadConfig(const std::string& user_path) {
 
 void App::SaveConfig(const std::string& user_path) {
   const std::string path = UserPath(user_path);
-  std::ofstream f(fs::u8path(path));
-  if (!f) {
-    Log("无法写入 " + path, "error");
+  SyncRunDriver();
+  // The CARLA server this GUI talks to: run_cosim.py --config connects there.
+  cfg_["carla"]["host"] = prefs_.value("carla_host", std::string("localhost"));
+  cfg_["carla"]["port"] = prefs_.value("carla_port", 2000);
+  std::string err;
+  if (!WriteFileReplace(path, cfg_.dump(2, ' ', false, json::error_handler_t::replace), err)) {
+    Log("无法写入 " + path + "：" + err, "error");
     return;
   }
-  f << cfg_.dump(2, ' ', false, json::error_handler_t::replace);
   cfg_path_ = path;
+  saved_cfg_ = cfg_;
   prefs_["last_config"] = path;
   SavePrefs();
   Log("配置已保存到 " + path);

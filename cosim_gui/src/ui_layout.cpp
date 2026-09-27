@@ -10,6 +10,7 @@
 #include "imgui.h"
 #include "imgui_internal.h"
 #include "implot.h"
+#include "implot_internal.h"
 #include "ui_kit.h"
 
 using appui::Fmt;
@@ -134,22 +135,35 @@ void App::Frame() {
   // hand-edited config wrote as text) must not end the program, and with it
   // the backend and any run: unwind ImGui to here, skip the rest of this
   // frame and say once what it was.
-  ImGuiErrorRecoveryState state;
-  ImGui::ErrorRecoveryStoreState(&state);
-  try {
-    FrameBody();
-  } catch (const json::exception& e) {
-    ImGuiIO& io = ImGui::GetIO();
-    const bool asserts = io.ConfigErrorRecoveryEnableAssert, tooltip = io.ConfigErrorRecoveryEnableTooltip;
-    io.ConfigErrorRecoveryEnableAssert = io.ConfigErrorRecoveryEnableTooltip = false;
-    ImGui::ErrorRecoveryTryToRecoverState(&state);
-    io.ConfigErrorRecoveryEnableAssert = asserts;
-    io.ConfigErrorRecoveryEnableTooltip = tooltip;
-    if (draw_error_ != e.what()) {
-      draw_error_ = e.what();
-      Log("界面有一部分没能显示（多半是配置里某个值的类型不对）：" + draw_error_, "error");
+  auto guarded = [this](void (App::*draw)()) {
+    ImGuiErrorRecoveryState state;
+    ImGui::ErrorRecoveryStoreState(&state);
+    try {
+      (this->*draw)();
+    } catch (const json::exception& e) {
+      ImGuiIO& io = ImGui::GetIO();
+      const bool asserts = io.ConfigErrorRecoveryEnableAssert, tooltip = io.ConfigErrorRecoveryEnableTooltip;
+      io.ConfigErrorRecoveryEnableAssert = io.ConfigErrorRecoveryEnableTooltip = false;
+      ImGui::ErrorRecoveryTryToRecoverState(&state);
+      io.ConfigErrorRecoveryEnableAssert = asserts;
+      io.ConfigErrorRecoveryEnableTooltip = tooltip;
+      // ImPlot's own state: a plot cut short would make the next BeginPlot fail.
+      ImPlotContext& gp = *ImPlot::GetCurrentContext();
+      if (gp.CurrentPlot) {
+        if (gp.CurrentItems == &gp.CurrentPlot->Items) gp.CurrentItems = nullptr;
+        ImPlot::ResetCtxForNextPlot(&gp);
+      }
+      if (draw_error_ != e.what()) {
+        draw_error_ = e.what();
+        Log("界面有一部分没能显示（多半是配置里某个值的类型不对）：" + draw_error_, "error");
+      }
     }
-  }
+  };
+  guarded(&App::FrameBody);
+  // Outside the main window, after it: a bad value that cuts every frame short
+  // must not keep the unsaved-changes question from opening (closing the
+  // window would then do nothing).
+  guarded(&App::DrawConfirmDialogs);
 }
 
 void App::FrameBody() {
@@ -280,7 +294,6 @@ void App::FrameBody() {
   DrawStatusBar();
   ImGui::PopStyleVar();
   DrawAbout();
-  DrawConfirmDialogs();
   ImGui::End();
 }
 

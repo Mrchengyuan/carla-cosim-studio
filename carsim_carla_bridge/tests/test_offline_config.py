@@ -1,10 +1,15 @@
 """The config the GUI saves, settings.py and the command line agree; no CARLA
-server needed."""
+server needed. The command-line side runs here in Python; the GUI side
+(cosim_gui/src/config_file.cpp: loading over the defaults, repairing types,
+what a save writes, the file write) runs as cosim_gui/tests/config_file_test.cpp,
+built here with the system C++ compiler (skipped without one)."""
 
 import copy
 import io
 import json
 import os
+import shutil
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -13,6 +18,7 @@ from types import SimpleNamespace
 from unittest import mock
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+GUI = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "cosim_gui")
 
 from backend_server import Backend  # noqa: E402
 import run_cosim  # noqa: E402
@@ -43,7 +49,8 @@ class FakeWorld:
 
 
 def gui_saved(tmp, **drive):
-    """A config as SaveConfig writes it: the backend's defaults, the GUI's CARLA
+    """A config as SaveConfig writes it (written by hand here; config_file_test.cpp
+    checks the GUI's own): the backend's defaults, the GUI's CARLA
     connection, drive.cosim_driver copied into run.driver."""
     d = Backend().cmd_default_config()
     d["carla"].update(host="carla-box", port=3000, spawn_index=2)
@@ -119,6 +126,31 @@ class ConfigFileTests(unittest.TestCase):
             self.assertIn("drive.dynamics", err.getvalue())
             self.assertIn("CarSim", err.getvalue())
             client.assert_not_called()
+
+
+class GuiConfigFileTests(unittest.TestCase):
+    def test_gui_config_file(self):
+        # The GUI's loading, repair and saving code with the backend's real
+        # default config (cosim_gui/tests/config_file_test.cpp).
+        cxx = shutil.which("c++") or shutil.which("g++") or shutil.which("clang++")
+        if not cxx:
+            self.skipTest("no C++ compiler")
+        with tempfile.TemporaryDirectory() as tmp:
+            defaults = os.path.join(tmp, "default_config.json")
+            with open(defaults, "w", encoding="utf-8") as f:
+                json.dump(Backend().cmd_default_config(), f, ensure_ascii=False)
+            exe = os.path.join(tmp, "config_file_test")
+            build = subprocess.run([cxx, "-std=c++17", "-Wall", "-I", os.path.join(GUI, "src"),
+                                    "-I", os.path.join(GUI, "third_party", "json"),
+                                    os.path.join(GUI, "tests", "config_file_test.cpp"),
+                                    os.path.join(GUI, "src", "config_file.cpp"), "-o", exe],
+                                   capture_output=True, text=True)
+            self.assertEqual(build.returncode, 0, build.stderr[-3000:])
+            files = os.path.join(tmp, "files")
+            os.mkdir(files)
+            r = subprocess.run([exe, defaults, files], capture_output=True, text=True)
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+            self.assertIn(" 0 failed", r.stdout)
 
 
 if __name__ == "__main__":

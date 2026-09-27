@@ -141,7 +141,6 @@ class App {
   void LoadConfig(const std::string& path);
   void ConformConfig();
   void SaveConfig(const std::string& path);
-  void SyncRunDriver();  // drive.cosim_driver (GUI) -> run.driver (backend, run_cosim.py)
   bool ConfigDirty() const { return cfg_ != saved_cfg_; }
   void SavePrefs();
   void OnEvent(const json& ev);

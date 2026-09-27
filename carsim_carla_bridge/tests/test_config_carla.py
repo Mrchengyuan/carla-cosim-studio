@@ -42,8 +42,9 @@ def main():
         ctrl = os.path.join(tmp, "my_controller.py")
         with open(ctrl, "w", encoding="utf-8") as f:
             f.write(CONTROLLER % marker)
-        # What the GUI's SaveConfig writes: the defaults, the GUI's CARLA
-        # connection, drive.cosim_driver and run.driver in step.
+        # What the GUI's SaveConfig writes (by hand here; the GUI's own code is
+        # checked by cosim_gui/tests/config_file_test.cpp): the defaults, the
+        # GUI's CARLA connection, drive.cosim_driver and run.driver in step.
         d = st.default_dict()
         d["carla"].update(host="localhost", port=carla_port, spawn_index=5)
         d["drive"]["cosim_driver"] = d["run"]["driver"] = "custom"

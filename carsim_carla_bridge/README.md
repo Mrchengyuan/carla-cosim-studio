@@ -27,6 +27,9 @@ CarSim 负责全部车辆动力学计算，CARLA 负责场景、渲染和传感�
 | `scene.py` | 每帧交给控制算法的 `scene`（车辆、行人、停放车辆，前方车道，传感器数据，碰撞判断；CarSim 坐标系和单位；只给勾选的量）和运行记录 CSV（`control(exports, t, dt, scene)`，定义见 `docs/场景与数据接口.md`） |
 | `session.py` | 一次联合仿真运行（逐帧步进），界面后端和 `run_cosim.py` 共用 |
 | `backend_server.py` | 界面后端：本机 TCP / JSON，执行界面的命令（CARLA 操作、运行、采集） |
+| `carsim_local.py` | 本机的 CarSim：检查 .sim / python_carsim_env / 求解器、模拟 CarSim、开始运行失败时的原因；后端和 CarSim 服务共用，只用标准库 |
+| `carsim_remote.py` | 远程模式（`carsim.remote`）后端这一端：接受 CarSim 服务的连接（`--carsim-port`，默认 57121，只在 127.0.0.1），`RemoteCarSimEnv` 每个 CARLA 帧向它要一次 CarSim 的结果 |
+| `carsim_service.py` | 远程模式的 CarSim 服务：在装了 CarSim 的 Windows 电脑上运行，主动连到云端的后端（经 SSH 隧道），按后端的请求运行 CarSim；消息格式见文件开头 |
 | `drivers.py` | 测试用驾驶方式（演示、路线跟随、键盘）和 CARLA 物理的驾驶方式 |
 | `rig.py` | 传感器套件：预设、安装位置（CarSim 车身坐标系）、数据量估算 |
 | `collector.py` / `dataset.py` | 数据采集（所有传感器同一帧同步采样）/ 数据浏览、导出 KITTI 和 nuScenes |

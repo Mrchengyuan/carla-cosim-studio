@@ -10,8 +10,6 @@ not a vehicle model.
 
 import math
 
-import numpy as np
-
 
 class MockCarSimEnv:
     WHEELBASE = 2.9      # m

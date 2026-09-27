@@ -9,7 +9,10 @@ All CARLA calls run on one worker thread; the socket thread only queues
 requests and writes replies, so a slow map load never blocks the connection.
 Commands that only touch files (IO_CMDS) have a thread of their own.
 
-    python backend_server.py --port 57100
+    python backend_server.py --port 57100 [--carsim-port 57121]
+
+Remote mode (carsim.remote): the CarSim service on the user's Windows computer
+connects to --carsim-port (127.0.0.1) and runs CarSim there (carsim_remote.py).
 """
 
 import argparse
@@ -17,7 +20,6 @@ import atexit
 import base64
 import faulthandler
 import json
-import math
 import os
 import queue
 import random
@@ -33,10 +35,12 @@ import traceback
 
 import carla
 
+import carsim_remote
 import collector as coll
 import dataset as dsmod
 import rig as rigmod
 import settings as st
+from carsim_local import json_safe as _json_safe
 from session import AlgoOutput, CarlaDriveSession, CoSimSession, check_run_config, check_run_files, control_busy
 from views import ViewStreamer
 
@@ -115,6 +119,13 @@ class Backend:
     def _set_cosim_state(self, s, detail=""):
         self.cosim_state, self.cosim_detail = s, detail
         self.emit({"event": "cosim_state", "state": s, "detail": detail})
+
+    def _carsim_service_changed(self, s):
+        """Remote mode: the CarSim service on the Windows computer connected or went away."""
+        if s["connected"]:
+            self._log("Windows 上的 CarSim 服务已连上（%s）" % s["host"])
+        else:
+            self._log("Windows 上的 CarSim 服务断开了", "warn")
 
     def _alive(self, actor):
         try:
@@ -503,6 +514,8 @@ class Backend:
             "ego_autopilot": self.ego_autopilot and self._alive(self.ego),
             "external_api_server": getattr(self, "server_api", None),
             "recording": self.recording or "",
+            # Remote mode (carsim.remote): the CarSim service on the Windows computer.
+            "carsim_service": carsim_remote.SERVICE.status(),
         }
 
     # ---------------------------------------------------------------- world
@@ -1615,22 +1628,6 @@ class Backend:
                     self._check_carla(now=True)
 
 
-def _json_safe(o):
-    """Replace non-finite floats with None and unknown objects with their str()."""
-    if isinstance(o, float):
-        return o if math.isfinite(o) else None
-    if isinstance(o, dict):
-        return {str(k): _json_safe(v) for k, v in o.items()}
-    if isinstance(o, (list, tuple)):
-        return [_json_safe(v) for v in o]
-    if o is None or isinstance(o, (str, int, bool)):
-        return o
-    try:
-        return _json_safe(float(o))  # numpy scalars
-    except (TypeError, ValueError):
-        return str(o)
-
-
 def _socket_thread_request(req, send):
     """Requests the socket thread answers itself, since the worker may be the
     thread that hangs: "dump_stacks" prints every thread's stack into the log
@@ -1643,7 +1640,7 @@ def _socket_thread_request(req, send):
     return True
 
 
-def serve(port, exit_with_client=False):
+def serve(port, exit_with_client=False, carsim_port=0):
     # A crash inside the carla library (a C++ thread) leaves no Python error:
     # print every thread's stack into the log instead. SIGUSR1 prints them for
     # a backend that hangs (the GUI sends it before restarting one; on Windows
@@ -1666,6 +1663,9 @@ def serve(port, exit_with_client=False):
             time.sleep(1.0)
             last_look = backend.heartbeat_step(last_look)
     threading.Thread(target=heartbeat, daemon=True).start()
+    if carsim_port:  # remote mode: where the CarSim service connects (carsim_remote.py)
+        carsim_remote.SERVICE.on_change = backend._carsim_service_changed
+        carsim_remote.SERVICE.listen(carsim_port)
     srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     if os.name == "nt":  # there SO_REUSEADDR lets a second backend listen on the same port
         srv.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
@@ -1785,5 +1785,7 @@ if __name__ == "__main__":
     ap.add_argument("--port", type=int, default=57100)
     ap.add_argument("--exit-with-client", action="store_true",
                     help="clean up and exit when the client disconnects")
+    ap.add_argument("--carsim-port", type=int, default=57121,
+                    help="where the CarSim service connects in remote mode (127.0.0.1); 0 = nowhere")
     a = ap.parse_args()
-    serve(a.port, a.exit_with_client)
+    serve(a.port, a.exit_with_client, a.carsim_port)

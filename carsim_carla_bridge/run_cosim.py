@@ -67,7 +67,8 @@ def main():
     if d["drive"]["dynamics"] != "cosim":
         ap.error("配置里 drive.dynamics = %r：命令行只支持 CarSim 联合仿真（\"cosim\"），"
                  "CARLA 物理请在界面里运行" % d["drive"]["dynamics"])
-    if not d["carsim"]["mock"] and not d["carsim"]["sim_path"]:
+    # carsim.remote: the .sim is on the CarSim service's computer, which checks it.
+    if not d["carsim"]["mock"] and not d["carsim"].get("remote") and not d["carsim"]["sim_path"]:
         ap.error("--sim (or carsim.sim_path in --config) is required unless --mock is given")
     try:
         # The GUI backend's pre-flight, before CARLA is touched.

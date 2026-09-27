@@ -266,46 +266,46 @@ python run_cosim.py --mock --duration 20                                        
 | 测试 | 内容 | 结果 |
 |---|---|---|
 | `tests/test_coords.py` | 坐标换算与 CARLA 旋转矩阵对照 | 5/5 |
-| `tests/test_backend.py` | 界面后端全部命令（地图、天气、交通、多视图、录制及其状态、联合仿真、暂停 / 单步、出生点被占时启动失败不丢主车） | 32 项，待在 CARLA 上重新运行（删掉原始传感器命令之前 35/35） |
+| `tests/test_backend.py` | 界面后端全部命令（地图、天气、交通、多视图、录制及其状态、联合仿真、暂停 / 单步、出生点被占时启动失败不丢主车） | 32/32，加 `--with-map-switch` 34/34（原版 CARLA 两种包、改版 CARLA） |
 | `tests/test_features.py` | 传感器套件、磁盘保护、各驾驶模式、自定义控制算法、停止后停车、3 帧多传感器采集、深度以米保存并按最大距离截断、安装位置按 CarSim 车身坐标 | 20/20 |
 | `tests/test_dataset.py` | 小规模采集 → 浏览渲染 → KITTI / nuScenes 导出；用语义激光雷达验证坐标约定，用 KITTI 文件本身复算框内点数，装了 nuscenes-devkit 时用官方工具交叉验证；双目右相机导出 image_3 且 P3 含基线，缺帧时 KITTI 编号连续、导出中拒绝删除、路径含 `[ ]` 等特殊字符 | 19/19（装了 nuscenes-devkit 时另加官方工具检查） |
 | `tests/test_robustness.py` | 后端抗异常：控制算法在导入或运行时调用 `sys.exit`、输出 NaN，格式错误的请求，不存在的车型（主车和视图保留），视图建不起来时通知界面，改版客户端连原版服务器时自动用兼容模式，测量全部车型（含 6 轮卡车），控制算法返回值个数不对 / 出错时指出文件和行号，主车被 CARLA 删除（开出地图掉出世界）时运行带原因结束、界面得知，交通车被撞飞时运行不卡死（改版包），交通车停在出生点上时自动挪开，回放不重复生成车辆、结束后不留残留，键盘驾驶配 960×540 实时画面不卡死，联合仿真时车贴着路面，运行中不能改仿真设置，键盘松手后车会停，带碰撞传感器的采集不变慢，同名采集会话不互相覆盖，重新连接时清理主车 / 交通 / 视图，非有限数值安全发送 | 原版包 33/33，改版包 35/35；改版 CARLA 上 34/34 |
 | `tests/test_scene.py` | 交给控制算法和记录的场景：直路前方停一辆车，模拟 CarSim 开过去，核对 CarSim 坐标和单位（自车位置、航向、车速与 CarSim 的 Xo / Yo / Yaw / Vx 一致，前车相对速度 = −车速 km/h）、只有车辆和行人、距离逐帧缩小、车道信息、碰撞停止并说明撞到什么、只记录时继续运行、给算法和写进记录分别按各自的勾选、自车 Yaw 像 CarSim 一样连续累加、离开道路时车道为 None、运行中增删交通流时 CARLA 不多走一帧、运行记录从 t = 0 起按采样周期写（带控制输出 u1 … un）且各文件时刻相同、采集时每帧文件与图像 / 点云帧号一一对应、传感器数据与采集共用一套传感器、3 个参数的旧算法照常、示例算法跟车并停在前车后面 | 31/31 |
 | `tests/test_offline_fixes.py` | 不需要 CARLA：采集文件名检查、容量上限不被排队写入冲破、视图挂载失败时恢复原主车、命令行恢复原仿真设置、旧配置识别、CarSim / CARLA 安装坐标互换、预设按 CarSim 坐标、带碰撞 / 压线传感器的帧完整写出、采样周期按秒、交通管理器端口随 CARLA 端口（原版和改版可同时加交通） | 14/14 |
 | `tests/test_offline_state.py` | 不需要 CARLA：“场景对象”页不能删主车上的实时画面 / 运行用传感器、删交通车或行人（连同 AI 控制器）后交通记录和界面上的数量同步、CARLA 已退出时重新连接不再逐个等超时、清除交通即使 CARLA 不响应也不留旧 id、Windows 空闲时也能发现 CARLA 退出（心跳线程用 netstat，远程主机、netstat 看不到的 CARLA 和重新连接途中都不误判）、换地图失败时主车已删除且后端跟随服务器当前地图、暂停时生成的行人在停止后开始走、空闲推进的同步世界在后端退出时切回异步、新连接 / 换地图后不再显示上次运行的“出错 / 已完成”、测量车型时跳过不存在或生成失败的车型、Ctrl+C 走有时限的清理退出、第二个界面窗口被告知并断开（后端退出途中不拒绝）、数据集命令在单独线程处理不等仿真、采集还在写最后几帧时不能删除该数据集、后端空闲且世界异步时行人照样走 | 25/25 |
-| `tests/test_state_carla.py` | 在 CARLA 上：删主车实时画面相机被拒绝且画面继续、删行人连同控制器且交通计数同步、暂停时生成的行人停止后会走、运行出错后重新连接状态为“已停止”、测量车型时未知车型只提示不影响其他车、换一个不存在的地图后不留主车且后端照常、`control()` 很慢时 `disk_info` 立刻返回、第二个连接被告知并断开、空闲推进的同步世界在后端正常退出后是异步且下次连接不误报、运行中 Ctrl+C（SIGINT）后清理干净（不采集数据） | 待在 CARLA 上运行 |
+| `tests/test_state_carla.py` | 在 CARLA 上：删主车实时画面相机被拒绝且画面继续、删行人连同控制器且交通计数同步、暂停时生成的行人停止后会走、运行出错后重新连接状态为“已停止”、测量车型时未知车型只提示不影响其他车、换一个不存在的地图后不留主车且后端照常、`control()` 很慢时 `disk_info` 立刻返回、第二个连接被告知并断开、空闲推进的同步世界在后端正常退出后是异步且下次连接不误报、运行中 Ctrl+C（SIGINT）后清理干净（不采集数据） | 12/12（原版 CARLA 两种包、改版 CARLA） |
 | `tests/test_offline_extrinsics.py` | 不需要 CARLA：同步模式下测量车型（新生成的车还没有快照）时前轴位置仍按车身坐标、按测量结果生成的预设装在车上、套件相机预览带坐标系、没有传感器的配置不算旧格式（命令行和界面）、文档里的航向 / 俯仰约定和 CarSim 一致 | 7/7 |
-| `tests/test_extrinsics_carla.py` | 在 CARLA 上：世界处于同步模式且没人 tick 时测量车型，前轴位置仍按车身坐标、与生成的主车一致，按它生成的预设装在车上；测完恢复世界设置，不采集数据 | 待在 CARLA 上运行 |
+| `tests/test_extrinsics_carla.py` | 在 CARLA 上：世界处于同步模式且没人 tick 时测量车型，前轴位置仍按车身坐标、与生成的主车一致，按它生成的预设装在车上；测完恢复世界设置，不采集数据 | 9/9（原版 CARLA 两种包、改版 CARLA） |
 | `tests/test_offline_exports.py` | 不需要 CARLA：导出变量顺序 / 单位与 .sim 不一致时的提示（`Zo`、`Vx`、前轮转角、车轮转速的位置上是别的变量，速度或车轮转速单位设错，页上角度设 rad 而 .sim 输出 deg（读出的角度够大时），都能发现；设置一致时不误报，每条只提示一次；“贴合 CARLA 路面”时不查 `Zo`；开始时和运行中的提示都写进输出）、模拟 CarSim 按“CarSim 动力学”页的单位输出、算法总能拿到 `scene["units"]`、三个示例算法在 km/h 和 m/s 下给出相同的输出 | 17/17 |
-| `tests/test_exports_carla.py` | 在 CARLA 上（模拟 CarSim）：默认和 SI 单位下都不误报“导出变量可疑”、算法拿到的 `scene["units"]` 就是页上的单位、示例算法在两套单位下车速相同；.sim 的导出顺序与页上不同（Vx / Vy 对调）时约 1 s 后只提示一次，运行继续 | 待在 CARLA 上运行 |
+| `tests/test_exports_carla.py` | 在 CARLA 上（模拟 CarSim）：默认和 SI 单位下都不误报“导出变量可疑”、算法拿到的 `scene["units"]` 就是页上的单位、示例算法在两套单位下车速相同；.sim 的导出顺序与页上不同（Vx / Vy 对调）时约 1 s 后只提示一次，运行继续 | 7/7（原版 CARLA 两种包、改版 CARLA） |
 | `tests/test_offline_display.py` | 不需要 CARLA：界面“车辆状态”的位姿按 CarSim 全局坐标和单位（与按 CarSim 位姿摆放的车一致，俯仰、侧倾同 CarSim 的符号，只给界面、不进算法和记录）、原版 CARLA 上有 IMU 时开始运行提示陀螺仪为 0（改版或没有 IMU 时不提示）、毫米波雷达和 IMU 的符号与文档一致 | 7/7 |
-| `tests/test_display_carla.py` | 在 CARLA 上（模拟 CarSim，经过界面后端）：遥测里给“车辆状态”的位姿与算法同一时刻拿到的 Xo / Yo / Yaw / Pitch / Roll 一致、向左打方向时 Steer_L1 为正而遥测的 wheel_steer 为负（界面取反显示）、原版 CARLA 上给算法 IMU 时只提示一次陀螺仪为 0（改版不提示） | 待在 CARLA 上运行 |
+| `tests/test_display_carla.py` | 在 CARLA 上（模拟 CarSim，经过界面后端）：遥测里给“车辆状态”的位姿与算法同一时刻拿到的 Xo / Yo / Yaw / Pitch / Roll 一致、向左打方向时 Steer_L1 为正而遥测的 wheel_steer 为负（界面取反显示）、原版 CARLA 上给算法 IMU 时只提示一次陀螺仪为 0（改版不提示） | 5/5（原版 CARLA 两种包、改版 CARLA） |
 | `tests/test_offline_disk.py` | 不需要 CARLA：输出目录在不存在的盘 / 网络共享上时不卡死、采集拒绝开始，CARLA 录制状态（重新连接、恢复、换地图、回放、CARLA 退出时停止或清除），运行记录 8 位有效数字、磁盘不足时停止写且每秒只查一次，旧的原始传感器命令和追尾相机截图已删除、开始时（第 0 步）停止写记录的提示写进输出 | 22/22 |
-| `tests/test_disk_carla.py` | 在 CARLA 上：CARLA 录制状态（world_info）、重新连接 / 崩溃恢复 / 开始回放 / 后端退出时停止录制、CARLA 建不了的录制文件、5 帧运行记录 8 位有效数字、旧的原始传感器命令已删除（临时文件测完删除） | 待在 CARLA 上运行 |
+| `tests/test_disk_carla.py` | 在 CARLA 上：CARLA 录制状态（world_info）、重新连接 / 崩溃恢复 / 开始回放 / 后端退出时停止录制、CARLA 建不了的录制文件、5 帧运行记录 8 位有效数字、旧的原始传感器命令已删除（临时文件测完删除） | 14/14（原版 CARLA 两种包、改版 CARLA） |
 | `tests/test_offline_recording.py` | 不需要 CARLA：运行记录和采集按运行步数从 t = 0 采样、控制输出 u1 … un（第一行为空）、第一次 `control()` 的场景有帧号和传感器数据、开始时已接触只算一次碰撞、`frames/` 里的 IMU 按 CarSim 坐标、`labels/` 含地图里停放的汽车（不含没人骑的自行车 / 摩托车）、`ego/` 速度取 CarSim 的值、第 0 步已结束运行（开始时碰撞且设为停止、采集帧数上限）时不再多走一步 | 12/12 |
 | `tests/test_offline_runs.py` | 不需要 CARLA：每次运行一个记录文件夹（`时间_算法文件名`，同一秒加 `_2`，旧配置的 `cosim_log.csv` 用它的目录和文件名），里面有 CSV、`config.json`、算法文件副本、`run.json`（开始时写、结束时补全）；第二次运行不动第一次的文件、没勾车道时没有旧的 `_lane.csv`；运行指标（车道偏移、航向偏差、不在车道上的时间、每帧的碰撞、前方最小间距（横穿的车也算前方）、行驶距离、\|Ay\|，与“记录”勾选无关）；磁盘不足时停写 CSV 但仍写 `run.json`；`finish(reason)`（类入口用实例的、函数入口用模块的）只调用一次、在记录关闭之前、出错只提示、慢时提示条指向它；CARLA 物理时 CARLA 断开也补全 `run.json`；后端和命令行传入结束原因并输出文件夹和指标 | 26/26 |
-| `tests/test_runs_carla.py` | 在 CARLA 上（模拟 CarSim，1 s）：记录文件夹的内容、`run.json` 的地图 / 出生点 / 结束原因 / 指标与 `log.csv` 一致、`finish(reason)` 收到到时的原因、输出窗口给出文件夹和指标、第二次运行是新文件夹（临时文件测完删除） | 待在 CARLA 上运行 |
-| `tests/test_recording_carla.py` | 同上在 CARLA 上：第一次 `control()` 有整数帧号和相机图像、两次运行采样时刻相同、u 列为上一步的控制输出、5 帧小采集（测完自动删除）的 `frames/`、`frames.csv`、`ego/`、`labels/` | 待在 CARLA 上运行 |
+| `tests/test_runs_carla.py` | 在 CARLA 上（模拟 CarSim，1 s）：记录文件夹的内容、`run.json` 的地图 / 出生点 / 结束原因 / 指标与 `log.csv` 一致、`finish(reason)` 收到到时的原因、输出窗口给出文件夹和指标、第二次运行是新文件夹（临时文件测完删除） | 12/12（原版 CARLA 两种包、改版 CARLA） |
+| `tests/test_recording_carla.py` | 同上在 CARLA 上：第一次 `control()` 有整数帧号和相机图像、两次运行采样时刻相同、u 列为上一步的控制输出、5 帧小采集（测完自动删除）的 `frames/`、`frames.csv`、`ego/`、`labels/` | 14/14（原版 CARLA 两种包、改版 CARLA） |
 | `tests/test_offline_config.py` | 不需要 CARLA：界面保存的配置用命令行运行时，用文件里的驾驶方式和 CARLA 地址（命令行参数仍优先）；CARLA 物理的配置在连接 CARLA 之前就被拒绝（退出码 2）；默认配置里没有不起作用的 `carla.map` / `carla.weather`。另用系统的 C++ 编译器编译运行界面的配置代码 `cosim_gui/tests/config_file_test.cpp`：载入时以默认配置为底、修正手改的类型（保留“CARLA 接口”和参考点）、保存时写入驾驶方式和 CARLA 地址、先写临时文件再替换（没有编译器时跳过） | 4/4（其中 C++ 23/23） |
-| `tests/test_config_carla.py` | 在 CARLA 上：界面保存的配置用 `run_cosim.py --config` 运行，连文件里的 CARLA、用你的控制算法（模拟 CarSim）、结束后世界恢复原样；CARLA 物理的配置被拒绝、不生成车辆 | 待在 CARLA 上运行 |
+| `tests/test_config_carla.py` | 在 CARLA 上：界面保存的配置用 `run_cosim.py --config` 运行，连文件里的 CARLA、用你的控制算法（模拟 CarSim）、结束后世界恢复原样；CARLA 物理的配置被拒绝、不生成车辆 | 4/4（原版 CARLA 两种包、改版 CARLA） |
 | `tests/test_offline_seed.py` | 不需要 CARLA：同一种子生成同样的交通、种子在任何随机抽取之前设定并换算到 CARLA 的范围、运行中不重置红绿灯、从出生点挪开的车也按种子、每次运行在车辆落地之前把红绿灯重置到周期开头 | 6/6 |
-| `tests/test_seed_carla.py` | 在 CARLA 上：同一种子生成同样的车辆和行人（同步模式下之后的运动也相同）、另一种子行人不同、每次运行红绿灯从周期开头开始（与运行前空转多久无关） | 待在 CARLA 上运行 |
+| `tests/test_seed_carla.py` | 在 CARLA 上：同一种子生成同样的车辆和行人（同步模式下之后的运动也相同）、另一种子行人不同、每次运行红绿灯从周期开头开始（与运行前空转多久无关） | 11/11（原版 CARLA 两种包、改版 CARLA） |
 | `tests/test_offline_carsim.py` | 不需要 CARLA：仿真步长对齐到 CarSim t_step（CARLA、控制算法的 dt、帧数都用它，不超过 CARLA 上限）、初始状态 NaN 不进 CARLA、初始位姿不在原点时提示、配置 / .sim / python_carsim_env / 求解器出错时说清原因（界面和命令行都在动 CARLA 之前拒绝）、模型自己停止与到达结束时间分开说明、实时倍率从 t_start 算且不含暂停、开始时已停止的运行不多走一步、按路线行驶从 CarSim 的初始位姿规划路线；求解器部分用 C 编译器编译一个假的 CarSim 求解器（没有编译器时跳过） | 27/27 |
-| `tests/test_carsim_carla.py` | 在 CARLA 上：配置出错在重新生成主车之前被拒绝、仿真步长对齐 t_step（CARLA 也用它）、日志说明模拟 CarSim、暂停不计入实时倍率、假 CarSim 求解器的运行以正确原因结束 | 待在 CARLA 上运行 |
+| `tests/test_carsim_carla.py` | 在 CARLA 上：配置出错在重新生成主车之前被拒绝、仿真步长对齐 t_step（CARLA 也用它）、日志说明模拟 CarSim、暂停不计入实时倍率、假 CarSim 求解器的运行以正确原因结束 | 18/18（原版 CARLA 两种包、改版 CARLA） |
 | `tests/test_offline_algoerr.py` | 不需要 CARLA：场景里没勾选的键、缺少传感器数据 / 导出变量时指向对应页面，子目录里的辅助文件下次运行重新载入、两个文件夹里的同名辅助文件、与已载入模块重名时拒绝、算法目录排在 python_carsim_env 之前，`sys.exit`、辅助文件里出错时给出两处行号，找不到入口函数时列出候选，`control()` 慢时 busy 心跳指向用户代码行，启动失败 / 工作线程出错时告诉界面原因 | 18/18 |
-| `tests/test_algoerr_carla.py` | 经过界面后端在 CARLA 上：启动失败说明原因（界面横幅）、没勾选的场景键指向“场景信息”页、`control()` 里 `sys.exit()`、辅助文件出错给出两处行号、与已载入模块同名的文件（config.py）被拒绝、子目录里的辅助文件重新载入、`control()` 慢时 busy 心跳指向用户代码行而不是 CARLA 卡住 | 待在 CARLA 上运行 |
+| `tests/test_algoerr_carla.py` | 经过界面后端在 CARLA 上：启动失败说明原因（界面横幅）、没勾选的场景键指向“场景信息”页、`control()` 里 `sys.exit()`、辅助文件出错给出两处行号、与已载入模块同名的文件（config.py）被拒绝、子目录里的辅助文件重新载入、`control()` 慢时 busy 心跳指向用户代码行而不是 CARLA 卡住 | 10/10（原版 CARLA 两种包、改版 CARLA） |
 | `tests/test_offline_guimisc.py` | 不需要 CARLA：界面与后端协议版本一致（`hello`）、卡住的后端由套接字线程打印全部线程调用栈（Windows 没有 SIGUSR1）、`world_info` 报告自动驾驶试开、界面的平台代码（连接超时、结束后端进程、退出原因；另用 MinGW 编译 Windows 版） | 7/7（其中 C++ 14/14） |
-| `tests/test_guimisc_carla.py` | 在 CARLA 上经过界面后端：版本一致、运行后自动驾驶试开已取消、运行中打印调用栈不用等工作线程、停止后端时清理主车 | 待在 CARLA 上运行 |
+| `tests/test_guimisc_carla.py` | 在 CARLA 上经过界面后端：版本一致、运行后自动驾驶试开已取消、运行中打印调用栈不用等工作线程、停止后端时清理主车 | 10/10（原版 CARLA 两种包、改版 CARLA） |
 | `tests/test_offline_algoout.py` | 不需要 CARLA：控制算法加载时、`control()` 和 `finish()` 里 print / stderr / logging / 警告的内容交给界面（级别 algo），同时照样写进 backend.log；后端其他线程的输出不算算法的；每秒最多 20 行，多出的给出“（省略 N 行）”，没人取时也不无限增长；没换行的输出在调用结束时显示、超长的行截断；出错时列出算法自己文件里的调用栈（外层在前，含引起它的异常，库和后端的帧不列，递归太深时省略中间），`sys.exit`、加载时出错、语法错误也有，后端自己报的错没有；`control()` 耗时不含准备 scene 的时间，遥测给出本帧 / 最长，运行结束给出次数、平均、最长；测试用驾驶方式没有耗时；运行出错、启动失败时先显示算法的输出和调用栈再报错 | 23/23 |
-| `tests/test_algoout_carla.py` | 经过界面后端在 CARLA 上（模拟 CarSim）：算法加载时和每帧 print 的内容以 algo 级别到界面、一次输出太多时每秒只给 20 行并说明省略了多少、backend.log 里有全部；遥测里的 `ctrl_ms` / `ctrl_ms_max`、运行结束的“算法耗时”；辅助文件里出错时先给出自己文件的调用栈再报错；启动失败时也先给出 print 的内容和出错位置；测试用驾驶方式没有算法耗时 | 待在 CARLA 上运行 |
-| `tests/test_all_vehicles.py` | 41 种车型（含自行车、摩托车、6 轮卡车、巴士）逐一当主车做联合仿真，CARLA 服务器不能崩 | 41/41 |
-| `tests/test_carla_restart.py` | 运行中关掉 CARLA 再重新启动（会真的停止并重启 CARLA；改版加 `--mod`）：后端不能崩、立刻说明原因、能连上新的服务器继续用 | 4/4（两种包、两种 CARLA） |
-| `tests/test_modified_carla.py` | 改版 CARLA：位姿、速度、角速度、IMU（陀螺仪、加速度计）、四轮转向、悬架、物理交接 | 11 项，加速度计一项待在改版 CARLA 上运行（此前 10/10） |
+| `tests/test_algoout_carla.py` | 经过界面后端在 CARLA 上（模拟 CarSim）：算法加载时和每帧 print 的内容以 algo 级别到界面、一次输出太多时每秒只给 20 行并说明省略了多少、backend.log 里有全部；遥测里的 `ctrl_ms` / `ctrl_ms_max`、运行结束的“算法耗时”；辅助文件里出错时先给出自己文件的调用栈再报错；启动失败时也先给出 print 的内容和出错位置；测试用驾驶方式没有算法耗时 | 12/12（原版 CARLA 两种包、改版 CARLA） |
+| `tests/test_all_vehicles.py` | 41 种车型（含自行车、摩托车、6 轮卡车、巴士）逐一当主车做联合仿真，CARLA 服务器不能崩 | 41/41（原版 CARLA 两种包、改版 CARLA） |
+| `tests/test_carla_restart.py` | 运行中关掉 CARLA 再重新启动（会真的停止并重启 CARLA；改版加 `--mod`）：后端不能崩、立刻说明原因、能连上新的服务器继续用 | 4/4（原版和改版 CARLA） |
+| `tests/test_modified_carla.py` | 改版 CARLA：位姿、速度、角速度、IMU（陀螺仪、加速度计）、四轮转向、悬架、物理交接 | 11/11 |
 | `tests/test_offline_docs.py` | 不需要 CARLA：文档和代码一致：相对链接都指向存在的文件；训练代码示例按界面的配置建 `CarlaVehicleSync`（`to_bridge_cfg`）、设同步模式且帧长 = 积分步数 × t_step（示例本身用假的 CARLA 执行一遍）；命令行 `--sim` 示例都写了 `--duration`；底部面板的页签；采样周期 0、激光雷达每圈的激光束数、限速、场景页签、运行记录单位的说明；`test_carla_restart.py` 按 `CARLA_PORT` / `CARLA_MOD_PORT` 连 | 15/15 |
-| `tests/test_docs_carla.py` | 在 CARLA 上：按文档的训练代码示例同步车辆（模拟 CarSim，导出变量顺序和单位与 `config.py` 不同）时，车在 CARLA 里的位置和朝向与 CarSim 一致，不传 `settings` 时就不一致；联合仿真的车经过限速牌时 `speed_limit` 是否更新（只报告）；测完恢复世界设置 | 待在 CARLA 上运行 |
+| `tests/test_docs_carla.py` | 在 CARLA 上：按文档的训练代码示例同步车辆（模拟 CarSim，导出变量顺序和单位与 `config.py` 不同）时，车在 CARLA 里的位置和朝向与 CarSim 一致，不传 `settings` 时就不一致；联合仿真的车经过限速牌时 `speed_limit` 是否更新（只报告）；测完恢复世界设置 | 4/4（原版 CARLA 两种包、改版 CARLA） |
 | `tests/test_offline_tests.py` | 不需要 CARLA：`test_modified_carla.py` 有检查失败时退出码非 0（用假的 carla 模块）、`start_studio.sh` 只复用端口上认得出的 CARLA、停止脚本的匹配经过符号链接也对得上服务器命令行（tmux、pkill 等都是替身，不启动也不停止任何程序） | 6/6 |
-| `tests/test_tests_carla.py` | 对正在运行的 CARLA（用本安装的脚本启动；不连接、不启动也不停止它）：`start_studio.sh` 按进程名认出端口上的 CARLA、停止脚本的匹配对得上服务器的命令行。原版直接运行，改版加 `--mod`（不是 `--port`） | 待在 CARLA 上运行 |
-| 界面 `--tour` | 自动操作全部页面并截图；用**真实鼠标点击**测试运行 / 暂停 / 单步 / 继续 / 停止、视口按钮、多视图布局与视图内容切换、页签和工程树、“场景信息”页“给算法 / 记录”两列勾选、底部“场景”标签与筛选、底部“车辆状态”标签、“输出”页“算法”过滤显示控制算法 print 的内容、数据浏览（打开 / 逐帧 / 播放）与导出 | 新增步骤后待重新运行（上次 47/47，1280×800、1366×768、1600×1000、1920×1400 窗口下都通过） |
+| `tests/test_tests_carla.py` | 对正在运行的 CARLA（用本安装的脚本启动；不连接、不启动也不停止它）：`start_studio.sh` 按进程名认出端口上的 CARLA、停止脚本的匹配对得上服务器的命令行。原版直接运行，改版加 `--mod`（不是 `--port`） | 3/3（原版和改版 CARLA） |
+| 界面 `--tour` | 自动操作全部页面并截图；用**真实鼠标点击**测试运行 / 暂停 / 单步 / 继续 / 停止、视口按钮、多视图布局与视图内容切换、页签和工程树、“场景信息”页“给算法 / 记录”两列勾选、底部“场景”标签与筛选、底部“车辆状态”标签、“输出”页“算法”过滤显示控制算法 print 的内容、数据浏览（打开 / 逐帧 / 播放）与导出 | 76/76（1600×1000；此前 47 步在 1280×800、1366×768、1600×1000、1920×1400 窗口下都通过） |
 
 ## 已知限制
 

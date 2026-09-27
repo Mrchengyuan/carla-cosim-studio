@@ -555,7 +555,7 @@ void App::StartRun() {
     }
     // Only once the run has started: a refused start (e.g. a typo in the
     // controller) keeps the last run's curves, trail and scene to compare with.
-    for (auto* h : {&h_t_, &h_speed_, &h_steer_fl_, &h_steer_fr_, &h_rt_, &h_thr_, &h_brk_}) h->clear();
+    for (auto* h : {&h_t_, &h_speed_, &h_steer_fl_, &h_steer_fr_, &h_rt_, &h_thr_, &h_brk_, &h_u3_}) h->clear();
     for (auto& h : h_susp_) h.clear();
     trail_x_.clear();
     trail_y_.clear();
@@ -856,14 +856,19 @@ void App::OnEvent(const json& ev) {
     }
     PushHist(h_speed_, d.value("speed_kmh", 0.0f), kHist);
     PushHist(h_rt_, d.value("rt_factor", 0.0f), kHist);
+    // The telemetry has CARLA's wheel angles (+ = right): shown + = left like CarSim's Steer_L1 / Steer_R1.
     const json st = d.value("wheel_steer", json::array());
-    PushHist(h_steer_fl_, st.size() > 0 ? static_cast<float>(appui::NumAt(st, 0)) : 0.0f, kHist);
-    PushHist(h_steer_fr_, st.size() > 1 ? static_cast<float>(appui::NumAt(st, 1)) : 0.0f, kHist);
+    PushHist(h_steer_fl_, st.size() > 0 ? -static_cast<float>(appui::NumAt(st, 0)) : 0.0f, kHist);
+    PushHist(h_steer_fr_, st.size() > 1 ? -static_cast<float>(appui::NumAt(st, 1)) : 0.0f, kHist);
     const json su = d.value("wheel_suspension_mm", json::array());
     for (size_t i = 0; i < 4; ++i) PushHist(h_susp_[i], su.size() > i ? static_cast<float>(appui::NumAt(su, i)) : 0.0f, kHist);
     const json a = d.value("action", json::array());
     PushHist(h_thr_, a.size() > 0 ? static_cast<float>(appui::NumAt(a, 0)) : 0.0f, kHist);
     PushHist(h_brk_, a.size() > 1 ? static_cast<float>(appui::NumAt(a, 1)) : 0.0f, kHist);
+    PushHist(h_u3_, a.size() > 2 ? static_cast<float>(appui::NumAt(a, 2)) : 0.0f, kHist);
+    // In .sim import order: only the default 3 are known to be [油门, 制动, 方向盘角].
+    n_imports_ = static_cast<int>(a.size());
+    imports_named_ = d.value("dynamics", std::string()) != "CarSim" || n_imports_ == 3;
   } else if (type == "collect_stats") {
     collect_stats_ = ev;
   } else if (type == "frame") {
@@ -1086,6 +1091,8 @@ void App::BuildTour() {
        [this] { return run_state_ == "running" && last_tel_.value("t", 0.0) > 6.0 && last_scene_.is_object(); }, "10b_running_scene"},
       {kPanelScene, [this] { click_target_ = "scene:moving_only"; },
        [this] { return scene_moving_only_ && last_tel_.value("t", 0.0) > 6.5; }, "10c_scene_moving_only"},
+      {kPanelScene, [this] { click_target_ = "dock:vstate"; },
+       [this] { return Running() && click_target_.empty() && ui::TargetShown("vstate:pose"); }, "10d_vehicle_state"},
       {kPanelDrive, [] {}, [this] { return run_state_ == "running" && last_tel_.value("t", 0.0) > 7.0; }, "11_running_drive"},
       // A run keeps the config it started with: clicks on its settings change nothing, "默认" opens no dialog.
       {kPanelDrive, [this] { click_target_ = "run:duration+"; }, [this] {

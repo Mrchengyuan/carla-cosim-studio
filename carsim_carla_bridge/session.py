@@ -483,6 +483,12 @@ def load_controller(d, ex, n_imports=None, scene=None):
     return control
 
 
+# An IMU for the algorithm or the dataset on stock CARLA (compatibility mode).
+IMU_STOCK_WARNING = ("原版 CARLA（兼容模式）下 IMU 的陀螺仪 gyro 读数恒为 0（车是按 CarSim 的位姿直接摆放的，没有物理角速度），"
+                     "加速度计 accel 是摆放位置的差分、噪声较大；算法需要角速度、加速度时请用 CarSim 的导出变量 "
+                     "AVx / AVy / AVz、Ax / Ay，要真实的 IMU 读数请用改版 CARLA")
+
+
 def start_scene(ses, anchor, ref_local=None, t=0.0, ego_velocity=None):
     """The SceneProvider and the run record of a session, then the run's first
     tick: step 0 (time t) is the first scene the algorithm gets and the first
@@ -650,6 +656,9 @@ class CoSimSession:
         self.state = self.sync.sync(self.obs, self.env.t_current, frame_dt)
         t0 = self.env.t_current
         tel0 = start_scene(self, self.anchor, self.sync.ref_local, t0, self.state.velocity)
+        if not self.sync.external_api and any(c.get("type") == "imu" for c in getattr(self.scene, "sensor_cfgs", ())):
+            # Stock CARLA: the car is placed with physics off, CARLA's IMU has no angular velocity.
+            self.warnings.append(IMU_STOCK_WARNING)
         if drv == "route":  # from where the car is now (CarSim's t0 pose), not from the spawn point
             dest = int(d["drive"].get("destination_index", -1))
             pts = w.get_map().get_spawn_points()

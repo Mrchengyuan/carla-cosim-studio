@@ -63,7 +63,7 @@ git clone https://github.com/Mrchengyuan/python_carsim_env
 | 车身位置、姿态 | ✅ 同步 | ✅ 同步 |
 | 四轮转向角、车轮转动 | ✅ 同步 | ✅ 同步 |
 | 悬架行程（车轮上下跳动） | ❌ 没有 | ✅ 同步 |
-| CARLA 里的 `get_velocity()`、角速度、IMU 传感器 | ❌ 读数为 0 | ✅ CarSim 的真实值 |
+| CARLA 里的 `get_velocity()`、角速度、IMU 陀螺仪 | ❌ 读数为 0（IMU 加速度计是摆放位置的差分，噪声大） | ✅ CarSim 的真实值 |
 | 界面“连接”页显示 | 黄色“原版 CARLA：兼容模式”（或“服务器是原版 CARLA：兼容模式”） | 绿色“改版 CARLA：可用” |
 | 默认端口 | 2000 | 3000 |
 | Ubuntu 桌面图标 | **CARLA CoSim Studio** | **CARLA CoSim Studio（改版）** |
@@ -272,6 +272,8 @@ python run_cosim.py --mock --duration 20                                        
 | `tests/test_extrinsics_carla.py` | 在 CARLA 上：世界处于同步模式且没人 tick 时测量车型，前轴位置仍按车身坐标、与生成的主车一致，按它生成的预设装在车上；测完恢复世界设置，不采集数据 | 待在 CARLA 上运行 |
 | `tests/test_offline_exports.py` | 不需要 CARLA：导出变量顺序 / 单位与 .sim 不一致时的提示（`Zo`、`Vx`、前轮转角、车轮转速的位置上是别的变量，速度或车轮转速单位设错，页上角度设 rad 而 .sim 输出 deg（读出的角度够大时），都能发现；设置一致时不误报，每条只提示一次；“贴合 CARLA 路面”时不查 `Zo`；开始时和运行中的提示都写进输出）、模拟 CarSim 按“CarSim 动力学”页的单位输出、算法总能拿到 `scene["units"]`、三个示例算法在 km/h 和 m/s 下给出相同的输出 | 17/17 |
 | `tests/test_exports_carla.py` | 在 CARLA 上（模拟 CarSim）：默认和 SI 单位下都不误报“导出变量可疑”、算法拿到的 `scene["units"]` 就是页上的单位、示例算法在两套单位下车速相同；.sim 的导出顺序与页上不同（Vx / Vy 对调）时约 1 s 后只提示一次，运行继续 | 待在 CARLA 上运行 |
+| `tests/test_offline_display.py` | 不需要 CARLA：界面“车辆状态”的位姿按 CarSim 全局坐标和单位（与按 CarSim 位姿摆放的车一致，俯仰、侧倾同 CarSim 的符号，只给界面、不进算法和记录）、原版 CARLA 上有 IMU 时开始运行提示陀螺仪为 0（改版或没有 IMU 时不提示）、毫米波雷达和 IMU 的符号与文档一致 | 7/7 |
+| `tests/test_display_carla.py` | 在 CARLA 上（模拟 CarSim，经过界面后端）：遥测里给“车辆状态”的位姿与算法同一时刻拿到的 Xo / Yo / Yaw / Pitch / Roll 一致、向左打方向时 Steer_L1 为正而遥测的 wheel_steer 为负（界面取反显示）、原版 CARLA 上给算法 IMU 时只提示一次陀螺仪为 0（改版不提示） | 待在 CARLA 上运行 |
 | `tests/test_offline_disk.py` | 不需要 CARLA：输出目录在不存在的盘 / 网络共享上时不卡死、采集拒绝开始，CARLA 录制状态（重新连接、恢复、换地图、回放、CARLA 退出时停止或清除），运行记录 8 位有效数字、磁盘不足时停止写且每秒只查一次，旧的原始传感器命令和追尾相机截图已删除、开始时（第 0 步）停止写记录的提示写进输出 | 22/22 |
 | `tests/test_disk_carla.py` | 在 CARLA 上：CARLA 录制状态（world_info）、重新连接 / 崩溃恢复 / 开始回放 / 后端退出时停止录制、CARLA 建不了的录制文件、5 帧运行记录 8 位有效数字、旧的原始传感器命令已删除（临时文件测完删除） | 待在 CARLA 上运行 |
 | `tests/test_offline_recording.py` | 不需要 CARLA：运行记录和采集按运行步数从 t = 0 采样、控制输出 u1 … un（第一行为空）、第一次 `control()` 的场景有帧号和传感器数据、开始时已接触只算一次碰撞、`frames/` 里的 IMU 按 CarSim 坐标、`labels/` 含地图里停放的汽车（不含没人骑的自行车 / 摩托车）、`ego/` 速度取 CarSim 的值、第 0 步已结束运行（开始时碰撞且设为停止、采集帧数上限）时不再多走一步 | 12/12 |
@@ -289,7 +291,7 @@ python run_cosim.py --mock --duration 20                                        
 | `tests/test_modified_carla.py` | 改版 CARLA：位姿、速度、角速度、IMU（陀螺仪、加速度计）、四轮转向、悬架、物理交接 | 11 项，加速度计一项待在改版 CARLA 上运行（此前 10/10） |
 | `tests/test_offline_tests.py` | 不需要 CARLA：`test_modified_carla.py` 有检查失败时退出码非 0（用假的 carla 模块）、`start_studio.sh` 只复用端口上认得出的 CARLA、停止脚本的匹配经过符号链接也对得上服务器命令行（tmux、pkill 等都是替身，不启动也不停止任何程序） | 6/6 |
 | `tests/test_tests_carla.py` | 对正在运行的 CARLA（用本安装的脚本启动；不连接、不启动也不停止它）：`start_studio.sh` 按进程名认出端口上的 CARLA、停止脚本的匹配对得上服务器的命令行。原版直接运行，改版加 `--mod`（不是 `--port`） | 待在 CARLA 上运行 |
-| 界面 `--tour` | 自动操作全部页面并截图；用**真实鼠标点击**测试运行 / 暂停 / 单步 / 继续 / 停止、视口按钮、多视图布局与视图内容切换、页签和工程树、“场景信息”页“给算法 / 记录”两列勾选、底部“场景”标签与筛选、数据浏览（打开 / 逐帧 / 播放）与导出 | 47/47（1280×800、1366×768、1600×1000、1920×1400 窗口下都通过） |
+| 界面 `--tour` | 自动操作全部页面并截图；用**真实鼠标点击**测试运行 / 暂停 / 单步 / 继续 / 停止、视口按钮、多视图布局与视图内容切换、页签和工程树、“场景信息”页“给算法 / 记录”两列勾选、底部“场景”标签与筛选、底部“车辆状态”标签、数据浏览（打开 / 逐帧 / 播放）与导出 | 47/47（1280×800、1366×768、1600×1000、1920×1400 窗口下都通过）；新加的“车辆状态”一步待重新运行 |
 
 ## 已知限制
 

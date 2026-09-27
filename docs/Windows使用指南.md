@@ -147,7 +147,7 @@ cmake --build build --config Release
 
 ## 7. 启动
 
-CARLA 要和后端（界面启动的 Python）在同一台电脑上运行：一键启动只启动本机的 CARLA，“连接”页的主机地址保持 `localhost`。
+本机使用时，CARLA 要和后端（界面启动的 Python）在同一台电脑上运行：一键启动只启动本机的 CARLA，“连接”页的主机地址保持 `localhost`。电脑显卡带不动 CARLA 时，可以让 CARLA、后端和控制算法都在云服务器上运行，这台电脑只运行 CarSim 和界面，见 [远程使用指南](远程使用指南.md)。
 
 ### 7.1 方式一：桌面一键启动（推荐）
 

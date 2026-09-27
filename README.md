@@ -46,9 +46,17 @@ git clone https://github.com/Mrchengyuan/python_carsim_env
 |---|---|
 | **[Ubuntu 使用指南](docs/Ubuntu使用指南.md)** | 从零安装、原版 / 改版 CARLA、Python 环境、编译界面、桌面一键启动、命令行、测试、常见问题 |
 | **[Windows 使用指南](docs/Windows使用指南.md)** | 从零安装、CARLA、Python、界面、一键启动、**接入 CarSim**、改版 CARLA、常见问题 |
+| **[远程使用指南](docs/远程使用指南.md)** | 笔记本只有集成显卡时：CARLA、后端和控制算法在云服务器上，笔记本只运行 CarSim 和界面，每次双击一个启动脚本 |
 | **[界面操作手册](docs/界面操作手册.md)** | 每个页面、每个按钮的说明，数据采集输出格式，常用操作流程 |
 | [CarSim 导出变量清单](carsim_carla_bridge/docs/CarSim导出变量清单.md) | CarSim 里要导出哪些变量、单位、坐标约定 |
 | [Windows 编译指南](carsim_carla_bridge/docs/Windows编译指南.md) | 在 Windows 上编译改版 CARLA |
+
+## 远程使用：笔记本 + 云服务器
+
+笔记本跑不动 CARLA 时，**CARLA、后端和你的控制算法在云服务器（GPU）上运行，笔记本只运行 CarSim 求解器和界面**，两边只靠笔记本发起的一条 SSH 连接（笔记本不需要公网 IP）。用户解压一次 Windows 启动包，之后每次双击 `启动远程仿真.bat`，界面打开时已经连着云服务器。控制算法不用改，算法看到的仍是 CarSim 坐标和单位；联合仿真仍然逐帧同步，网络只影响速度，不影响结果。
+
+- 用户：[远程使用指南](docs/远程使用指南.md)（什么在哪里运行、一次性设置、这几个窗口、常见问题、结果在服务器的哪里）。
+- 服务器：`scripts/remote_session.sh`（SSH 连接上来时运行：按需启动改版 CARLA，运行并看护后端）、`scripts/install_remote_key.sh`（只能建立这条连接的受限钥匙）、`scripts/build_remote_package.sh`（打 Windows 启动包），见指南的“给服务器管理员”一节。
 
 ## 原版 CARLA 与改版 CARLA
 
@@ -168,7 +176,7 @@ git clone https://github.com/Mrchengyuan/python_carsim_env
 | `cosim_gui/` | 图形界面源码，依赖（ImGui、ImPlot、GLFW、json、Font Awesome）已放在 `third_party/`，编译不需要联网 |
 | `carsim_carla_bridge/` | Python 后端、CarSim 桥接、驾驶模式、数据采集、测试和文档 |
 | `carla_patches/` | CARLA 0.9.16 补丁（改版 CARLA 就是官方源码打上它们编译出来的）：外部动力学接口（含 CARLA 自身错误的修复）；Python 包等待服务器时释放全局锁；Linux 编译用的 libpng 地址修复 |
-| `scripts/` | Ubuntu：`build_ue4.sh`、`build_carla.sh`、`carla_server.sh`、`carla_mod_server.sh`、`start_studio.sh`、`stop_carla.sh`、`install_desktop_icons.sh`，以及它们共用的 `env.sh`（路径、端口）和 `carla_stop_lib.sh`（关闭 CARLA）；`scripts/windows/`：`start_studio.bat`、`stop_carla.bat`、`install_shortcuts.bat`、`env.bat` |
+| `scripts/` | Ubuntu：`build_ue4.sh`、`build_carla.sh`、`carla_server.sh`、`carla_mod_server.sh`、`start_studio.sh`、`stop_carla.sh`、`install_desktop_icons.sh`，以及它们共用的 `env.sh`（路径、端口）和 `carla_stop_lib.sh`（关闭 CARLA）；远程使用的服务器端：`remote_session.sh`、`install_remote_key.sh`、`build_remote_package.sh`；`scripts/windows/`：`start_studio.bat`、`stop_carla.bat`、`install_shortcuts.bat`、`env.bat`，远程启动包里的 `启动远程仿真.bat` |
 | `docs/` | 使用文档（Ubuntu / Windows 使用指南、界面操作手册、场景与数据接口说明）；`docs/images/` 是截图 |
 
 ## 快速开始
@@ -304,6 +312,7 @@ python run_cosim.py --mock --duration 20                                        
 | `tests/test_offline_docs.py` | 不需要 CARLA：文档和代码一致：相对链接都指向存在的文件；训练代码示例按界面的配置建 `CarlaVehicleSync`（`to_bridge_cfg`）、设同步模式且帧长 = 积分步数 × t_step（示例本身用假的 CARLA 执行一遍）；命令行 `--sim` 示例都写了 `--duration`；底部面板的页签；采样周期 0、激光雷达每圈的激光束数、限速、场景页签、运行记录单位的说明；`test_carla_restart.py` 按 `CARLA_PORT` / `CARLA_MOD_PORT` 连 | 15/15 |
 | `tests/test_docs_carla.py` | 在 CARLA 上：按文档的训练代码示例同步车辆（模拟 CarSim，导出变量顺序和单位与 `config.py` 不同）时，车在 CARLA 里的位置和朝向与 CarSim 一致，不传 `settings` 时就不一致；联合仿真的车经过限速牌时 `speed_limit` 是否更新（只报告）；测完恢复世界设置 | 4/4（原版 CARLA 两种包、改版 CARLA） |
 | `tests/test_offline_tests.py` | 不需要 CARLA：`test_modified_carla.py` 有检查失败时退出码非 0（用假的 carla 模块）、`start_studio.sh` 只复用端口上认得出的 CARLA、停止脚本的匹配经过符号链接也对得上服务器命令行（tmux、pkill 等都是替身，不启动也不停止任何程序） | 6/6 |
+| `tests/test_offline_ops.py` | 不需要 CARLA：远程使用的服务器脚本 `remote_session.sh`（tmux、ss、后端都是替身）：进度行、CARLA 已在运行时不再启动、端口空闲时照 `start_studio.sh mod` 在 tmux 里启动改版 CARLA、端口被别的程序占用时报错、后端的 `--port 57120 --carsim-port 57121`、退出码 3（界面“重启后端”）和崩溃后重新启动（退避）、SSH 连接结束（stdin 关闭或 SIGHUP）时停止后端而 CARLA 留着、新连接替换旧连接；`install_remote_key.sh`（临时的钥匙和 authorized_keys）：受限的那一行、再运行不重复、不动别的行、文件权限；`build_remote_package.sh`：启动包的文件、界面设置、CRLF、UTF-8 文件名、不写进仓库；`.bat` 的静态检查（括号配对、`( )` 里的路径加引号、标签、ssh 参数与服务器端口一致、只按进程号关窗口） | 14/14 |
 | `tests/test_tests_carla.py` | 对正在运行的 CARLA（用本安装的脚本启动；不连接、不启动也不停止它）：`start_studio.sh` 按进程名认出端口上的 CARLA、停止脚本的匹配对得上服务器的命令行。原版直接运行，改版加 `--mod`（不是 `--port`） | 3/3（原版和改版 CARLA） |
 | 界面 `--tour` | 自动操作全部页面并截图；用**真实鼠标点击**测试运行 / 暂停 / 单步 / 继续 / 停止、视口按钮、多视图布局与视图内容切换、页签和工程树、“场景信息”页“给算法 / 记录”两列勾选、底部“场景”标签与筛选、底部“车辆状态”标签、“输出”页“算法”过滤显示控制算法 print 的内容、数据浏览（打开 / 逐帧 / 播放）与导出 | 76/76（1600×1000；此前 47 步在 1280×800、1366×768、1600×1000、1920×1400 窗口下都通过） |
 

@@ -281,6 +281,7 @@ const json* App::SelectedVehicleSpec() const {
 void App::StartBackend() {
   if (plat::IsAlive(backend_proc_)) return;
   if (backend_proc_.valid()) plat::Kill(backend_proc_, true);  // gone already: just release it
+  backend_rejected_ = false;
   if (!backend_problem_.empty()) {
     // Started by hand after a crash or hang: clear what the old one left in CARLA.
     backend_problem_.clear();
@@ -398,6 +399,7 @@ void App::RefreshWorld() {
 }
 
 void App::RefreshAfterMapChange() {
+  traffic_count_ = json::object();  // the backend removed its traffic (connect, map change)
   RefreshWorld();
   RefreshSpawnPoints();
   RefreshActors();
@@ -797,6 +799,7 @@ void App::OnEvent(const json& ev) {
   const std::string type = ev.value("event", std::string());
   if (type == "log") {
     Log(ev.value("msg", std::string()), ev.value("level", std::string("info")));
+    if (ev.value("rejected", false)) backend_rejected_ = true;  // it closes the connection now
   } else if (type == "cosim_state") {
     run_state_ = ev.value("state", std::string());
     // Say clearly why a run ended on its own; a parked car otherwise looks stuck.
@@ -938,6 +941,8 @@ void App::OnEvent(const json& ev) {
     // Nothing the backend owned is valid any more: never stay "running" or busy.
     carla_connected_ = false;
     if (Running()) run_state_ = "error";
+    world_ = json::object();
+    traffic_count_ = json::object();
     busy_.clear();
     rig_converting_ = false;
     view_on_ = false;

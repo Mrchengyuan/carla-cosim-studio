@@ -167,6 +167,9 @@ bool Spawn(const std::vector<std::string>& argv, const std::string& cwd,
     return false;
   }
   if (pid == 0) {
+    // Its own session: a Ctrl+C in the terminal that started the GUI reaches the
+    // GUI only, which then shuts the backend down in order.
+    setsid();
     if (!cwd.empty() && chdir(cwd.c_str()) != 0) _exit(127);
     int fd = open(log_path.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0644);
     if (fd >= 0) {

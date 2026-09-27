@@ -267,7 +267,7 @@ class SessionTests(unittest.TestCase):
         bb = SimpleNamespace(location=SimpleNamespace(z=0.7), extent=SimpleNamespace(z=0.7))
         vehicle = SimpleNamespace(bounding_box=bb, get_transform=lambda: carla.Transform())
         patches = [mock.patch.object(session, "CarlaVehicleSync", FakeSync),
-                   mock.patch.object(session, "start_scene", lambda *a, **k: None),
+                   mock.patch.object(session, "start_scene", lambda *a, **k: {"collisions": []}),
                    mock.patch.object(session, "scene_step", lambda *a, **k: {"scene": {}, "collisions": []})]
         if env is not None:
             patches.append(mock.patch.object(session, "make_env", lambda d: env))
@@ -333,6 +333,9 @@ class SessionTests(unittest.TestCase):
             def tick(self):
                 return 1
 
+            def reset_all_traffic_lights(self):
+                pass
+
         class StubSession:
             scene = None
 
@@ -341,7 +344,7 @@ class SessionTests(unittest.TestCase):
 
             def start(self):
                 return {"external_api": False, "server_api": None, "reference_point": [0.0, 0.0, 0.0],
-                        "t_step": 0.001, "inner_steps": 20, "clock_warning": False,
+                        "t_step": 0.001, "inner_steps": 20, "frame_dt": 0.02, "t_stop": 0.0, "mock": True,
                         "warnings": ["导出变量可疑：开始时"]}
 
         b = Backend()

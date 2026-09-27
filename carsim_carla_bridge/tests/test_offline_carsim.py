@@ -156,6 +156,7 @@ class FakeSync:
 
     def __init__(self, world, vehicle, anchor, use_external_api=None, settings=None):
         self.ex = CarSimExports(settings.EXPORT_NAMES, settings.UNITS)
+        self.wheel_radius_m = [0.35] * 4
         self.ref_local = [0.0, 0.0, 0.0]
         self.external_api, self.server_api = True, True
 
@@ -169,7 +170,8 @@ class FakeSync:
 
 
 VEHICLE = SimpleNamespace(get_transform=lambda: SimpleNamespace(
-    location=SimpleNamespace(x=0.0, y=0.0, z=0.0), rotation=SimpleNamespace(pitch=0.0, yaw=0.0, roll=0.0)))
+    location=SimpleNamespace(x=0.0, y=0.0, z=0.0), rotation=SimpleNamespace(pitch=0.0, yaw=0.0, roll=0.0)),
+    bounding_box=SimpleNamespace(location=SimpleNamespace(z=0.7), extent=SimpleNamespace(z=0.7)))
 
 
 class SessionCase(unittest.TestCase):

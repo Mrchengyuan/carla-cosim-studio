@@ -21,7 +21,7 @@ from test_backend import Conn, check  # noqa: E402
 import carla  # noqa: E402
 from bridge import front_axle_local  # noqa: E402
 
-PORT = 57199
+PORT = 57197
 IDS = ["vehicle.tesla.model3", "vehicle.audi.tt", "vehicle.lincoln.mkz_2020"]
 
 

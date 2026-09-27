@@ -556,7 +556,11 @@ void App::StartRun() {
     last_tel_ = json::object();
     last_scene_ = json();
     scene_hover_.clear();
-    collect_stats_ = json::object();
+    // Step 0's collect_stats arrives before this reply: keep this run's, drop the last run's.
+    const std::string root = r.is_object() && r.contains("collect") && r["collect"].is_object()
+                                 ? r["collect"].value("root", std::string())
+                                 : std::string();
+    if (root.empty() || collect_stats_.value("root", std::string()) != root) collect_stats_ = json::object();
     run_info_ = r.is_object() ? r : json::object();
     run_info_["units"] = units;
     RefreshWorld();

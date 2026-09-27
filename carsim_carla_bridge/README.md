@@ -19,7 +19,7 @@ CarSim 负责全部车辆动力学计算，CARLA 负责场景、渲染和传感�
 
 | 文件 | 作用 |
 |---|---|
-| `run_cosim.py` | 主程序：同步模式主循环、日志、可选录像 |
+| `run_cosim.py` | 主程序：同步模式主循环、运行记录（命令行只跑 CarSim 联合仿真） |
 | `bridge.py` | `CarlaVehicleSync`：把 CarSim 导出向量转换成 CARLA 状态并下发 |
 | `coords.py` | ISO 8855 ↔ UE 坐标 / 欧拉角 / 角速度换算 |
 | `config.py` | **需要按你的 .sim 修改**：导出变量顺序、单位、参考点 |

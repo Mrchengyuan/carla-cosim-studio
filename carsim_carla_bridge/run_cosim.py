@@ -96,6 +96,9 @@ def main():
         print("CarSim reference point in vehicle frame [m]:", info["reference_point"])
         if abs(info.get("frame_dt", req_dt) - req_dt) > 1e-9:
             print("frame_dt %g s -> %g s (a whole number of CarSim t_step)" % (req_dt, info["frame_dt"]))
+            period, every = float(d["collect"].get("sample_period") or 0.0), st.sample_every(d)
+            if period > 0 and abs(every * info["frame_dt"] - period) > 1e-9:
+                print("sample period %g s -> %g s (every %d frames)" % (period, every * info["frame_dt"], every))
         print("CarSim t_step=%g s, %d solver steps per CARLA frame" % (info["t_step"], info["inner_steps"]))
         for w in info.get("warnings", []):
             print("warning:", w)

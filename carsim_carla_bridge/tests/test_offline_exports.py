@@ -338,6 +338,7 @@ class SessionTests(unittest.TestCase):
 
         class StubSession:
             scene = None
+            done = False
 
             def __init__(self, *args):
                 pass

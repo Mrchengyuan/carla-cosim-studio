@@ -22,7 +22,7 @@ sys.path.insert(0, os.path.join(HERE, ".."))
 from test_backend import Conn, check  # noqa: E402
 from test_robustness import expect_error, run_until  # noqa: E402
 
-PORT = 57187
+PORT = 57188
 
 
 def main():

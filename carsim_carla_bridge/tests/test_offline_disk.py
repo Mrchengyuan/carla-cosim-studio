@@ -191,6 +191,31 @@ class RunRecordTests(unittest.TestCase):
         self.assertEqual(len(tel), 1)
         self.assertNotIn("warning", tel[0])
 
+    def test_start_warning_is_logged_not_returned(self):
+        class Session:
+            scene, done = None, False
+
+            def __init__(self, *a):
+                pass
+
+            def start(self):  # start_scene's step 0 found the disk (nearly) full
+                return {"external_api": False, "server_api": None, "reference_point": [0, 0, 0], "t_step": 0.001,
+                        "inner_steps": 20, "frame_dt": 0.02, "t_stop": 0.0, "mock": True, "warnings": [],
+                        "t": 0.0, "collisions": [], "warning": "磁盘只剩 1.0 GB，运行记录停止写入"}
+
+        settings_obj = SimpleNamespace(synchronous_mode=False, fixed_delta_seconds=None)
+        backend = Backend()
+        events = []
+        backend.emit = events.append
+        backend.world = SimpleNamespace(get_settings=lambda: settings_obj, apply_settings=lambda s: None,
+                                        tick=lambda: 0, reset_all_traffic_lights=lambda: None)
+        backend.cmd_spawn_ego = lambda *a: setattr(backend, "ego", SimpleNamespace(
+            type_id="vehicle.test", attributes={}, is_alive=True))
+        with mock.patch("backend_server.CoSimSession", Session), mock.patch("backend_server.rigmod.spec_of", lambda v: {}):
+            info = backend.cmd_cosim_start({"carsim": {"mock": True}, "run": {"driver": "demo"}})
+        self.assertIn({"event": "log", "level": "warn", "msg": "磁盘只剩 1.0 GB，运行记录停止写入"}, events)
+        self.assertNotIn("warning", info)
+
 
 class FakeActors(list):
     def filter(self, pattern):

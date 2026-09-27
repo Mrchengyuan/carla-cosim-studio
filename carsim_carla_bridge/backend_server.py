@@ -1062,7 +1062,12 @@ class Backend:
         except BaseException as e:  # SystemExit from a user controller included
             self._stop_cosim_if_running("error", str(e) or type(e).__name__)  # the banner says why
             raise
-        self._set_cosim_state("running")
+        col = self.collector
+        # Step 0 can already end the run (a collision with "stop", collect.max_frames = 1):
+        # finish below instead of running one more step.
+        ended = self.session.done or (col is not None and col.done)
+        if not ended:
+            self._set_cosim_state("running")
         if info.get("server_api") is not None:
             self.server_api = info["server_api"]
         if cosim:
@@ -1071,8 +1076,11 @@ class Backend:
                 "改版 CARLA 接口" if info["external_api"] else "原版兼容模式",
                 info["reference_point"], info["inner_steps"], d["run"]["driver"]))
             if abs(info["frame_dt"] - req_dt) > 1e-9:
-                self._log("仿真步长已对齐到 CarSim t_step（%g s）的整数倍：%g s → %g s" % (
-                    info["t_step"], req_dt, info["frame_dt"]), "warn")
+                period, every = float(d["collect"].get("sample_period") or 0.0), col_cfg["capture_every"]
+                self._log("仿真步长已对齐到 CarSim t_step（%g s）的整数倍：%g s → %g s%s" % (
+                    info["t_step"], req_dt, info["frame_dt"],
+                    "；采样周期 %g s → %g s（每 %d 帧）" % (period, every * info["frame_dt"], every)
+                    if period > 0 and abs(every * info["frame_dt"] - period) > 1e-9 else ""), "warn")
             if not info["mock"] and info["t_stop"] > 0:
                 self._log("这次运行最晚在 CarSim 的结束时间 t = %.1f s 停止（.sim 里设定）" % info["t_stop"])
             for msg in info.get("warnings", []):
@@ -1084,6 +1092,12 @@ class Backend:
         warning = info.pop("warning", "")
         if warning:  # the run record stopped at step 0 (disk full): for the log, once
             self._log(warning, "warn")
+        if ended:
+            if col is not None and col.done:
+                self._log("数据采集结束：%s，共 %d 帧，%.1f MB" % (col.stop_reason, col.frames, col.bytes / 1e6))
+            reason = self.session.end_reason or "数据采集%s" % col.stop_reason
+            self._log("运行结束（%s）：%.1f s" % (reason, info["t"]))
+            self._stop_cosim_if_running("finished", reason)
         return info
 
     def _restore_ego(self, old, color, view_specs):

@@ -292,6 +292,8 @@ class BackendWiringTests(unittest.TestCase):
                 self.ticks.append((frame, step))
 
         class FakeSession:
+            done = False
+
             def __init__(self, world, ego, anchor, d):
                 self.scene = SimpleNamespace(frame=None, sensor_cfgs=[dict(CAM)], ref_local=[1.4, 0.0, 0.0])
                 self.last_action = None
@@ -341,6 +343,95 @@ class BackendWiringTests(unittest.TestCase):
         self.assertEqual(col.ticks, [(4321, 0)])  # step 0 sampled right after the start
         hits = [e["msg"] for e in events if e.get("event") == "log" and "碰撞" in e["msg"]]
         self.assertEqual(hits, ["碰撞：撞到 map.Car（id 5），t = 0.00 s"])
+
+
+class StartEndsRunTests(unittest.TestCase):
+    """Step 0 inside cosim_start can already end the run: no step past it."""
+
+    def start(self, end_reason="", frames_limit_hit=False):
+        steps = []
+
+        class Collector:
+            def __init__(self, *a, **k):
+                self.sensor_cfgs, self.done, self.frames, self.bytes, self.stop_reason = [], False, 0, 0, ""
+
+            def estimate(self):
+                return {"total_gb": 0.001, "mb_per_s": 1.0}
+
+            def start(self):
+                return {"root": "x", "estimate": self.estimate()}
+
+            def on_tick(self, frame, step=None):
+                self.frames += 1
+                if frames_limit_hit:  # collect.max_frames = 1
+                    self.done, self.stop_reason = True, "达到帧数上限"
+
+            def stop(self):
+                pass
+
+        class Session:
+            def __init__(self, world, ego, anchor, d):
+                self.scene = SimpleNamespace(frame=7, sensor_cfgs=[], ref_local=[0.0, 0.0, 0.0])
+                self.end_reason, self.done, self.last_action = "", False, None
+
+            def start(self):
+                self.end_reason = end_reason
+                self.done = bool(end_reason)
+                return {"external_api": False, "server_api": None, "reference_point": [0, 0, 0], "t_step": 0.001,
+                        "inner_steps": 20, "frame_dt": 0.02, "t_stop": 0.0, "mock": True, "warnings": [], "t": 0.0,
+                        "collisions": []}
+
+            def step(self):
+                steps.append(1)
+
+            def stop(self, release_vehicle=True):
+                pass
+
+            def ego_motion(self):
+                return {}
+
+            def exports(self):
+                return {}
+
+            def export_names(self):
+                return []
+
+            def n_actions(self):
+                return 3
+
+        settings_obj = SimpleNamespace(synchronous_mode=False, fixed_delta_seconds=None)
+        world = SimpleNamespace(get_settings=lambda: settings_obj, apply_settings=lambda s: None, tick=lambda: 0,
+                                reset_all_traffic_lights=lambda: None)
+        backend = Backend()
+        events = []
+        backend.emit = events.append
+        backend.world = world
+        backend.cmd_spawn_ego = lambda *a: setattr(backend, "ego", SimpleNamespace(
+            type_id="vehicle.test", attributes={}, is_alive=True))
+        cfg = {"collect": {"enabled": True, "max_frames": 1}, "rig": {"sensors": [dict(CAM)]},
+               "carsim": {"mock": True}, "run": {"driver": "demo"}}
+        with mock.patch.object(backend_server.coll, "DataCollector", Collector), \
+                mock.patch.object(backend_server.coll, "disk_info", lambda p: {"path": p, "free_gb": 1e3, "total_gb": 1e3}), \
+                mock.patch.object(backend_server.rigmod, "spec_of", lambda v: {}), \
+                mock.patch.object(backend_server, "CoSimSession", Session):
+            backend.cmd_cosim_start(cfg)
+        states = [(e["state"], e["detail"]) for e in events if e.get("event") == "cosim_state"]
+        return backend, states, steps
+
+    def test_collision_stop_at_t0(self):
+        backend, states, steps = self.start(end_reason="碰撞：撞到 map.Car（id 99）")
+        self.assertEqual(states, [("finished", "碰撞：撞到 map.Car（id 99）")])  # never "running"
+        self.assertEqual((steps, backend.session, backend.collector), ([], None, None))
+
+    def test_collection_limit_reached_at_t0(self):
+        backend, states, steps = self.start(frames_limit_hit=True)
+        self.assertEqual(states, [("finished", "数据采集达到帧数上限")])
+        self.assertEqual((steps, backend.session), ([], None))
+
+    def test_a_normal_start_runs(self):
+        backend, states, steps = self.start()
+        self.assertEqual(states, [("running", "")])
+        self.assertIsNotNone(backend.session)
 
 
 if __name__ == "__main__":

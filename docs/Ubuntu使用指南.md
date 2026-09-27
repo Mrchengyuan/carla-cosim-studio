@@ -332,7 +332,7 @@ world.tick()
 
 ## 10. 测试
 
-CARLA 启动后，在 `carsim_carla_bridge` 目录执行（测改版 CARLA 时每条命令后面加 `--port 3000`）：
+CARLA 启动后，在 `carsim_carla_bridge` 目录执行（测改版 CARLA 时每条命令后面加 `--port 3000`，`test_tests_carla.py` 和 `test_carla_restart.py` 除外：它们加 `--mod`）：
 ```bash
 python tests/test_coords.py                          # 坐标换算（不需要 CARLA）
 python tests/test_backend.py                         # 界面后端全部命令，约 2 分钟
@@ -345,6 +345,20 @@ python tests/test_offline_recording.py               # 不需要 CARLA：从 t =
 python tests/test_recording_carla.py                 # 运行记录和 5 帧采集的采样时刻与内容（测完自动删除）
 python tests/test_offline_config.py                  # 不需要 CARLA：界面保存的配置在命令行上照样运行；界面的配置代码（需要 C++ 编译器）
 python tests/test_config_carla.py                    # 界面保存的配置用 run_cosim.py --config 运行（文件里的 CARLA、你的控制算法）
+python tests/test_offline_extrinsics.py              # 不需要 CARLA：前轴位置、按测量结果生成的预设、旧格式识别
+python tests/test_extrinsics_carla.py                # 同步模式下测量车型，预设装在车上
+python tests/test_offline_disk.py                    # 不需要 CARLA：输出盘不存在 / 空间不足、CARLA 录制状态、运行记录
+python tests/test_disk_carla.py                      # CARLA 录制在重新连接 / 恢复 / 回放 / 退出时停止、运行记录（测完自动删除）
+python tests/test_offline_seed.py                    # 不需要 CARLA：交通随机种子、每次运行红绿灯从头开始
+python tests/test_seed_carla.py                      # 同一种子同样的交通、每次运行红绿灯从头开始
+python tests/test_offline_carsim.py                  # 不需要 CARLA：CarSim 出错时的提示、步长对齐 t_step、结束原因、开始时的检查
+python tests/test_carsim_carla.py                    # 同上在 CARLA 上（模拟 CarSim 和假的 CarSim 求解器）
+python tests/test_offline_exports.py                 # 不需要 CARLA：导出变量顺序 / 单位不一致时的提示、单位、示例算法
+python tests/test_exports_carla.py                   # 同上在 CARLA 上（模拟 CarSim）
+python tests/test_offline_algoerr.py                 # 不需要 CARLA：控制算法出错时的提示、辅助文件重新载入
+python tests/test_algoerr_carla.py                   # 同上经过界面后端
+python tests/test_offline_tests.py                   # 不需要 CARLA：启动 / 停止脚本、test_modified_carla.py 失败时退出码非 0
+python tests/test_tests_carla.py                     # 启动 / 停止脚本（改版加 --mod，不是 --port）
 python tests/test_all_vehicles.py                    # 每种车型都当一次主车联合仿真，服务器不能崩
 python tests/test_carla_restart.py                   # 运行中关掉并重启 CARLA（会真的重启它；改版加 --mod）
 python tests/test_modified_carla.py --port 3000      # 改版 CARLA 接口（需要改版 CARLA 和 venv_build）

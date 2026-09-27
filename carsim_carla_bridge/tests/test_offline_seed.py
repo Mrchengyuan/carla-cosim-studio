@@ -228,6 +228,7 @@ class RunStartTests(unittest.TestCase):
         class Session:
             scene = None
             exports = None
+            done = False
 
             def __init__(self, *args):
                 pass

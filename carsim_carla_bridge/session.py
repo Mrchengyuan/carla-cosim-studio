@@ -619,13 +619,7 @@ class CoSimSession:
         self._speed = 0.0
         if drv in ("route", "manual"):
             dr = d["drive"]
-            if drv == "route":
-                dest = int(dr.get("destination_index", -1))
-                pts = w.get_map().get_spawn_points()
-                self.command_driver = RouteFollower(
-                    w, self.vehicle, dr["target_speed_kmh"],
-                    destination=pts[dest].location if 0 <= dest < len(pts) else None)
-            else:
+            if drv == "manual":  # the route is planned below, from CarSim's t0 pose
                 self.command_driver = ManualDriver()
             sw_max = float(d["sync"]["steering_wheel_max_deg"])
             scale = float(dr.get("brake_scale", 1.0))
@@ -656,6 +650,12 @@ class CoSimSession:
         self.state = self.sync.sync(self.obs, self.env.t_current, frame_dt)
         t0 = self.env.t_current
         tel0 = start_scene(self, self.anchor, self.sync.ref_local, t0, self.state.velocity)
+        if drv == "route":  # from where the car is now (CarSim's t0 pose), not from the spawn point
+            dest = int(d["drive"].get("destination_index", -1))
+            pts = w.get_map().get_spawn_points()
+            self.command_driver = RouteFollower(
+                w, self.vehicle, d["drive"]["target_speed_kmh"],
+                destination=pts[dest].location if 0 <= dest < len(pts) else None)
         # duration <= 0: run until stopped (or until CarSim reaches t_stop).
         self.n_frames = max(1, int(round(d["sync"]["duration"] / frame_dt))) if d["sync"]["duration"] > 0 else 0
         self._t0 = self.env.t_current  # t_start of the .sim, not always 0
@@ -668,6 +668,7 @@ class CoSimSession:
                                         None if d["sync"]["z_mode"] == "ground" else z0)
         self.warnings += self.export_check(self.obs)
         self.clock = WallClock()
+        self.done = bool(self.end_reason)  # e.g. touching something at t0 with "stop on collision": no step past it
         return {"external_api": self.sync.external_api, "server_api": self.sync.server_api,
                 "reference_point": [round(float(x), 3) for x in self.sync.ref_local],
                 "t_step": t_step, "inner_steps": self.inner, "frame_dt": frame_dt,
@@ -829,6 +830,7 @@ class CarlaDriveSession:
             self.command_driver = ManualDriver()
         self.n_frames = max(1, int(round(d["sync"]["duration"] / dt))) if d["sync"]["duration"] > 0 else 0
         self.clock = WallClock()
+        self.done = bool(self.end_reason)  # step 0 already ended the run (collision stop)
         return {"external_api": False, "server_api": None, "reference_point": [0, 0, 0], "t_step": dt, "inner_steps": 1,
                 "frame_dt": dt, "dynamics": "CARLA", "t": 0.0, "collisions": tel0["collisions"],
                 "warning": tel0.get("warning", "")}

@@ -236,6 +236,39 @@ class FramePeriodTests(SessionCase):
 
 
 class StartChecksTests(SessionCase):
+    def test_stop_at_t0_ends_the_run_before_the_first_step(self):
+        def touching(s, *a, **k):  # scene_step with collision "stop" and a contact at t0
+            s.end_reason = "碰撞：撞到 map.Car（id 99）"
+            return {"collisions": []}
+        s = self.session(cfg())
+        with mock.patch.object(ses, "start_scene", touching):
+            s.start()
+        self.assertTrue(s.done)
+        s2 = self.session(cfg())
+        s2.start()
+        self.assertFalse(s2.done)
+
+    def test_route_is_planned_from_the_t0_pose(self):
+        order = []
+
+        class World(FakeWorld):
+            def get_map(self):
+                return SimpleNamespace(get_spawn_points=lambda: [])
+
+        class Route:
+            def __init__(self, *a, **k):
+                order.append(("route", len(FakeSync.handed)))
+
+        def scene(*a, **k):
+            order.append("scene")
+            return {"collisions": []}
+        with mock.patch.object(ses, "RouteFollower", Route), mock.patch.object(ses, "start_scene", scene):
+            s = ses.CoSimSession(World(), VEHICLE, None, cfg(run={"driver": "route"}))
+            self.addCleanup(lambda: s.stop(release_vehicle=False))
+            s.start()
+        self.assertEqual(order, ["scene", ("route", 1)])  # after the car was put at CarSim's t0 pose and ticked
+        self.assertFalse(s.done)
+
     def test_nan_at_t0_never_reaches_carla(self):
         class NanStart(MockCarSimEnv):
             def reset(self):
@@ -371,6 +404,8 @@ class BackendTests(unittest.TestCase):
             pass
 
         class Session:
+            done = False
+
             def __init__(self, w, ego, anchor, d):
                 self.d, self.scene = d, None
 

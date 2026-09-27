@@ -596,8 +596,9 @@ class RunKpi:
     (every key, whatever the record keeps) and the CarSim exports; contacts
     at every step, like the collision lines in the output."""
 
-    def __init__(self, period, collisions=True):
+    def __init__(self, period, collisions=True, angle="deg"):
         self.period = float(period)  # s between two samples
+        self.to_rad = math.pi / 180.0 if angle == "deg" else 1.0  # rel_yaw is in the export angle unit
         self.samples = 0
         self.t_start = self.t_end = None
         self.lane_n = self.no_lane_n = 0
@@ -637,8 +638,11 @@ class RunKpi:
                 self.head_max = head if self.head_max is None else max(self.head_max, head)
         half = ego.get("width", 0.0) / 2.0
         for o in scene.get("objects") or ():
-            # Ahead in the ego's own path: in front of the reference point, overlapping the ego's width.
-            if o["rel_x"] > 0.0 and abs(o["rel_y"]) - o["width"] / 2.0 < half:
+            # Ahead in the ego's own path: in front of the reference point, its box
+            # (turned by rel_yaw, e.g. crossing) overlapping the ego's width.
+            ry = o["rel_yaw"] * self.to_rad
+            side = abs(o["length"] / 2.0 * math.sin(ry)) + abs(o["width"] / 2.0 * math.cos(ry))
+            if o["rel_x"] > 0.0 and abs(o["rel_y"]) - side < half:
                 self.gap_min = o["gap"] if self.gap_min is None else min(self.gap_min, o["gap"])
         ay = exports.get("Ay")
         if ay is not None:

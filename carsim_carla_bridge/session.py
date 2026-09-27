@@ -433,9 +433,8 @@ def load_controller(d, ex, n_imports=None, scene=None):
             if hasattr(obj, "reset"):
                 obj.reset()
             obj = obj.control
-        fin = getattr(inst, "finish", None)
-        if not callable(fin):
-            fin = getattr(mod, "finish", None)
+        # A class: its finish method; a function entry: the module's finish().
+        fin = getattr(inst, "finish", None) if inst is not None else getattr(mod, "finish", None)
     except SystemExit as e:  # e.g. argparse at module level: must not end the backend
         raise RuntimeError("控制算法 %s 在加载时调用了 sys.exit（常见原因：模块顶层用了 argparse）：%s%s"
                            % (os.path.basename(path), e, _where(_tb(e), path)))
@@ -500,10 +499,13 @@ def call_finish(driver, reason):
     if fin is None:
         return []
     driver.finish = None
+    driver.running = (time.time(), threading.get_ident())  # for control_busy(): a slow finish() is the algorithm's
     try:
         fin(reason)
     except (Exception, SystemExit) as e:  # sys.exit() in finish() must not end the backend either
         return [_user_error("控制算法的 finish() 出错", e, driver.path)]
+    finally:
+        driver.running = None
     return []
 
 
@@ -638,7 +640,8 @@ def start_scene(ses, anchor, ref_local=None, t=0.0, ego_velocity=None):
         sp.stop()
         raise
     ses.scene = sp
-    ses.kpi = RunKpi(st.sample_every(d) * float(d["sync"]["frame_dt"]), d["scene"].get("collision", "log") != "off")
+    ses.kpi = RunKpi(st.sample_every(d) * float(d["sync"]["frame_dt"]), d["scene"].get("collision", "log") != "off",
+                     _units(d)["angle"])
     if d["run"]["log_path"]:
         # Every run a folder of its own: the CSV files, config.json, the algorithm file, run.json.
         ses.record_dir, base = run_dir(d["run"]["log_path"], _run_stem(d))
@@ -1012,20 +1015,26 @@ class CarlaDriveSession:
         return [outer, inner] if steer > 0 else [-inner, -outer]
 
     def stop(self, release_vehicle=True, end="stopped", reason=""):
-        """end / reason as CoSimSession.stop; returns end_run()."""
+        """Best effort like CoSimSession.stop (CARLA may be gone): run.json is
+        completed anyway. end / reason as there; returns end_run()."""
+        def step(fn):
+            try:
+                fn()
+            except Exception as e:
+                print("CarlaDriveSession.stop: %s" % e, flush=True)
         try:
             if getattr(self, "mode", None) == "autopilot":  # start() may have failed before setting it
                 self.vehicle.set_autopilot(False, self.tm.get_port())
         except RuntimeError:
             pass
         if self.scene is not None:
-            self.scene.stop()
+            step(self.scene.stop)
         if self.recorder is not None:
-            self.recorder.close()
+            step(self.recorder.close)
             self.recorder = None
         if self._original_settings is not None:
-            self.world.apply_settings(self._original_settings)
-            self._original_settings = None
+            orig, self._original_settings = self._original_settings, None
+            step(lambda: self.world.apply_settings(orig))
         return end_run(self, end, reason or end_words(self, end))
 
     def step(self):

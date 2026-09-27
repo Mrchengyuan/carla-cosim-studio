@@ -4,16 +4,19 @@ without a CARLA server: every run writes <record dir>/<time>_<algorithm>/
 files, config.json, a copy of the algorithm file and run.json; a second run
 never touches the first one's files; the figures (lane offset, heading
 error, time off the lane, collisions, gap ahead, distance, |Ay|) in CarSim
-units from the sampled scenes, contacts from every step; finish(reason) of
-the instance or the module, once, before the record closes, its errors
-reported and never raised; the backend and the command line pass how the
-run ended and show the folder and the figures."""
+units from the full sampled scenes whatever the record ticks, contacts from
+every step; finish(reason) of the instance (a class entry) or the module (a
+function entry), once, before the record closes, its errors reported and
+never raised, a slow one named by the heartbeat; CARLA dynamics complete
+run.json even with CARLA gone; the backend and the command line pass how
+the run ended and show the folder and the figures."""
 
 import contextlib
 import copy
 import csv
 import io
 import json
+import math
 import os
 import sys
 import tempfile
@@ -46,10 +49,10 @@ def read_json(path):
         return json.load(f)
 
 
-def obj(rel_x, rel_y, gap, width=1.8, model="vehicle.test", oid=5):
+def obj(rel_x, rel_y, gap, width=1.8, model="vehicle.test", oid=5, length=4.5, rel_yaw=0.0):
     """An object of the full scene (every key)."""
     return dict({k: 0.0 for k in scn.OBJECT_KEYS}, id=oid, type="vehicle", parked=False, model=model,
-                rel_x=rel_x, rel_y=rel_y, width=width, gap=gap, dist=abs(rel_x))
+                rel_x=rel_x, rel_y=rel_y, width=width, length=length, rel_yaw=rel_yaw, gap=gap, dist=abs(rel_x))
 
 
 class ScriptedScene:
@@ -75,7 +78,8 @@ class ScriptedScene:
         return self.latest
 
     def record_view(self):
-        return self.latest
+        """The keys ticked for the record, as SceneProvider selects them."""
+        return scn.SceneProvider._select(self, self.s.get("record") or {}, False)
 
 
 class FakeWorld:
@@ -171,6 +175,16 @@ class RunFolderTests(unittest.TestCase):
         self.assertEqual(k["ay_max"], 0.25)
         self.assertIn("碰撞 1 次（第一次 t = 0.06 s，walker.x）", summary["kpi_text"])
 
+    def test_figures_do_not_depend_on_the_record_ticks(self):
+        d = self.config(os.path.join(self.tmp, "runs"))
+        _, _, full = self.run_once(d)
+        d["scene"]["record"] = {"ego": [], "objects": [], "lane": []}  # nothing ticked for the record
+        ses, _, bare = self.run_once(d)
+        self.assertEqual(read_csv(os.path.join(ses.record_dir, "log.csv"))[0], ["t", "frame", "Xo", "u1", "u2", "u3"])
+        self.assertNotIn("log_lane.csv", os.listdir(ses.record_dir))
+        self.assertEqual(bare["kpi"], full["kpi"])
+        self.assertIsNotNone(full["kpi"]["lane_offset_rms"])
+
     def test_a_second_run_leaves_the_first_alone(self):
         d = self.config(os.path.join(self.tmp, "runs"))
         with mock.patch.object(session.time, "strftime", lambda fmt, *a: "20260927_101500"):
@@ -250,6 +264,15 @@ class KpiTests(unittest.TestCase):
                      "碰撞 3 次（第一次 t = 0.25 s，vehicle.x）", "前方最小间距 4.00 m", "行驶距离 10.0 m", "最大 |Ay| 0.4"):
             self.assertIn(part, text)
 
+    def test_a_crossing_car_is_ahead(self):
+        """A car turned across the lane reaches into the ego's path with its length, not its width."""
+        for angle, yaw in (("deg", 90.0), ("rad", math.pi / 2)):
+            k = scn.RunKpi(0.1, angle=angle)
+            crossing = obj(12.0, 2.5, 9.0, rel_yaw=yaw)  # 2.5 - 4.5 / 2 < 1.0
+            along = obj(12.0, 2.5, 8.0, oid=6)            # 2.5 - 1.8 / 2 > 1.0: the next lane
+            k.sample({"t": 0.0, "ego": {"X": 0.0, "Y": 0.0, "width": 2.0}, "objects": [crossing, along]}, {})
+            self.assertEqual(k.result()["min_gap_ahead"], 9.0, angle)
+
     def test_nothing_to_measure(self):
         k = scn.RunKpi(0.02, collisions=False)
         k.step(0.0, [{"model": "vehicle.x"}])
@@ -297,6 +320,23 @@ class FinishTests(unittest.TestCase):
         session.call_finish(drv, "运行被停止")
         self.assertEqual(self.calls, ["运行被停止"])
 
+    def test_a_class_entry_ignores_a_module_finish(self):
+        drv = self.load("class Controller:\n"
+                        "    def control(self, e, t, dt):\n        return [0, 0, 0]\n"
+                        "def finish(x):\n    CALLS.append(x)\n")  # a helper of the module, not the end hook
+        self.assertIsNone(drv.finish)
+        session.call_finish(drv, "x")
+        self.assertEqual(self.calls, [])
+
+    def test_a_slow_finish_is_named_by_the_heartbeat(self):
+        drv = self.load("class Controller:\n"
+                        "    def control(self, e, t, dt):\n        return [0, 0, 0]\n"
+                        "    def finish(self, reason):\n        CALLS.append(BUSY())\n")
+        sys.modules["user_controller"].BUSY = lambda: session.control_busy(drv)
+        session.call_finish(drv, "x")
+        self.assertEqual(self.calls[0][1], "（fin_ctrl.py 第 5 行）")  # where finish() is, for the GUI
+        self.assertIsNone(session.control_busy(drv))
+
     def test_without_finish(self):
         drv = self.load(CONTROLLER)
         self.assertIsNone(drv.finish)
@@ -332,6 +372,31 @@ class FinishTests(unittest.TestCase):
         self.assertEqual((run["end"], run["end_reason"], run["kpi"]), ("finished", "达到设定的运行时长 2 s", None))
         self.assertEqual(summary, {"record_dir": self.tmp.name, "errors": []})
 
+    def test_carla_dynamics_stop_completes_run_json_with_carla_gone(self):
+        def gone(*a):
+            raise RuntimeError("time-out of 500ms while waiting for the simulator")
+        d = settings.default_dict()
+        d["drive"]["dynamics"] = "carla"
+        ses = session.CarlaDriveSession(SimpleNamespace(apply_settings=gone), None, d, None)
+        ses._original_settings = object()
+        ses.scene = SimpleNamespace(stop=gone)
+        ses.record_dir = self.tmp.name
+        ses.recorder = scn.Recorder(scn.Recorder.run_paths(os.path.join(self.tmp.name, "log.csv")), d["scene"], [])
+        ses.kpi = scn.RunKpi(0.05)
+        ses.kpi.step(0.0, [])
+        ses.kpi.sample({"t": 0.0, "ego": {"X": 0.0, "Y": 0.0, "width": 2.0}, "objects": []}, {})
+        with contextlib.redirect_stdout(io.StringIO()):
+            summary = ses.stop(end="error", reason="CARLA 服务器已退出或连不上（localhost:2000）")
+        self.assertIsNone(ses.recorder)
+        self.assertIsNone(ses._original_settings)
+        run = read_json(os.path.join(self.tmp.name, "run.json"))
+        self.assertEqual((run["end"], run["end_reason"], run["dynamics"]),
+                         ("error", "CARLA 服务器已退出或连不上（localhost:2000）", "carla"))
+        self.assertEqual(run["kpi"]["samples"], 1)
+        self.assertEqual((summary["record_dir"], summary["errors"], summary["kpi"]),
+                         (self.tmp.name, [], run["kpi"]))
+        self.assertIn("行驶距离", summary["kpi_text"])
+
     def test_end_words(self):
         d = settings.default_dict()
         ses = SimpleNamespace(d=d, end_reason="", n_frames=0, frame=10)
@@ -365,6 +430,15 @@ class BackendTests(unittest.TestCase):
                                 ("info", "运行记录：/data/runs/20260927_101500_my_ctrl"),
                                 ("info", "运行指标：行驶距离 12.0 m")])
         self.assertEqual(self.events[-1], {"event": "cosim_state", "state": "finished", "detail": "达到设定的运行时长 20 s"})
+
+    def test_the_heartbeat_sees_the_session_in_stop(self):
+        b = self.backend()
+        seen = []
+        ses = SimpleNamespace(stop=lambda **kw: seen.append((b.session, b.ending)))
+        b.session, b.cosim_state = ses, "running"
+        b._stop_cosim_if_running("stopped")
+        self.assertEqual(seen, [(None, ses)])  # finish() runs in stop(): named as the algorithm's, not CARLA
+        self.assertIsNone(b.ending)
 
     def test_stop_button(self):
         b = self.backend()

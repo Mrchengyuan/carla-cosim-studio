@@ -126,6 +126,7 @@ def main():
 
         # ---- 2: a second run: a new folder, the first one untouched -------------
         before = open(os.path.join(folder, "log.csv"), encoding="utf-8").read()
+        c.events.clear()  # else run 1's "finished" ends the wait at once
         info2 = c.call("cosim_start", config=cfg, timeout=120)
         st = run_until_state(c, ("finished", "error", "stopped"))
         check("second run: new folder, the first left alone", st["state"] == "finished"

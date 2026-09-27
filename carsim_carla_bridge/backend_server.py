@@ -58,6 +58,7 @@ class Backend:
         self.ego = None
         self.anchor = None
         self.session = None
+        self.ending = None         # the session in stop(), for the heartbeat: the algorithm's finish()
         self.cosim_state = "stopped"
         self.spectator_mode = "free"
         self.recording = None      # file of the CARLA recording we started (the recorder runs inside CARLA)
@@ -1229,7 +1230,9 @@ class Backend:
             return
         # The algorithm's finish(), the run record's run.json: they get how and why the run ended.
         summary = {}
+        self.ending = ses  # a slow finish() is the algorithm's, not a hung CARLA (the heartbeat)
         self._try(lambda: summary.update(ses.stop(release_vehicle=True, end=final, reason=detail) or {}))
+        self.ending = None
         for msg in summary.get("errors", []):  # e.g. an error in the algorithm's finish()
             self._log(msg, "warn")
         if summary.get("record_dir"):
@@ -1463,9 +1466,11 @@ def serve(port, exit_with_client=False):
                     backend._fast_timeout = True
                     backend._try(lambda: backend.client.set_timeout(0.5))
                 ev = {"event": "busy", "task": task[0], "seconds": round(time.time() - task[1], 1), "carla_gone": gone}
-                ctl = control_busy(getattr(backend.session, "driver", None))
-                if ctl is not None:  # the user's control() has not returned: not a CARLA problem
-                    ev.update(task="control", seconds=round(time.time() - ctl[0], 1), where=ctl[1])
+                ses = backend.session
+                ctl = control_busy(getattr(ses or backend.ending, "driver", None))
+                if ctl is not None:  # the user's control() / finish() has not returned: not a CARLA problem
+                    ev.update(task="control" if ses is not None else "finish",
+                              seconds=round(time.time() - ctl[0], 1), where=ctl[1])
                 backend.emit(ev)
     threading.Thread(target=heartbeat, daemon=True).start()
     srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)

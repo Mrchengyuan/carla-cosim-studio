@@ -67,7 +67,7 @@ class App {
   void DrawVehicleState();
   void DrawSceneTab();
   void DrawSceneBev(const json& sc, ImVec2 size);
-  void DrawLogList(int warns, int errors);
+  void DrawLogList(int warns, int errors, int algos);
   void DrawStatusBar();
 
   // ---------------------------------------------------------- panels (panels.cpp)
@@ -240,7 +240,7 @@ class App {
   std::deque<LogLine> log_;
   bool log_open_ = true, log_scroll_ = false;  // log_open_: bottom dock visible
   int log_errors_ = 0;
-  int log_filter_ = 0;  // 0 all, 1 warnings + errors, 2 errors
+  int log_filter_ = 0;  // 0 all, 1 warnings + errors, 2 errors, 3 the control algorithm's own output
 
   // window layout (sizes in pixels, set from the font size on the first frame)
   float nav_w_ = 0, mon_w_ = 0, console_h_ = 0;

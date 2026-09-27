@@ -138,18 +138,28 @@ void App::Frame() {
     ConnectCarla();
   }
   // An old config's sensor mounts (CARLA frame): converted by the backend.
-  if (carla_connected_ && !rig_converting_ && busy_.empty() && be_.PendingCount() == 0 && !Running() &&
-      cfg_.contains("rig") && cfg_["rig"].is_object() && cfg_["rig"].value("frame", std::string("carsim")) == "carla") {
+  // A failed conversion is not retried every frame: rig_converting_ stays set
+  // until the next CARLA connection or config load; the rig editor says the
+  // mounts are unconverted meanwhile.
+  if (carla_connected_ && !rig_converting_ && busy_.empty() && be_.PendingCount() == 0 && !Running() && RigLegacy()) {
     rig_converting_ = true;
-    Call("rig_to_carsim", {{"sensors", RigSensors()}, {"blueprint", cfg_["carla"].value("vehicle", std::string())},
-                           {"reference_point", cfg_["sync"].value("reference_point", json("front_axle"))}},
-         [this](const json& r) {
-           RigSensors() = r;
-           cfg_["rig"]["frame"] = "carsim";
-           rig_converting_ = false;
-           RefreshVehicles();  // the vehicle may have been measured
-           Log("配置里的传感器安装位置是旧格式，已按这台车的前轴位置换算为 CarSim 车身坐标系（原点在参考点，y 向左）；请检查后保存", "warn");
-         }, "正在换算旧配置的传感器安装位置 ...");
+    busy_ = "正在换算旧配置的传感器安装位置 ...";
+    const json sent = RigSensors();
+    be_.Request("rig_to_carsim", {{"sensors", sent}, {"blueprint", cfg_["carla"].value("vehicle", std::string())},
+                                  {"reference_point", cfg_["sync"].value("reference_point", json("front_axle"))}},
+                [this, sent](bool ok, const json& r, const std::string& err) {
+                  busy_.clear();
+                  if (!ok) {
+                    Log("旧配置的传感器安装位置没能换算为 CarSim 车身坐标系：" + err + "；重新连接 CARLA 或重新载入配置时会再试", "error");
+                    return;
+                  }
+                  rig_converting_ = false;
+                  if (!RigLegacy() || RigSensors() != sent) return;  // another config was loaded meanwhile
+                  RigSensors() = r;
+                  cfg_["rig"]["frame"] = "carsim";
+                  RefreshVehicles();  // the vehicle may have been measured
+                  Log("配置里的传感器安装位置是旧格式，已按这台车的前轴位置换算为 CarSim 车身坐标系（原点在参考点，y 向左）；请检查后保存", "warn");
+                });
   }
   if (recover_connect_ && be_.Connected() && busy_.empty() && be_.PendingCount() == 0) {
     recover_connect_ = false;

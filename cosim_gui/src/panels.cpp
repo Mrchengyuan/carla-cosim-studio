@@ -1148,9 +1148,8 @@ void App::DrawPanelView() {
       for (const json& s : RigSensors())
         if (s.value("name", std::string()) == pick) {
           view_rig_sensor_ = pick;
-          json m = json{{"x", s.value("x", 0.0)}, {"y", s.value("y", 0.0)}, {"z", s.value("z", 0.0)}, {"pitch", s.value("pitch", 0.0)}, {"yaw", s.value("yaw", 0.0)}, {"roll", s.value("roll", 0.0)}};
           const json attrs = s.value("attributes", json::object());
-          StartView(m, attrs.is_object() ? attrs.value("fov", 90.0f) : 90.0f);
+          StartView(RigMount(s), attrs.is_object() ? attrs.value("fov", 90.0f) : 90.0f);
           view_rig_sensor_ = pick;
         }
     }

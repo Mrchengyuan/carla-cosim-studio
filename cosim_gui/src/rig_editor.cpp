@@ -131,6 +131,7 @@ void App::LoadRigPreset(const std::string& preset) {
        [this, preset](const json& r) {
          RigSensors() = r;
          cfg_["rig"]["preset"] = preset;
+         cfg_["rig"]["frame"] = "carsim";  // replaces an unconverted old rig too
          rig_sel_ = r.empty() ? -1 : 0;
          RefreshVehicles();  // rig_build may have measured the vehicle
          Log(Fmt("已加载传感器套件：%d 个传感器", static_cast<int>(r.size())));
@@ -174,7 +175,7 @@ void App::DrawPanelRig() {
   struct A { const char* type; const char* label; };
   static const A kAdd[] = {{"rgb", "相机"}, {"depth", "深度"}, {"semantic", "语义"}, {"instance", "实例"},
                            {"lidar", "激光雷达"}, {"radar", "毫米波"}, {"imu", "IMU"}, {"gnss", "GNSS"}};
-  ImGui::BeginDisabled(Running());
+  ImGui::BeginDisabled(Running() || RigLegacy());
   ImGui::BeginGroup();
   // Wrap onto the next line when the properties panel is narrow.
   const float right_edge = ImGui::GetWindowPos().x + ImGui::GetWindowContentRegionMax().x;
@@ -192,6 +193,16 @@ void App::DrawPanelRig() {
   if (!spec) {
     ImGui::TextColored(p.warning, ICON_FA_CIRCLE_INFO "  当前车型还没测量尺寸，按 4.8 × 2.0 × 1.5 m 的轿车画图；"
                                   "在“车辆与视角”页点“测量”后会更准确");
+  }
+  if (RigLegacy()) {
+    // Still marked as converting with nothing busy: the conversion failed (see Frame()).
+    const bool failed = carla_connected_ && rig_converting_ && busy_.empty();
+    ImGui::PushStyleColor(ImGuiCol_Text, p.warning);
+    ImGui::TextWrapped("%s", failed ? ICON_FA_TRIANGLE_EXCLAMATION "  安装位置还是旧配置的格式（原点在车身中心，y 向右），没能换算为 CarSim 车身坐标系"
+                                      "（原因见日志），换算前不能修改；重新连接 CARLA 或重新载入配置时会再试，也可以加载预设替换"
+                                    : ICON_FA_TRIANGLE_EXCLAMATION "  安装位置还是旧配置的格式（原点在车身中心，y 向右），还没换算为 CarSim 车身坐标系，"
+                                      "换算前不能修改；连接 CARLA 后会自动换算");
+    ImGui::PopStyleColor();
   }
   ui::EndCard();
 
@@ -352,7 +363,7 @@ void App::DrawRigTopView(float w, float h) {
         ImGui::SetCursorScreenPos(ImVec2(pp.x - 9, pp.y - 9));
         ImGui::InvisibleButton(Fmt("h%d", i).c_str(), ImVec2(18, 18));
         if (ImGui::IsItemActivated()) rig_sel_ = i;
-        if (ImGui::IsItemActive() && ImGui::IsMouseDragging(0, 0.0f) && !Running()) {
+        if (ImGui::IsItemActive() && ImGui::IsMouseDragging(0, 0.0f) && !Running() && !RigLegacy()) {
           const ImVec2 dd = ImGui::GetIO().MouseDelta;
           s["x"] = std::round((cx - dd.y / scale) * 100.0f) / 100.0f;
           s["y"] = std::round((cy - dd.x / scale) * 100.0f) / 100.0f;
@@ -433,7 +444,7 @@ void App::DrawRigSideView(float w, float h) {
     ImGui::SetCursorScreenPos(ImVec2(pp.x - 9, pp.y - 9));
     ImGui::InvisibleButton(Fmt("sv%d", i).c_str(), ImVec2(18, 18));
     if (ImGui::IsItemActivated()) rig_sel_ = i;
-    if (ImGui::IsItemActive() && ImGui::IsMouseDragging(0, 0.0f) && !Running()) {
+    if (ImGui::IsItemActive() && ImGui::IsMouseDragging(0, 0.0f) && !Running() && !RigLegacy()) {
       const ImVec2 dd = ImGui::GetIO().MouseDelta;
       s["x"] = std::round((cx + dd.x / scale) * 100.0f) / 100.0f;
       s["z"] = std::round((std::max(0.0f, sz - dd.y / scale) - ref.z) * 100.0f) / 100.0f;  // not below the ground
@@ -466,12 +477,14 @@ void App::DrawRigProperties() {
     ui::Row(label, help, fs * 10);
     if (ImGui::DragFloat(Fmt("##%s", key).c_str(), &v, speed, lo, hi, fmt)) s[key] = v;
   };
+  ImGui::BeginDisabled(RigLegacy());  // CarSim-frame values; see DrawPanelRig
   drag("x 向前 m", "x", 0.01f, -10, 10, "%.2f", "CarSim 车身坐标系：原点在 CarSim 参考点（默认前轴中心的地面）");
   drag("y 向左 m", "y", 0.01f, -5, 5, "%.2f", "左为正，右为负（和 CarSim 一样）");
   drag("z 向上 m", "z", 0.01f, -3, 6, "%.2f", "相对参考点的高度（参考点默认在前轴中心的地面，这时就是离地高度）");
   drag("航向 °", "yaw", 0.5f, -180, 180, "%.1f", "0 = 朝前，90 = 朝左，-90 = 朝右，180 = 朝后（左为正，和 CarSim 一样）");
   drag("俯仰 °", "pitch", 0.2f, -90, 90, "%.1f", "正数 = 向下看（CarSim：俯仰正 = 低头）");
   drag("侧倾 °", "roll", 0.2f, -180, 180, "%.1f", nullptr);
+  ImGui::EndDisabled();
 
   auto attr_int = [&](const char* label, const char* key, int step, const char* help = nullptr) {
     int v = a.value(key, 0);
@@ -525,9 +538,7 @@ void App::DrawRigProperties() {
   if (t == "rgb") {
     ImGui::BeginDisabled(world_.value("ego_id", 0) == 0);
     if (ui::Button(ICON_FA_EYE, "预览这个相机", ui::Kind::Primary)) {
-      json m = {{"x", s["x"]}, {"y", s["y"]}, {"z", s["z"]}, {"pitch", s["pitch"]}, {"yaw", s["yaw"]}, {"roll", s["roll"]},
-                {"frame", "carsim"}, {"ref", cfg_["sync"].value("reference_point", json("front_axle"))}};
-      StartView(m, a.value("fov", 90.0f));
+      StartView(RigMount(s), a.value("fov", 90.0f));
       view_rig_sensor_ = s.value("name", std::string());
     }
     ImGui::EndDisabled();

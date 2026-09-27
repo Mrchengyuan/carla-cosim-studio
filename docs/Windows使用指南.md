@@ -85,7 +85,7 @@ git clone https://github.com/Mrchengyuan/python_carsim_env.git
 
 ## 4. 安装 CARLA（原版）
 
-原版 CARLA 不用编译，下载解压就能用。界面会自动使用“兼容模式”：车身、转向、车轮转动完全同步，只是速度 / IMU 读数为 0，也没有悬架动画（要这些见第 9 步）。
+原版 CARLA 不用编译，下载解压就能用。界面会自动使用“兼容模式”：车身、转向、车轮转动完全同步，只是速度 / IMU 陀螺仪读数为 0，也没有悬架动画（要这些见第 9 步）。
 
 1. 下载 <https://downloads.carlasim.com/Windows/CARLA_0.9.16.zip>（约 8 GB）。
 2. 解压到 `C:\carla-cosim-studio\CARLA_0.9.16\`。
@@ -147,6 +147,8 @@ cmake --build build --config Release
 
 ## 7. 启动
 
+CARLA 要和后端（界面启动的 Python）在同一台电脑上运行：一键启动只启动本机的 CARLA，“连接”页的主机地址保持 `localhost`。
+
 ### 7.1 方式一：桌面一键启动（推荐）
 
 先创建桌面快捷方式（只需一次）：双击 `C:\carla-cosim-studio\scripts\windows\install_shortcuts.bat`。
@@ -200,7 +202,7 @@ python carsim_env.py
 ```
 - 必须用 **64 位 Python**，对应 CarSim 的 64 位求解器（`carsim_64.dll`）。
 - CarSim **许可证服务**要在运行。如果报许可证错误，先在 CarSim 界面里正常运行一次仿真确认许可证可用。
-- `simfile.sim` 由 CarSim 生成，里面的 `PROGDIR` / `DLLFILE` 指向求解器。用你之前在 python_carsim_env 里已经跑通的那个 `.sim` 就行（仓库里不带 `.sim`，需要从你的 CarSim 数据库生成 / 复制）。
+- `simfile.sim` 由 CarSim 生成，里面的 `PROGDIR` / `DLLFILE` 指向求解器。用你之前在 python_carsim_env 里已经跑通的那个 `.sim` 就行（仓库里不带 `.sim`，需要从你的 CarSim 数据库生成 / 复制）。从界面运行时后端的当前目录是 `carsim_carla_bridge`：`.sim` 里的 `PROGDIR` 写成 `.` 或其他相对路径时按那个目录找求解器，所以要用绝对路径（在这里跑通不代表界面里也找得到）。
 
 ### 8.2 在 CarSim 里配置导出变量
 在 CarSim 的 Import/Export 界面（I/O Channels: Export）按
@@ -278,16 +280,34 @@ rem 模拟 CarSim
 python run_cosim.py --mock --duration 20
 rem 界面保存的配置（存在本目录）
 python run_cosim.py --config cosim_config.json
-python run_cosim.py --sim C:\carla-cosim-studio\python_carsim_env\simfile.sim --carsim-repo ..\python_carsim_env --controller controllers\my_controller.py
+rem 真实 CarSim + 你的控制算法（--duration 0：一直运行到 .sim 的结束时间；不写默认只跑 20 秒）
+python run_cosim.py --sim C:\carla-cosim-studio\python_carsim_env\simfile.sim --carsim-repo ..\python_carsim_env --controller controllers\my_controller.py --duration 0
 ```
-在训练代码里使用（每个 `env.control_step()` 后加两行）：
+在训练代码里使用（初始化一次，之后每个 `env.control_step()` 后加两行）：
 ```python
+import os, sys
+BRIDGE = r"C:\carla-cosim-studio\carsim_carla_bridge"            # 本仓库的桥接目录
+sys.path.insert(0, BRIDGE)
+import settings as st
 from bridge import CarlaVehicleSync
-sync = CarlaVehicleSync(world, vehicle, anchor_transform)      # 初始化一次
+
+# 初始化一次：env.reset() 之后，vehicle 已经生成在 anchor_transform（出生点 = CarSim 原点）
+d = st.load_dict(os.path.join(BRIDGE, "cosim_config.json"))   # 界面保存的配置
+frame_dt = inner_steps * env.t_step                           # CARLA 一帧 = 一次 control_step 积分的时长
+s = world.get_settings()
+s.synchronous_mode, s.fixed_delta_seconds = True, frame_dt   # 必须是同步模式：两边共用一个时钟
+world.apply_settings(s)
+for _ in range(30):
+    world.tick()                                              # 让刚生成的车先落地（run_cosim.py 也这样做）
+sync = CarlaVehicleSync(world, vehicle, anchor_transform, settings=st.to_bridge_cfg(d))
+
+# 每一步
 obs, r, done, info = env.control_step(action, inner_steps)
 sync.sync(obs, env.t_current, frame_dt)
 world.tick()
 ```
+- `settings=st.to_bridge_cfg(d)`：用界面“CarSim 动力学”页的导出变量顺序、单位、参考点和高度模式。不传时用 `config.py` 里的默认值，和你的 `.sim` 不一致时车的位置会错，而且不报错。
+- 这样用只同步车辆：交给算法的 `scene`（周围的车、行人、车道）、运行记录和数据采集只在界面和 `run_cosim.py` 里有。
 
 ---
 

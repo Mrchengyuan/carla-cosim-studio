@@ -11,10 +11,12 @@ Recommended (better sync):
            Steer_L2 Steer_R2      -> rear-wheel steer (4WS)
            Steer_SW Throttle GearStat -> reported through vehicle.get_control()
            Jnc_L1 Jnc_R1 Jnc_L2 Jnc_R2 -> suspension travel (wheel up/down vs body)
-See docs/CarSim_export_variables.md for units and meaning.
+See docs/CarSim导出变量清单.md for units and meaning. These are defaults only:
+the GUI's config (cosim_config.json, merged by settings.py) overrides them.
 """
 
-# Order must match the .sim file. Edit this to your run.
+# Default order; it must match the .sim wherever it is used (run_cosim.py without
+# --config, CarlaVehicleSync without settings=). The GUI's CarSim page sets its own.
 EXPORT_NAMES = [
     "Xo", "Yo", "Zo", "Yaw", "Pitch", "Roll",
     "Vx", "Vy", "AVx", "AVy", "AVz",

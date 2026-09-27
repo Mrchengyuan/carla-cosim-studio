@@ -4,6 +4,8 @@ restarts the CARLA server itself (scripts/carla_server.sh, or
 carla_mod_server.sh with --mod).
 
     python tests/test_carla_restart.py [--mod]
+
+Ports as in scripts/env.sh: CARLA_PORT / CARLA_MOD_PORT (default 2000 / 3000).
 """
 import os
 import subprocess
@@ -18,8 +20,15 @@ PORT = 57194
 ROOT = os.path.join(HERE, "..", "..")
 
 
+def server_port(mod):
+    """The port the scripts start CARLA on: they source scripts/env.sh, which
+    takes CARLA_PORT / CARLA_MOD_PORT from the environment."""
+    return int(os.environ.get("CARLA_MOD_PORT" if mod else "CARLA_PORT") or (3000 if mod else 2000))
+
+
 def server(action, mod):
-    kind, script, port = ("mod", "carla_mod_server.sh", 3000) if mod else ("stock", "carla_server.sh", 2000)
+    kind, script = ("mod", "carla_mod_server.sh") if mod else ("stock", "carla_server.sh")
+    port = server_port(mod)
     session = "carla_mod" if mod else "carla_server"
     if action == "stop":
         cmd = "source scripts/carla_stop_lib.sh; stop_carla_server %s 'test_carla_restart'" % kind
@@ -32,7 +41,7 @@ def server(action, mod):
 
 def main():
     mod = "--mod" in sys.argv
-    carla_port = 3000 if mod else 2000
+    carla_port = server_port(mod)
     proc = subprocess.Popen([sys.executable, os.path.join(HERE, "..", "backend_server.py"), "--port", str(PORT)],
                             cwd=os.path.join(HERE, ".."))
     try:

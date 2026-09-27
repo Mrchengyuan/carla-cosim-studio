@@ -22,8 +22,16 @@ CarSim 负责全部车辆动力学计算，CARLA 负责场景、渲染和传感�
 | `run_cosim.py` | 主程序：同步模式主循环、运行记录（命令行只跑 CarSim 联合仿真） |
 | `bridge.py` | `CarlaVehicleSync`：把 CarSim 导出向量转换成 CARLA 状态并下发 |
 | `coords.py` | ISO 8855 ↔ UE 坐标 / 欧拉角 / 角速度换算 |
-| `config.py` | **需要按你的 .sim 修改**：导出变量顺序、单位、参考点 |
+| `config.py` | 默认值：导出变量顺序、单位、参考点。界面“CarSim 动力学”页的设置（`cosim_config.json`）覆盖它，按你的 .sim 改页上的设置即可 |
+| `settings.py` | 配置：`config.py` 的默认值 + 界面保存的 JSON；`to_bridge_cfg()` 把它交给 `CarlaVehicleSync` |
 | `scene.py` | 每帧交给控制算法的 `scene`（车辆、行人、停放车辆，前方车道，传感器数据，碰撞判断；CarSim 坐标系和单位；只给勾选的量）和运行记录 CSV（`control(exports, t, dt, scene)`，定义见 `docs/场景与数据接口.md`） |
+| `session.py` | 一次联合仿真运行（逐帧步进），界面后端和 `run_cosim.py` 共用 |
+| `backend_server.py` | 界面后端：本机 TCP / JSON，执行界面的命令（CARLA 操作、运行、采集） |
+| `drivers.py` | 测试用驾驶方式（演示、路线跟随、键盘）和 CARLA 物理的驾驶方式 |
+| `rig.py` | 传感器套件：预设、安装位置（CarSim 车身坐标系）、数据量估算 |
+| `collector.py` / `dataset.py` | 数据采集（所有传感器同一帧同步采样）/ 数据浏览、导出 KITTI 和 nuScenes |
+| `views.py` | 界面视口的实时画面 |
+| `controllers/` | 控制算法示例 |
 | `mock_carsim.py` | 没有 CarSim 时用的替身（运动学自行车模型），接口与 `CarSimEnv` 相同 |
 | `tests/test_coords.py` | 坐标换算单元测试（与 `carla.Transform.get_matrix()` 对照） |
 | `tests/check_wheels.py` | 用车轮骨骼姿态实测转向 / 转角的正负号 |
@@ -37,21 +45,39 @@ CarSim 负责全部车辆动力学计算，CARLA 负责场景、渲染和传感�
 # 1) 启动 CARLA（改版或原版都可以），然后：
 python run_cosim.py --mock --duration 20                    # 不需要 CarSim，先验证链路
 # 2) 接入真实 CarSim（Windows）
-python run_cosim.py --sim C:\CarSim\simfile.sim --carsim-repo ..\python_carsim_env
-python run_cosim.py --sim C:\CarSim\simfile.sim --controller controllers\my_controller.py # 你的控制算法（写法见 controllers\example_controller.py）
+python run_cosim.py --sim C:\CarSim\simfile.sim --carsim-repo ..\python_carsim_env --duration 0
+python run_cosim.py --sim C:\CarSim\simfile.sim --controller controllers\my_controller.py --duration 0 # 你的控制算法（写法见 controllers\example_controller.py）
+python run_cosim.py --config cosim_config.json              # 界面保存的配置（导出变量、单位、参考点都用它的）
 ```
-常用参数：`--frame-dt 0.02`（CARLA 帧周期，不超过 0.1 s，最好是 CarSim `t_step` 的整数倍，不是时自动对齐）、
+常用参数：`--duration`（仿真秒数；不写时只跑 20 秒，0 = 一直运行到 .sim 的结束时间）、`--frame-dt 0.02`（CARLA 帧周期，不超过 0.1 s，最好是 CarSim `t_step` 的整数倍，不是时自动对齐）、
 `--spawn-index`（把 CarSim 原点放在哪个 spawn point）、`--vehicle`（CARLA 车型）。
 `--no-external-api` 强制使用原版 CARLA 的退化模式。
 
-在你自己的 RL 训练代码里使用，只需要在每次 `env.control_step()` 之后加两行：
+在你自己的 RL 训练代码里使用（初始化一次，之后每次 `env.control_step()` 之后加两行）：
 ```python
-sync = CarlaVehicleSync(world, vehicle, anchor_transform)   # 初始化一次
-...
+import os, sys
+BRIDGE = "<本仓库>/carsim_carla_bridge"                     # 本目录
+sys.path.insert(0, BRIDGE)
+import settings as st
+from bridge import CarlaVehicleSync
+
+# 初始化一次：env.reset() 之后，vehicle 已经生成在 anchor_transform（出生点 = CarSim 原点）
+d = st.load_dict(os.path.join(BRIDGE, "cosim_config.json"))   # 界面保存的配置
+frame_dt = inner_steps * env.t_step                           # CARLA 一帧 = 一次 control_step 积分的时长
+s = world.get_settings()
+s.synchronous_mode, s.fixed_delta_seconds = True, frame_dt   # 必须是同步模式：两边共用一个时钟
+world.apply_settings(s)
+for _ in range(30):
+    world.tick()                                              # 让刚生成的车先落地（run_cosim.py 也这样做）
+sync = CarlaVehicleSync(world, vehicle, anchor_transform, settings=st.to_bridge_cfg(d))
+
+# 每一步
 obs, r, done, info = env.control_step(action, inner_steps)
 sync.sync(obs, env.t_current, frame_dt)
 world.tick()
 ```
+- `settings=st.to_bridge_cfg(d)`：用界面“CarSim 动力学”页的导出变量顺序、单位、参考点和高度模式。不传时用 `config.py` 里的默认值，和你的 `.sim` 不一致时车的位置会错，而且不报错。
+- 这样用只同步车辆：交给算法的 `scene`（周围的车、行人、车道）、运行记录和数据采集只在界面和 `run_cosim.py` 里有。
 
 ## 转向机构一致性怎么保证
 

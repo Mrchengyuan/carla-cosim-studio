@@ -28,7 +28,7 @@
 | 联合仿真 | 每一帧调用 `control_step`，CarSim 积分 `帧周期 / t_step` 步，导出变量再同步到 CARLA |
 | 你的控制算法 | 算法返回的油门 / 制动 / 方向盘就是 `control_step` 的 action，按 `.sim` 里的导入变量顺序写入 |
 | 示例算法 | `controllers/simple_path_follower.py` 直接使用其中的 `SimplePathFollower` |
-| 强化学习 | 同一套 `CarSimEnv` 接口（仓库中已有 SAC 示例），可以在训练代码里接上 CARLA 的画面与传感器 |
+| 强化学习 | 同一套 `CarSimEnv` 接口（python_carsim_env 里有 SAC 示例）；训练代码里用 `CarlaVehicleSync` 按界面保存的配置把车同步到 CARLA（见使用指南“命令行与强化学习”），CARLA 的传感器用 CARLA 自己的 API 挂 |
 
 **感谢 [dyZhou2001](https://github.com/dyZhou2001) 开源 python_carsim_env**：没有这个 Python ⇄ CarSim 的接口，就没有本平台的联合仿真。
 
@@ -63,7 +63,7 @@ git clone https://github.com/Mrchengyuan/python_carsim_env
 | 车身位置、姿态 | ✅ 同步 | ✅ 同步 |
 | 四轮转向角、车轮转动 | ✅ 同步 | ✅ 同步 |
 | 悬架行程（车轮上下跳动） | ❌ 没有 | ✅ 同步 |
-| CARLA 里的 `get_velocity()`、角速度、IMU 传感器 | ❌ 读数为 0 | ✅ CarSim 的真实值 |
+| CARLA 里的 `get_velocity()`、角速度、IMU 陀螺仪 | ❌ 读数为 0（IMU 加速度计由位置差分得到，有读数） | ✅ CarSim 的真实值 |
 | 界面“连接”页显示 | 黄色“原版 CARLA：兼容模式”（或“服务器是原版 CARLA：兼容模式”） | 绿色“改版 CARLA：可用” |
 | 默认端口 | 2000 | 3000 |
 | Ubuntu 桌面图标 | **CARLA CoSim Studio** | **CARLA CoSim Studio（改版）** |
@@ -131,9 +131,9 @@ git clone https://github.com/Mrchengyuan/python_carsim_env
 | **数据采集** | 所有传感器同一帧同步采样；图像 JPG/PNG、点云 .bin/.npy、雷达 CSV；自动生成标定文件（内参 K、外参）、3D 真值框、车辆状态；采集前估算数据量，没有停止条件或空间不足时拒绝开始 |
 | **数据浏览与导出** | 逐帧浏览已采集的数据（相机图上叠加 3D 真值框、激光雷达 / 毫米波雷达俯视图、目标列表、播放）；一键导出为 **KITTI** 或 **nuScenes** 格式（nuScenes 可直接用官方工具读取）；删除不需要的数据集 |
 | **场景** | 地图切换、天气预设和 9 个参数、背景交通流（车辆 + 行人）、场景对象管理、录制与回放 |
-| **视口与监视** | 仿真软件式布局：中间是实时 3D 画面（跟车 / 车头 / 前轮特写 / 俯视 / 任意套件相机），叠加车速、方向盘、踏板仪表和带轨迹的小地图；**多视图**（单画面 / 1+3 / 2×2）同时显示相机、语义分割、深度、实例分割、激光雷达点云和毫米波雷达俯视图；底部面板有实时曲线、车辆状态（位姿、四轮数据）、输出日志 |
+| **视口与监视** | 仿真软件式布局：中间是实时 3D 画面（跟车 / 车头 / 前轮特写 / 俯视 / 任意套件相机），叠加车速、方向盘、踏板仪表和带轨迹的小地图；**多视图**（单画面 / 1+3 / 2×2）同时显示相机、语义分割、深度、实例分割、激光雷达点云和毫米波雷达俯视图；底部面板有实时曲线、车辆状态（位姿、四轮数据）、场景（周围的车、行人和车道）、输出日志 |
 | **运行控制** | 运行 / 暂停 / 单步 / 继续 / 停止（F5 / F6 / F10 / Shift+F5）；停止或到时结束后主车停车；运行因到时、出错结束时画面上方提示原因；运行时长默认 0 = 一直运行（真实 CarSim 最晚到 .sim 的结束时间） |
-| **界面** | 菜单栏 + 工具栏（按流程的页签）、左侧工程树、右侧属性面板、底部曲线 / 状态 / 输出，各区域可拖动调整大小；深色 / 浅色主题，中文界面；配置保存为 JSON，命令行和强化学习训练共用 |
+| **界面** | 菜单栏 + 工具栏（按流程的页签）、左侧工程树、右侧属性面板、底部曲线 / 状态 / 场景 / 输出，各区域可拖动调整大小；深色 / 浅色主题，中文界面；配置保存为 JSON，命令行和强化学习训练共用 |
 
 | 传感器套件编辑 | 数据采集 |
 |---|---|
@@ -167,9 +167,9 @@ git clone https://github.com/Mrchengyuan/python_carsim_env
 |---|---|
 | `cosim_gui/` | 图形界面源码，依赖（ImGui、ImPlot、GLFW、json、Font Awesome）已放在 `third_party/`，编译不需要联网 |
 | `carsim_carla_bridge/` | Python 后端、CarSim 桥接、驾驶模式、数据采集、测试和文档 |
-| `carla_patches/` | CARLA 0.9.16 补丁（改版 CARLA 就是官方源码打上它编译出来的）：外部动力学接口；以及 Linux 编译用的 libpng 地址修复 |
-| `scripts/` | Ubuntu：`build_ue4.sh`、`build_carla.sh`、`carla_server.sh`、`carla_mod_server.sh`、`start_studio.sh`、`stop_carla.sh`、`install_desktop_icons.sh`；`scripts/windows/`：`start_studio.bat`、`stop_carla.bat`、`install_shortcuts.bat`、`env.bat` |
-| `docs/` | 截图 |
+| `carla_patches/` | CARLA 0.9.16 补丁（改版 CARLA 就是官方源码打上它们编译出来的）：外部动力学接口（含 CARLA 自身错误的修复）；Python 包等待服务器时释放全局锁；Linux 编译用的 libpng 地址修复 |
+| `scripts/` | Ubuntu：`build_ue4.sh`、`build_carla.sh`、`carla_server.sh`、`carla_mod_server.sh`、`start_studio.sh`、`stop_carla.sh`、`install_desktop_icons.sh`，以及它们共用的 `env.sh`（路径、端口）和 `carla_stop_lib.sh`（关闭 CARLA）；`scripts/windows/`：`start_studio.bat`、`stop_carla.bat`、`install_shortcuts.bat`、`env.bat` |
+| `docs/` | 使用文档（Ubuntu / Windows 使用指南、界面操作手册、场景与数据接口说明）；`docs/images/` 是截图 |
 
 ## 快速开始
 
@@ -289,6 +289,8 @@ python run_cosim.py --mock --duration 20                                        
 | `tests/test_modified_carla.py` | 改版 CARLA：位姿、速度、角速度、IMU（陀螺仪、加速度计）、四轮转向、悬架、物理交接 | 11 项，加速度计一项待在改版 CARLA 上运行（此前 10/10） |
 | `tests/test_offline_tests.py` | 不需要 CARLA：`test_modified_carla.py` 有检查失败时退出码非 0（用假的 carla 模块）、`start_studio.sh` 只复用端口上认得出的 CARLA、停止脚本的匹配经过符号链接也对得上服务器命令行（tmux、pkill 等都是替身，不启动也不停止任何程序） | 6/6 |
 | `tests/test_tests_carla.py` | 对正在运行的 CARLA（用本安装的脚本启动；不连接、不启动也不停止它）：`start_studio.sh` 按进程名认出端口上的 CARLA、停止脚本的匹配对得上服务器的命令行。原版直接运行，改版加 `--mod`（不是 `--port`） | 待在 CARLA 上运行 |
+| `tests/test_offline_docs.py` | 不需要 CARLA：文档和代码一致：相对链接都指向存在的文件；训练代码示例按界面的配置建 `CarlaVehicleSync`（`to_bridge_cfg`）、设同步模式且帧长 = 积分步数 × t_step（示例本身用假的 CARLA 执行一遍）；命令行 `--sim` 示例都写了 `--duration`；底部面板的页签；采样周期 0、激光雷达每圈点数、限速、场景页签的说明；`test_carla_restart.py` 按 `CARLA_PORT` / `CARLA_MOD_PORT` 连 | 15/15 |
+| `tests/test_docs_carla.py` | 在 CARLA 上：按文档的训练代码示例同步车辆（模拟 CarSim，导出变量顺序和单位与 `config.py` 不同）时，车在 CARLA 里的位置和朝向与 CarSim 一致，不传 `settings` 时就不一致；联合仿真的车经过限速牌时 `speed_limit` 是否更新（只报告）；测完恢复世界设置 | 待在 CARLA 上运行 |
 | 界面 `--tour` | 自动操作全部页面并截图；用**真实鼠标点击**测试运行 / 暂停 / 单步 / 继续 / 停止、视口按钮、多视图布局与视图内容切换、页签和工程树、“场景信息”页“给算法 / 记录”两列勾选、底部“场景”标签与筛选、数据浏览（打开 / 逐帧 / 播放）与导出 | 47/47（1280×800、1366×768、1600×1000、1920×1400 窗口下都通过） |
 
 ## 已知限制

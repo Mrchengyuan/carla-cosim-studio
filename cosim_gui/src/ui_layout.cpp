@@ -361,7 +361,7 @@ void App::DrawMenuBar() {
   }
   if (ImGui::BeginMenu("视图")) {
     ImGui::MenuItem(ICON_FA_SLIDERS "  属性面板", nullptr, &monitor_open_);
-    ImGui::MenuItem(ICON_FA_TABLE_COLUMNS "  底部面板（曲线 / 状态 / 输出）", "Ctrl+L", &log_open_);
+    ImGui::MenuItem(ICON_FA_TABLE_COLUMNS "  底部面板（曲线 / 状态 / 场景 / 输出）", "Ctrl+L", &log_open_);
     if (ImGui::MenuItem(ICON_FA_VIDEO "  实时画面", nullptr, view_on_, world_.value("ego_id", 0) != 0)) {
       if (view_on_) { Call("view_stop", json::object(), nullptr); view_on_ = false; view_auto_ = false; }
       else { view_auto_ = true; StartView(); }

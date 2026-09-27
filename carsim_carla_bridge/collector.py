@@ -41,10 +41,20 @@ DISK_RESERVE_GB = 10.0
 
 
 def disk_info(path):
+    """Free space where path is (or would be: its nearest existing parent).
+    A missing drive or network share (Windows: dirname("D:\\") is "D:\\")
+    has no existing parent: free_gb is None then, with the reason in "error"."""
     p = os.path.abspath(path or ".")
     while not os.path.exists(p):
-        p = os.path.dirname(p)
-    u = shutil.disk_usage(p)
+        parent = os.path.dirname(p)
+        if parent == p:
+            return {"path": p, "free_gb": None, "total_gb": None,
+                    "error": "输出目录所在的盘或网络共享不存在：%s" % p}
+        p = parent
+    try:
+        u = shutil.disk_usage(p)
+    except OSError as e:  # e.g. a drive without a medium
+        return {"path": p, "free_gb": None, "total_gb": None, "error": "读不到 %s 的剩余空间：%s" % (p, e)}
     return {"path": p, "free_gb": u.free / 1e9, "total_gb": u.total / 1e9}
 
 
@@ -143,6 +153,8 @@ class DataCollector:
         di = disk_info(c["out_dir"])
         if est["total_gb"] is None:
             raise RuntimeError("必须设置停止条件（帧数、时长或容量上限），防止写满磁盘")
+        if di["free_gb"] is None:
+            raise RuntimeError(di["error"])
         if est["total_gb"] > di["free_gb"] - DISK_RESERVE_GB:
             raise RuntimeError("预计需要 %.1f GB，磁盘只剩 %.1f GB（需保留 %.0f GB），请减少采集量"
                                % (est["total_gb"], di["free_gb"], DISK_RESERVE_GB))
@@ -343,8 +355,8 @@ class DataCollector:
             self.done, self.stop_reason = True, "达到时长上限"
         elif c.get("max_gb") and self.bytes >= float(c["max_gb"]) * 1e9:
             self.done, self.stop_reason = True, "达到容量上限"
-        elif disk_info(self.root)["free_gb"] < DISK_RESERVE_GB:
-            self.done, self.stop_reason = True, "磁盘剩余空间不足，已自动停止"
+        elif (disk_info(self.root)["free_gb"] or 0.0) < DISK_RESERVE_GB:  # None: the drive went away
+            self.done, self.stop_reason = True, "磁盘剩余空间不足或输出盘已不可用，已自动停止"
 
     def _emit_stats(self, force=False):
         now = time.time()

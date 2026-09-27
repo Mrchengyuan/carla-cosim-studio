@@ -17,6 +17,7 @@ import carla
 import rig as rigmod
 import settings as st
 from bridge import CarlaVehicleSync, front_axle_local
+from collector import DISK_RESERVE_GB
 from drivers import ManualDriver, RouteFollower
 from scene import Recorder, SceneProvider, gui_view
 
@@ -166,18 +167,6 @@ def load_controller(d, ex, n_imports=None, scene=None):
     return control
 
 
-def spawn_chase_camera(world, vehicle, out_dir):
-    bp = world.get_blueprint_library().find("sensor.camera.rgb")
-    bp.set_attribute("image_size_x", "960")
-    bp.set_attribute("image_size_y", "540")
-    tf = carla.Transform(carla.Location(x=-6.5, z=3.0), carla.Rotation(pitch=-15))
-    cam = world.spawn_actor(bp, tf, attach_to=vehicle)
-    os.makedirs(out_dir, exist_ok=True)
-    cam.listen(lambda img: img.save_to_disk(os.path.join(out_dir, "%06d.png" % img.frame))
-               if img.frame % 10 == 0 else None)
-    return cam
-
-
 def start_scene(ses, anchor, ref_local=None, t=0.0, ego_velocity=None):
     """The SceneProvider and the run record of a session. The rig sensors run
     when the algorithm asked for some of them or data is being collected
@@ -201,7 +190,8 @@ def start_scene(ses, anchor, ref_local=None, t=0.0, ego_velocity=None):
         raise
     ses.scene = sp
     if d["run"]["log_path"]:
-        ses.recorder = Recorder(Recorder.run_paths(d["run"]["log_path"]), sp.s, ses.export_names())
+        ses.recorder = Recorder(Recorder.run_paths(d["run"]["log_path"]), sp.s, ses.export_names(),
+                                min_free_gb=DISK_RESERVE_GB)
     return sp
 
 
@@ -210,8 +200,11 @@ def scene_step(ses, world_frame, t, ego_velocity=None):
     Returns telemetry fields."""
     scene = ses.scene.update(world_frame, t, ego_velocity)
     every = st.sample_every(ses.d)
+    warning = ""
     if ses.recorder is not None and world_frame % every == 0:  # the data collector samples the same frames
         ses.recorder.write(ses.scene.record_view(), ses.exports())
+        if ses.recorder.stopped:  # the disk is (nearly) full: the run goes on without its record
+            warning, ses.recorder = ses.recorder.stopped, None
     new = [c for c in scene["collisions"] if c["new"]]
     policy = ses.d["scene"].get("collision", "log")
     if policy == "off":
@@ -222,7 +215,10 @@ def scene_step(ses, world_frame, t, ego_velocity=None):
     gv = gui_view(scene, ses.scene._ego_box)
     if policy == "off":
         gv["collisions"] = []  # not checked: nothing to show either
-    return {"scene": gv, "collisions": new}
+    out = {"scene": gv, "collisions": new}
+    if warning:
+        out["warning"] = warning  # for the log, once
+    return out
 
 
 class CoSimSession:
@@ -230,7 +226,7 @@ class CoSimSession:
 
     def __init__(self, world, vehicle, anchor, d):
         self.world, self.vehicle, self.anchor, self.d = world, vehicle, anchor, d
-        self.env = self.sync = self.driver = self.camera = None
+        self.env = self.sync = self.driver = None
         self.recorder = None
         self._original_settings = None
         self.frame = 0
@@ -274,8 +270,6 @@ class CoSimSession:
             self.driver = make_driver(d, self.sync.ex, lambda: self.env.config.get("n_import"),
                                       lambda: self.scene.view())
         self.env = make_env(d)
-        if d["run"]["record_dir"]:
-            self.camera = spawn_chase_camera(w, self.vehicle, d["run"]["record_dir"])
 
         self.obs = self.env.reset()
         # The .sim defines how many exports / imports there are, in which order.
@@ -313,10 +307,6 @@ class CoSimSession:
             step(self.env.close)
         if self.scene is not None:
             step(self.scene.stop)
-        if self.camera is not None:
-            step(self.camera.stop)
-            step(self.camera.destroy)
-            self.camera = None
         if self.recorder is not None:
             step(self.recorder.close)
             self.recorder = None

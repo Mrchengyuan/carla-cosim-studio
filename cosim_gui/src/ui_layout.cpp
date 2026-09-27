@@ -1520,9 +1520,9 @@ void App::DrawStatusBar() {
     sep();
     ImGui::TextColored(dim, "%s 主车 #%d", ICON_FA_CAR, world_.value("ego_id", 0));
   }
-  if (disk_.contains("free_gb")) {
+  if (disk_.contains("free_gb") && disk_["free_gb"].is_number()) {  // null: that drive does not exist
     sep();
-    const double free_gb = disk_.value("free_gb", 0.0);
+    const double free_gb = disk_["free_gb"].get<double>();
     ImGui::TextColored(free_gb < 20 && !running ? p.warning : dim, "%s 磁盘剩余 %.0f GB", ICON_FA_HARD_DRIVE, free_gb);
   }
   if (!busy_.empty()) {

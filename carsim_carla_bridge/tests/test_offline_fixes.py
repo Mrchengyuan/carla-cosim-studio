@@ -111,7 +111,7 @@ class BackendStartupTests(unittest.TestCase):
             backend.cmd_cosim_start(cfg)
         self.assertEqual(spawned, [])
 
-    def test_restores_previous_ego_if_reattaching_sensor_fails(self):
+    def test_restores_previous_ego_if_reattaching_view_fails(self):
         backend = Backend()
         backend.world = object()
         old = SimpleNamespace(type_id="vehicle.test", attributes={"color": "red"},
@@ -119,14 +119,13 @@ class BackendStartupTests(unittest.TestCase):
         backend.ego = old
         backend.anchor = "old anchor"
         backend._alive = lambda actor: actor is not None
-        backend.sensors = {1: {"spec": {"type": "rgb"}}}
         backend.views.specs = lambda: [{"id": "p0"}]
         backend.cmd_spawn_ego = lambda *args: setattr(backend, "ego", object())
 
-        def fail_sensor(**kwargs):
-            raise RuntimeError("sensor failed")
+        def fail_view(views):
+            raise RuntimeError("view failed")
 
-        backend.cmd_add_sensor = fail_sensor
+        backend.cmd_views_set = fail_view
         restored = []
 
         def restore(*args):
@@ -134,12 +133,11 @@ class BackendStartupTests(unittest.TestCase):
             backend.ego = old
 
         backend._restore_ego = restore
-        with self.assertRaisesRegex(RuntimeError, "sensor failed"):
+        with self.assertRaisesRegex(RuntimeError, "view failed"):
             backend.cmd_cosim_start()
         self.assertIs(backend.ego, old)
         self.assertEqual(restored[0][0], ("vehicle.test", "old transform", "old anchor"))
-        self.assertEqual(restored[0][2], [{"type": "rgb"}])
-        self.assertEqual(restored[0][3], [{"id": "p0"}])
+        self.assertEqual(restored[0][2], [{"id": "p0"}])
 
 
 class CliTests(unittest.TestCase):

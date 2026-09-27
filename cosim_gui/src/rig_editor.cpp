@@ -586,7 +586,8 @@ void App::DrawRigEstimate(bool compact) {
   if (mf > 0) total_gb = per_frame * mf / 1e9;
   else if (ms > 0) total_gb = per_frame * hz * ms / 1e9;
   if (mg > 0 && (total_gb < 0 || total_gb > mg)) total_gb = mg;
-  const double free_gb = disk_.value("free_gb", -1.0);
+  // null: the output folder's drive or network share does not exist
+  const double free_gb = disk_.contains("free_gb") && disk_["free_gb"].is_number() ? disk_["free_gb"].get<double>() : -1.0;
 
   ui::BeginCard(ICON_FA_CHART_LINE, "数据量估算", compact ? "est_c" : "est_f");
   const float tile_w = (ImGui::GetContentRegionAvail().x - ImGui::GetStyle().ItemSpacing.x * 3) / 4.0f;
@@ -611,6 +612,8 @@ void App::DrawRigEstimate(bool compact) {
       ImGui::TextColored(p.danger, ICON_FA_TRIANGLE_EXCLAMATION "  预计 %.1f GB，超过可用空间（剩余 %.0f GB，需保留 10 GB）", total_gb, free_gb);
     else
       ImGui::TextColored(p.text_dim, "预计占用 %.2f GB / 剩余 %.0f GB（%s）", total_gb, free_gb, disk_.value("path", std::string()).c_str());
+  } else if (disk_.contains("error") && disk_["error"].is_string()) {
+    ImGui::TextColored(p.danger, ICON_FA_TRIANGLE_EXCLAMATION "  %s", disk_["error"].get<std::string>().c_str());
   }
   ui::EndCard();
 }

@@ -369,6 +369,9 @@ void App::SetWorld(const json& r) {
   // ego is gone or replaced (map switched, ego deleted or respawned).
   if (!Running() && r.is_object() && r.value("ego_id", 0) != run_note_ego_) run_note_.clear();
   world_ = r.is_object() ? r : json::object();
+  // The backend tracks CARLA's recorder (it stops it on exit, reconnect, map change and replay).
+  recording_ = world_.contains("recording") && world_["recording"].is_string() &&
+               !world_["recording"].get<std::string>().empty();
 }
 
 void App::RefreshWorld() {
@@ -909,6 +912,7 @@ void App::OnEvent(const json& ev) {
     // The CARLA server is gone: nothing of that world exists any more.
     carla_connected_ = false;
     view_on_ = false;
+    recording_ = false;  // the recorder runs inside CARLA
     world_ = json::object();
     last_tel_ = json::object();
     run_note_level_ = "error";
@@ -949,6 +953,7 @@ void App::OnEvent(const json& ev) {
     busy_.clear();
     rig_converting_ = false;
     view_on_ = false;
+    recording_ = false;  // a backend that exits stops it; the next connect reports the state
     ds_play_ = false;
     ds_pending_ = 0;
     ds_dirty_ = false;

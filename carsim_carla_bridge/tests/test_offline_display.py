@@ -83,6 +83,15 @@ class PoseTests(unittest.TestCase):
             self.assertEqual(sorted(v["ego"]), sorted(scn.EGO_KEYS))
         self.assertNotIn("Pitch", scn.EGO_KEYS)
         self.assertNotIn("Roll", scn.EGO_KEYS)
+        # Even when a hand-edited config names them: not given to control()
+        # nor written to the collector's frames/*.json.
+        sp = self.provider(carla.Transform(), (0.0, 0.0, 0.0, 0.0, 1.0, 1.0))
+        sp.s["ego"] = ["X", "Pitch", "Roll"]
+        sp.s["record"]["ego"] = ["Yaw", "Pitch"]
+        sp.update(1000, 0.0)
+        self.assertIn("Pitch", sp.latest["ego"])
+        self.assertEqual(sorted(sp.view()["ego"]), ["X"])
+        self.assertEqual(sorted(sp.record_view()["ego"]), ["Yaw"])
 
 
 class FakeSync:

@@ -1355,7 +1355,9 @@ void App::DrawVehicleState() {
       const float steer = cosim ? sw / std::max(1.0f, cfg_["sync"].value("steering_wheel_max_deg", 540.0f)) : -sw;
       ControlBar("油门", thr, 0, 1, p.success, false);
       ControlBar("制动", brk, 0, BrakeTop(h_brk_, brk), p.danger, false);
+      ImGui::BeginGroup();
       ControlBar("转向", steer, 1, -1, p.accent, true);
+      ImGui::EndGroup();
       if (ImGui::IsItemHovered()) ImGui::SetTooltip("方向盘转角 / 最大转角，左为正（CarSim 的符号）");
     } else {
       // Not the default [油门, 制动, 方向盘]: the first imports as control() returned them.

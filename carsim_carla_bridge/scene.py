@@ -294,7 +294,7 @@ class SceneProvider:
     def _select(self, sel, sensors):
         sc = self.latest
         v = {"t": sc["t"], "frame": sc["frame"],
-             "ego": {k: sc["ego"][k] for k in sel.get("ego") or () if k in sc["ego"]}}
+             "ego": {k: sc["ego"][k] for k in sel.get("ego") or () if k in EGO_KEYS and k in sc["ego"]}}
         keys = [k for k in OBJECT_KEYS if k in ALWAYS_OBJECT_KEYS or k in (sel.get("objects") or ())]
         v["objects"] = [{k: o[k] for k in keys} for o in sc["objects"]]
         if sel.get("lane") and "lane" in sc:

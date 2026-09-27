@@ -376,10 +376,11 @@ void KpiTile(const char* label, const char* value, const char* unit, float width
   // Value right-aligned like a panel meter, unit after it.
   const float us = fs * 0.82f;
   const float uw = unit && *unit ? ImGui::GetFont()->CalcTextSizeA(us, 1e9f, 0, unit).x + fs * 0.3f : 0.0f;
-  // The mono fonts only have Latin glyphs: a value in Chinese (e.g. "不限") in the regular font.
+  // The mono fonts only have Latin glyphs: a value in Chinese (e.g. "不限") in the
+  // title font (the UI's CJK, baked closer to this size than the regular font).
   bool ascii = true;
   for (const char* c = value; *c; ++c) ascii = ascii && static_cast<unsigned char>(*c) < 0x80;
-  ImFont* vf = ascii ? big : ImGui::GetFont();
+  ImFont* vf = ascii ? big : g_fonts.title ? g_fonts.title : ImGui::GetFont();
   const ImVec2 vs = vf->CalcTextSizeA(big->FontSize, 1e9f, 0, value);
   const float vy = pos.y + fs * 1.2f;
   dl->AddText(vf, big->FontSize, ImVec2(pos.x + width - pad - uw - vs.x, vy), ImGui::GetColorU32(p.text), value);

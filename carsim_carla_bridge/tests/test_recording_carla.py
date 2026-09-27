@@ -161,6 +161,8 @@ def main():
             labs = json.load(open(os.path.join(root, "labels", stems[0] + ".json")))["objects"]
             check("labels/ include the map's parked cars", any(o["type_id"].startswith("map.") for o in labs),
                   sorted({o["type_id"] for o in labs})[:8])
+            check("labels/: no riderless parked bikes", not any(o["type_id"] in ("map.Bicycle", "map.Motorcycle")
+                                                                for o in labs), sorted({o["type_id"] for o in labs})[:8])
         c.call("destroy_ego")
         print("ALL RECORDING TESTS PASSED")
     finally:

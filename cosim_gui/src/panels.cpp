@@ -568,7 +568,7 @@ void App::DrawPanelDrive() {
   EditDouble(cfg_["sync"], "frame_dt", 0.005, "%.3f", 0.001, 0.5);
   ui::Row("运行时长 s", "0 = 一直运行，直到点“停止”（默认）。设了时长，到时会自动结束并停车", fs * 8);
   EditDouble(cfg_["sync"], "duration", 1.0, "%.1f", 0.0, 1e6);
-  ui::Row("运行记录 CSV", "每个采样时刻的自车状态和 CarSim 导出变量；旁边另写 _objects.csv（障碍物）和 _lane.csv（车道）。"
+  ui::Row("运行记录 CSV", "每个采样时刻的自车状态、CarSim 导出变量和控制算法的输出 u1 … un；旁边另写 _objects.csv（障碍物）和 _lane.csv（车道）。"
                           "记录哪些量在“场景信息”页勾选，采样周期在“数据采集”页设置；空 = 不记录");
   EditString(cfg_["run"], "log_path");
   ui::EndCard();
@@ -1054,7 +1054,7 @@ void App::DrawPanelCollect() {
     ImGui::SameLine();
     ImGui::TextUnformatted(name.c_str());
     ImGui::SameLine(fs * 16);
-    ImGui::TextColored(p.text_dim, "%s", note);
+    ui::DimWrapped("%s", note);  // long notes wrap under themselves instead of running off the panel
   };
   line(ICON_FA_FILE_CODE, "meta.json", "地图、天气、套件、采集设置");
   line(ICON_FA_FILE_CODE, "calib.json", "每个传感器的外参（传感器→车辆 4×4）与相机内参 K");
@@ -1063,12 +1063,13 @@ void App::DrawPanelCollect() {
     const std::string t = s.value("type", std::string());
     const char* note = t == "rgb" ? (imf == "jpg" ? "000123.jpg" : "000123.png")
                      : t == "lidar" ? (pcf == "bin" ? "000123.bin" : "000123.npy")
-                     : t == "radar" ? "000123.csv" : (t == "imu" || t == "gnss") ? "写入 ego/*.json"
+                     : t == "radar" ? "000123.csv" : (t == "imu" || t == "gnss") ? "写入 frames/*.json（CarSim 坐标）和 ego/*.json"
                      : t == "depth" ? "000123.npy  米" : "000123.png";
     line(t == "lidar" ? ICON_FA_CIRCLE_NODES : t == "radar" ? ICON_FA_WIFI : ICON_FA_CAMERA, s.value("name", std::string()) + "/", note);
   }
-  line(ICON_FA_FILE_CODE, "frames/", "000123.json  同一帧的 CarSim 导出变量、自车、障碍物、车道（“场景信息”页勾选的量）");
-  line(ICON_FA_TABLE, "frames.csv", "每个采样帧一行：自车状态 + CarSim 导出变量");
+  line(ICON_FA_FILE_CODE, "frames/", "000123.json  同一帧的 CarSim 导出变量、自车、障碍物、车道（“场景信息”页勾选的量）、"
+                            "控制输出 action、IMU / GNSS（CarSim 坐标和单位）");
+  line(ICON_FA_TABLE, "frames.csv", "每个采样帧一行：自车状态 + CarSim 导出变量 + u1 … un");
   line(ICON_FA_TABLE, "objects.csv", "每个采样帧的每个障碍物一行");
   line(ICON_FA_TABLE, "lane.csv", "每个采样帧一行：车道信息（勾选了车道量时）");
   if (labels) line(ICON_FA_TAGS, "labels/", "000123.json  3D 框（CARLA 坐标，导出 KITTI / nuScenes 用）");

@@ -238,7 +238,9 @@ class CollectorTests(unittest.TestCase):
         c = DataCollector(SimpleNamespace(get_actors=lambda: []), SimpleNamespace(id=1, get_transform=lambda: ego_tf),
                           [], {"frame_dt": 0.1, "label_radius": 80.0})
         c._map_cars = [(777, "Car", (10.0, 30.0, 0.8), 90.0, (2.2, 0.9, 0.7)),   # 10 m ahead
-                       (778, "Truck", (500.0, 0.0, 0.0), 0.0, (5.0, 1.5, 2.0))]  # out of range
+                       (778, "Truck", (500.0, 0.0, 0.0), 0.0, (5.0, 1.5, 2.0)),  # out of range
+                       (779, "Bicycle", (12.0, 25.0, 0.5), 0.0, (0.8, 0.3, 0.6)),  # parked bikes: no rider,
+                       (780, "Motorcycle", (8.0, 25.0, 0.6), 0.0, (1.0, 0.4, 0.7))]  # not labelled
         objs = c._labels()["objects"]
         self.assertEqual(len(objs), 1)
         o = objs[0]

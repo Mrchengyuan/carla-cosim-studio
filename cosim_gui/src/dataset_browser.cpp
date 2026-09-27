@@ -338,7 +338,7 @@ void App::DrawPanelDataset() {
     ImGui::TableHeadersRow();
     for (const json& ob : ds_objects_) {
       ImGui::TableNextRow();
-      ImGui::TableSetColumnIndex(0); ImGui::Text("%d", ob.value("id", 0));
+      ImGui::TableSetColumnIndex(0); ImGui::TextUnformatted(ob.value("id", json()).dump().c_str());  // map objects: 64-bit ids
       ImGui::TableSetColumnIndex(1); ImGui::TextUnformatted(ob.value("class", std::string()).c_str());
       ImGui::TableSetColumnIndex(2); ImGui::Text("%.1f", ob.value("distance", 0.0));
       ImGui::TableSetColumnIndex(3);

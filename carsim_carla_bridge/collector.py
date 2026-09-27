@@ -426,6 +426,8 @@ class DataCollector:
                          "world": _tf_dict(t), "velocity": _vec(a.get_velocity())})
         el = ego_tf.location
         for oid, lab, c, yaw, ext in self._map_cars:  # seen by the sensors like any car
+            if lab in ("Bicycle", "Motorcycle"):  # parked, no rider: the exporters take these as ridden
+                continue
             if math.dist(c, (el.x, el.y, el.z)) > radius:
                 continue
             c_ego = inv @ np.array([c[0], c[1], c[2], 1.0])

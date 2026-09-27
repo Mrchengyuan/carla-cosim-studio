@@ -195,9 +195,13 @@ void App::DrawPanelRig() {
                                   "在“车辆与视角”页点“测量”后会更准确");
   }
   if (RigLegacy()) {
+    // Still marked as converting with nothing busy: the conversion failed (see Frame()).
+    const bool failed = carla_connected_ && rig_converting_ && busy_.empty();
     ImGui::PushStyleColor(ImGuiCol_Text, p.warning);
-    ImGui::TextWrapped(ICON_FA_TRIANGLE_EXCLAMATION "  安装位置还是旧配置的格式（原点在车身中心，y 向右），还没换算为 CarSim 车身坐标系，"
-                       "换算前不能修改；连接 CARLA 后会自动换算");
+    ImGui::TextWrapped("%s", failed ? ICON_FA_TRIANGLE_EXCLAMATION "  安装位置还是旧配置的格式（原点在车身中心，y 向右），没能换算为 CarSim 车身坐标系"
+                                      "（原因见日志），换算前不能修改；重新连接 CARLA 或重新载入配置时会再试，也可以加载预设替换"
+                                    : ICON_FA_TRIANGLE_EXCLAMATION "  安装位置还是旧配置的格式（原点在车身中心，y 向右），还没换算为 CarSim 车身坐标系，"
+                                      "换算前不能修改；连接 CARLA 后会自动换算");
     ImGui::PopStyleColor();
   }
   ui::EndCard();

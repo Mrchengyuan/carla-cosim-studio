@@ -131,6 +131,18 @@ class OldConfigTests(unittest.TestCase):
                 with self.subTest(rig=rig):
                     self.assertEqual(settings.load_dict(path)["rig"]["frame"], "carsim")
 
+    def test_gui_tags_only_rigs_with_sensors(self):
+        # The GUI does the same in App::LoadConfig (C++, checked in its source).
+        with open(os.path.join(REPO, "cosim_gui", "src", "app.cpp"), encoding="utf-8") as f:
+            text = f.read()
+        body = text[text.index("void App::LoadConfig("):]
+        body = body[:body.index("\n}\n")]
+        tag = body.index('j["rig"]["frame"] = "carla"')
+        cond = body[body.rindex("if (", 0, tag):tag]
+        self.assertIn('j["rig"]["sensors"].is_array()', cond)
+        self.assertIn('!j["rig"]["sensors"].empty()', cond)
+        self.assertIn('!j["rig"].contains("frame")', cond)
+
 
 class DocConventionTests(unittest.TestCase):
     # CarSim's mount angles: yaw + = left (90 = left), pitch + = nose down.

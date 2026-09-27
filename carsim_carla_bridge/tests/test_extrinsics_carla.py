@@ -35,6 +35,10 @@ def main():
     try:
         c = Conn(PORT)
         c.call("connect", host="localhost", port=carla_port, timeout=60)
+        # Subscribe this client to the world's ticks now: one that first asks
+        # for the world in synchronous mode starts with an empty snapshot and
+        # sees nothing until a tick, and nothing ticks after spawn_ego's.
+        w = client.get_world()
         before = c.call("world_info")
         c.call("world_settings", synchronous=True, frame_dt=0.05, idle_tick=False)
 
@@ -57,11 +61,11 @@ def main():
 
         # ---- same front axle as read from a spawned (ticked) ego
         ego = c.call("spawn_ego", blueprint=IDS[0], spawn_index=0)
-        w = client.get_world()
         actor = None
         end = time.time() + 10.0
         while actor is None and time.time() < end:
-            # This client sees the ego with the snapshot of the tick spawn_ego made.
+            # The ego arrives with the snapshot of the one tick spawn_ego made
+            # (this client has been listening since before synchronous mode).
             if w.get_snapshot().find(ego["id"]) is not None:
                 actor = w.get_actor(ego["id"])
             else:

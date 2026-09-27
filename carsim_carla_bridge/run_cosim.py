@@ -11,7 +11,7 @@ Settings come from config.py, then --config JSON (the file the GUI edits),
 then the command-line flags below.
 
 Examples
-  python run_cosim.py --mock --duration 20 --record out/        # no CarSim needed
+  python run_cosim.py --mock --duration 20                       # no CarSim needed
   python run_cosim.py --config cosim.json                        # GUI-saved settings
   python run_cosim.py --sim C:/CarSim/simfile.sim --carsim-repo ../python_carsim_env
   python run_cosim.py --sim C:/CarSim/simfile.sim --controller my_ctrl.py   # your control algorithm
@@ -39,7 +39,6 @@ def main():
     ap.add_argument("--vehicle")
     ap.add_argument("--driver", choices=("custom", "demo"))
     ap.add_argument("--controller", help="your control algorithm (.py), see controllers/example_controller.py")
-    ap.add_argument("--record", help="save chase-camera frames here")
     ap.add_argument("--log")
     ap.add_argument("--no-external-api", action="store_true", help="force the stock-CARLA fallback")
     args = ap.parse_args()
@@ -49,8 +48,7 @@ def main():
                             ("spawn_index", "carla", "spawn_index"), ("vehicle", "carla", "vehicle"),
                             ("sim", "carsim", "sim_path"), ("carsim_repo", "carsim", "repo_path"),
                             ("frame_dt", "sync", "frame_dt"), ("duration", "sync", "duration"),
-                            ("driver", "run", "driver"), ("record", "run", "record_dir"),
-                            ("log", "run", "log_path")):
+                            ("driver", "run", "driver"), ("log", "run", "log_path")):
         if getattr(args, key) is not None:
             o[sect][name] = getattr(args, key)
     if args.controller:
@@ -92,6 +90,8 @@ def main():
             tel = session.step()
             for hit in tel.get("collisions", []):
                 print("collision at t=%.2f s with %s (id %s)" % (tel["t"], hit["model"], hit["id"]))
+            if tel.get("warning"):
+                print("warning:", tel["warning"])
         if getattr(session, "end_reason", ""):
             print("stopped:", session.end_reason)
         if tel:

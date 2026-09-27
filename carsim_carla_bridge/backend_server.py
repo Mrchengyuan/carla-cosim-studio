@@ -44,12 +44,6 @@ WEATHER_FIELDS = ["cloudiness", "precipitation", "precipitation_deposits", "wind
                   "sun_azimuth_angle", "sun_altitude_angle", "fog_density", "fog_distance",
                   "wetness", "fog_falloff", "scattering_intensity", "mie_scattering_scale",
                   "rayleigh_scattering_scale", "dust_storm"]
-SENSOR_TYPES = {
-    "rgb": "sensor.camera.rgb", "depth": "sensor.camera.depth",
-    "semantic": "sensor.camera.semantic_segmentation", "lidar": "sensor.lidar.ray_cast",
-    "radar": "sensor.other.radar", "imu": "sensor.other.imu", "gnss": "sensor.other.gnss",
-    "collision": "sensor.other.collision", "lane_invasion": "sensor.other.lane_invasion",
-}
 # No car of the background traffic drives this fast (180 km/h): one that does
 # was thrown by a collision or is falling out of the world.
 RUNAWAY_SPEED = 50.0
@@ -65,7 +59,7 @@ class Backend:
         self.session = None
         self.cosim_state = "stopped"
         self.spectator_mode = "free"
-        self.sensors = {}          # id -> {"actor", "type", "save_dir", "count", "file"}
+        self.recording = None      # file of the CARLA recording we started (the recorder runs inside CARLA)
         self.traffic = {"vehicles": [], "walkers": [], "controllers": []}
         self.idle_tick = False     # tick the world ourselves when sync mode is on and idle
         self.frame_dt = 0.05
@@ -174,8 +168,7 @@ class Backend:
         self._try(lambda: self.client.set_timeout(0.5))  # the cleanup below must not wait
         self._try(lambda: self._stop_cosim_if_running("error", why))
         self._try(lambda: self.views.stop())
-        for sid in list(self.sensors):
-            self._try(lambda sid=sid: self.cmd_remove_sensor(sid))
+        self.recording = None  # went with that CARLA (or is out of reach)
         self.traffic = {"vehicles": [], "walkers": [], "controllers": []}
         self.ego = self.anchor = self._probe = self.replay_before = None
         # Let go of the old connection entirely: its streaming thread reconnects
@@ -312,14 +305,17 @@ class Backend:
             traceback.print_exc()
 
     def _teardown(self):
-        """Remove everything this backend put into the world (run, views, sensors,
-        traffic, ego), best effort: used before reconnecting and on exit."""
+        """Remove everything this backend put into the world (run, views,
+        traffic, ego) and stop its CARLA recording, best effort: used before
+        reconnecting and on exit."""
         self._try(lambda: self._stop_cosim_if_running("stopped"))
         self._try(lambda: self._probe.destroy() if self._probe is not None else None)
         self._try(self._clear_replay)
         self._try(self.views.stop)
-        for sid in list(self.sensors):
-            self._try(lambda sid=sid: self.cmd_remove_sensor(sid))
+        if self.recording:
+            # The recorder runs inside CARLA: left alone it writes on until CARLA exits.
+            self._try(self.cmd_stop_recorder)
+            self.recording = None
         self._try(self.cmd_clear_traffic)
         self._try(lambda: self.ego.destroy() if self._alive(self.ego) else None)
         self.ego = self.anchor = None
@@ -405,8 +401,10 @@ class Backend:
         """After the GUI restarted a hung or crashed backend, which could not clean
         up: remove what it left in the world (the CARLA server started for this
         program is used by it alone): the ego (role hero), the traffic (role
-        autopilot), pedestrians with their AI controllers, and sensors."""
+        autopilot), pedestrians with their AI controllers, and sensors; and it
+        stops a CARLA recording that would otherwise go on until CARLA exits."""
         self.world.wait_for_tick(5.0)
+        self._try(self.client.stop_recorder)  # nothing happens when none is running
         acts = [a for a in self.world.get_actors()
                 if (a.type_id.startswith("vehicle.") and a.attributes.get("role_name") in ("hero", "autopilot", PROBE_ROLE))
                 or a.type_id.startswith(("walker.pedestrian.", "controller.ai.walker", "sensor."))]
@@ -432,6 +430,7 @@ class Backend:
             "cosim_state": self.cosim_state,
             "idle_tick": self.idle_tick,
             "external_api_server": getattr(self, "server_api", None),
+            "recording": self.recording or "",
         }
 
     # ---------------------------------------------------------------- world
@@ -455,6 +454,9 @@ class Backend:
             self.world = load()
         finally:
             self.client.set_timeout(20.0)
+        if self.recording:  # CARLA ends a recording together with its world
+            self.recording = None
+            self._log("换地图结束了 CARLA 录制", "warn")
         return self.cmd_world_info()
 
     def cmd_load_map(self, name):
@@ -581,8 +583,6 @@ class Backend:
 
     def _drop_ego_refs(self):
         self.cmd_view_stop()
-        for sid in list(self.sensors):
-            self.cmd_remove_sensor(sid)
         self.ego = None
         self.anchor = None
         self.ego_autopilot = False
@@ -657,7 +657,7 @@ class Backend:
         before, self.replay_before = self.replay_before, None
         self._try(lambda: self.client.stop_replayer(True))
         ours = {a.id for a in self.traffic["vehicles"] + self.traffic["walkers"] + self.traffic["controllers"]}
-        ours |= set(self.sensors) | {v["actor"].id for v in self.views.views.values()}
+        ours |= {v["actor"].id for v in self.views.views.values()}
         if self._alive(self.ego):
             ours.add(self.ego.id)
         acts = [a for a in self.world.get_actors() if a.id not in before and a.id not in ours
@@ -672,8 +672,6 @@ class Backend:
     def cmd_destroy_ego(self):
         self._stop_cosim_if_running()
         self.cmd_view_stop()
-        for sid in list(self.sensors):
-            self.cmd_remove_sensor(sid)
         if self._alive(self.ego):
             self.ego.destroy()
         self.ego = None
@@ -801,93 +799,6 @@ class Backend:
             self._release_tm()  # nothing left for it to drive (see _need_tm)
         return True
 
-    # -------------------------------------------------------------- sensors
-    def cmd_add_sensor(self, type="rgb", x=1.5, y=0.0, z=2.0, pitch=0.0, yaw=0.0, roll=0.0,
-                       attributes=None, save_dir=""):
-        w = self._need_world()
-        if not self._alive(self.ego):
-            raise RuntimeError("请先生成主车")
-        bp = w.get_blueprint_library().find(SENSOR_TYPES.get(type, type))
-        for k, v in (attributes or {}).items():
-            if bp.has_attribute(k):
-                bp.set_attribute(k, str(v))
-        tf = carla.Transform(carla.Location(float(x), float(y), float(z)),
-                             carla.Rotation(float(pitch), float(yaw), float(roll)))
-        if save_dir:
-            os.makedirs(save_dir, exist_ok=True)  # first: a bad path must not leave a sensor behind
-        actor = w.spawn_actor(bp, tf, attach_to=self.ego)
-        rec = {"actor": actor, "type": type, "save_dir": save_dir, "count": 0, "file": None, "lock": threading.Lock(),
-               "last": "", "spec": {"type": type, "x": x, "y": y, "z": z, "pitch": pitch, "yaw": yaw,
-                                    "roll": roll, "attributes": attributes, "save_dir": save_dir}}
-        self.sensors[actor.id] = rec
-        actor.listen(lambda data, r=rec: self._on_sensor(r, data))
-        self._log("已添加传感器 %s (id %d)%s" % (bp.id, actor.id, "，保存到 " + save_dir if save_dir else ""))
-        return {"id": actor.id, "blueprint": bp.id}
-
-    def _on_sensor(self, rec, data):
-        rec["count"] += 1
-        t, d = rec["type"], rec["save_dir"]
-        if t in ("rgb", "depth", "semantic"):
-            rec["last"] = "%dx%d frame %d" % (data.width, data.height, data.frame)
-            if d:
-                cc = {"depth": carla.ColorConverter.LogarithmicDepth,
-                      "semantic": carla.ColorConverter.CityScapesPalette}.get(t, carla.ColorConverter.Raw)
-                data.save_to_disk(os.path.join(d, "%06d.png" % data.frame), cc)
-        elif t == "lidar":
-            rec["last"] = "%d points frame %d" % (len(data), data.frame)
-            if d:
-                data.save_to_disk(os.path.join(d, "%06d.ply" % data.frame))
-        else:
-            if t == "imu":
-                row = [data.frame, data.timestamp, data.accelerometer.x, data.accelerometer.y,
-                       data.accelerometer.z, data.gyroscope.x, data.gyroscope.y, data.gyroscope.z, data.compass]
-                rec["last"] = "acc(%.2f,%.2f,%.2f) gyro(%.3f,%.3f,%.3f)" % tuple(row[2:8])
-            elif t == "gnss":
-                row = [data.frame, data.timestamp, data.latitude, data.longitude, data.altitude]
-                rec["last"] = "lat %.6f lon %.6f" % (data.latitude, data.longitude)
-            elif t == "collision":
-                row = [data.frame, data.timestamp, data.other_actor.type_id,
-                       data.normal_impulse.x, data.normal_impulse.y, data.normal_impulse.z]
-                rec["last"] = "撞到 %s" % data.other_actor.type_id
-                self._log("碰撞：%s" % data.other_actor.type_id, "warn")
-            elif t == "lane_invasion":
-                row = [data.frame, data.timestamp, " ".join(str(m.type) for m in data.crossed_lane_markings)]
-                rec["last"] = "压线 %s" % row[2]
-            elif t == "radar":  # one row per detection: frame, time, velocity, azimuth, altitude, depth
-                rows = [[data.frame, data.timestamp, r.velocity, r.azimuth, r.altitude, r.depth] for r in data]
-                rec["last"] = "%d 个目标 frame %d" % (len(rows), data.frame)
-                row = None
-            else:
-                row = [data.frame, data.timestamp]
-                rec["last"] = "frame %d" % data.frame
-            if d:
-                with rec["lock"]:
-                    if rec.get("closed"):  # removed meanwhile: a late measurement
-                        return
-                    if rec["file"] is None:
-                        rec["file"] = open(os.path.join(d, "%s.csv" % t), "a", encoding="utf-8")
-                    for r in (rows if row is None else [row]):
-                        rec["file"].write(",".join(str(x) for x in r) + "\n")
-
-    def cmd_list_sensors(self):
-        return [{"id": sid, "type": r["type"], "blueprint": r["actor"].type_id, "count": r["count"],
-                 "last": r["last"], "save_dir": r["save_dir"]} for sid, r in self.sensors.items()]
-
-    def cmd_remove_sensor(self, id):
-        rec = self.sensors.pop(int(id), None)
-        if rec is None:
-            return False
-        try:
-            rec["actor"].stop()
-            rec["actor"].destroy()
-        except RuntimeError:
-            pass
-        with rec["lock"]:
-            rec["closed"] = True
-            if rec["file"]:
-                rec["file"].close()
-        return True
-
     # ------------------------------------------------------------ live view
     def cmd_views_set(self, views):
         """Stream several sensors on the ego to the GUI at once (see views.py)."""
@@ -896,19 +807,9 @@ class Backend:
             raise RuntimeError("请先生成主车")
         return self.views.set(w, self.ego, list(views))
 
-    def cmd_views_stop(self):
+    def cmd_view_stop(self):
         self.views.stop()
         return True
-
-    def cmd_view_start(self, mode="chase", width=640, height=360, fps=15.0, mount=None, fov=90.0):
-        """Single camera view (older clients): same as views_set with one view."""
-        spec = {"id": "p0", "kind": "rgb", "mode": mode, "width": width, "height": height, "fps": fps,
-                "mount": mount, "attrs": {"fov": fov} if mount else {}}
-        r = self.cmd_views_set([spec])
-        return {"id": r[0]["actor"], "mode": mode}
-
-    def cmd_view_stop(self):
-        return self.cmd_views_stop()
 
     # ------------------------------------------------------------ datasets
     def _session(self, root):
@@ -955,12 +856,18 @@ class Backend:
     def cmd_start_recorder(self, filename="cosim_record.log", additional_data=True):
         self._need_world()
         path = self.client.start_recorder(os.path.abspath(filename), bool(additional_data))
+        # CARLA ends a recording in progress first, and answers "" when it
+        # cannot create the file (it writes it itself, on its own machine).
+        self.recording = path or None
+        if not path:
+            raise RuntimeError("CARLA 无法创建录制文件 %s：文件夹不存在或没有写权限" % os.path.abspath(filename))
         self._log("开始录制：%s" % filename)
         return path
 
     def cmd_stop_recorder(self):
         self._need_world()
         self.client.stop_recorder()
+        self.recording = None
         self._log("录制已停止")
         return True
 
@@ -978,6 +885,9 @@ class Backend:
         self.cmd_clear_traffic()
         self.cmd_destroy_ego()
         self._tick_or_wait(1)
+        if self.recording:  # CARLA ends a recording in progress when a replay starts
+            self.recording = None
+            self._log("回放会结束正在进行的录制，录制已停止", "warn")
         self.replay_before = {a.id for a in w.get_actors()}
         try:
             info = self.client.replay_file(os.path.abspath(filename), float(start), float(duration), int(follow_id))
@@ -1019,8 +929,6 @@ class Backend:
             return False
         if self._alive(self.ego) and a.id == self.ego.id:
             return self.cmd_destroy_ego()
-        if int(id) in self.sensors:
-            return self.cmd_remove_sensor(id)
         return a.destroy()
 
     # ---------------------------------------------------------------- cosim
@@ -1047,13 +955,14 @@ class Backend:
             di = coll.disk_info(col_cfg["out_dir"])
             if est["total_gb"] is None:
                 raise RuntimeError("数据采集必须设置停止条件（帧数、时长或容量上限）")
+            if di["free_gb"] is None:
+                raise RuntimeError(di["error"])
             if est["total_gb"] > di["free_gb"] - coll.DISK_RESERVE_GB:
                 raise RuntimeError("预计需要 %.1f GB，磁盘只剩 %.1f GB" % (est["total_gb"], di["free_gb"]))
         # Every run starts with a fresh ego at the chosen spawn point, like a
         # CarSim run starts from its initial conditions. A teleported vehicle
         # keeps stale traffic-manager state (autopilot then brakes forever),
-        # so respawn instead, and bring back the user's sensors and view.
-        sensor_specs = [dict(r["spec"]) for r in self.sensors.values()]
+        # so respawn instead, and bring back the user's views.
         view_specs = self.views.specs()
         color = self.ego.attributes.get("color", "") if self._alive(self.ego) else ""
         old = (self.ego.type_id, self.ego.get_transform(), self.anchor) if self._alive(self.ego) else None
@@ -1062,17 +971,15 @@ class Backend:
             self.cmd_spawn_ego(c["vehicle"], c["spawn_index"], color)
         except Exception:
             # The run did not start: put the previous ego back where it was, with
-            # its sensors and views, so a failed start costs the user nothing.
+            # its views, so a failed start costs the user nothing.
             # (Nothing to do when the request was refused before the ego was touched.)
             if old is not None and not (self.ego is prev_ego and self._alive(prev_ego)):
                 try:
-                    self._restore_ego(old, color, sensor_specs, view_specs)
+                    self._restore_ego(old, color, view_specs)
                 except Exception:
                     traceback.print_exc()  # report the original error, not this one
             raise
         try:
-            for spec in sensor_specs:
-                self.cmd_add_sensor(**spec)
             if view_specs:
                 self.cmd_views_set(view_specs)
             # Presets and older configs (CARLA frame) relative to this car's
@@ -1089,7 +996,7 @@ class Backend:
             # Respawning already removed the previous ego and its attachments.
             # A failed attachment must restore them before returning an error.
             if old is not None:
-                self._try(lambda: self._restore_ego(old, color, sensor_specs, view_specs))
+                self._try(lambda: self._restore_ego(old, color, view_specs))
             else:
                 self._try(self.cmd_destroy_ego)
             raise
@@ -1141,8 +1048,8 @@ class Backend:
             self._log("仿真开始：CARLA 物理，驾驶：%s" % d["drive"]["carla_driver"])
         return info
 
-    def _restore_ego(self, old, color, sensor_specs, view_specs):
-        """Put the previous ego (type, transform, anchor) back with its sensors and views."""
+    def _restore_ego(self, old, color, view_specs):
+        """Put the previous ego (type, transform, anchor) back with its views."""
         w = self.world
         if self._alive(self.ego):  # spawned, then something after the spawn failed
             self._try(self.cmd_destroy_ego)
@@ -1163,8 +1070,6 @@ class Backend:
             return
         self.anchor = old[2]
         self._tick_or_wait(1)
-        for spec in sensor_specs:
-            self.cmd_add_sensor(**spec)
         if view_specs:
             self.cmd_views_set(view_specs)
 
@@ -1286,6 +1191,9 @@ class Backend:
             return
         try:
             tel = self.session.step()
+            warning = tel.pop("warning", "")
+            if warning:  # e.g. the run record stopped: disk full
+                self._log(warning, "warn")
             if self._pending_walkers:
                 pending, self._pending_walkers = self._pending_walkers, []
                 self._start_walkers(pending)

@@ -20,6 +20,7 @@ import csv
 import math
 import os
 import queue
+import shutil
 import time
 
 import numpy as np
@@ -470,13 +471,22 @@ def radar_iso(raw, speed_unit=3.6, angle_unit=1.0):
 
 
 # ----------------------------------------------------------------- recording
+def _csv_nums(values):
+    """Floats with 8 significant digits (float32 keeps about 7) instead of the
+    17 csv.writer prints: about half the file size."""
+    return [float("%.8g" % v) if isinstance(v, (float, np.floating)) else v for v in values]
+
+
 class Recorder:
     """The selected scene keys and CarSim exports as CSV files, one row per
     sample (per object in the objects file). paths: {"main", "objects",
-    "lane"}; the lane file only when scalar lane keys are selected."""
+    "lane"}; the lane file only when scalar lane keys are selected. The files
+    are rewritten from the start (the previous run's are overwritten)."""
 
-    def __init__(self, paths, settings, export_names):
-        """settings: the "scene" settings; the keys come from its "record" part."""
+    def __init__(self, paths, settings, export_names, min_free_gb=None):
+        """settings: the "scene" settings; the keys come from its "record" part.
+        min_free_gb: once a second, check the free disk space; below it the
+        files are closed and no more rows are written (stopped says why)."""
         s = dict(settings.get("record") or {}, exports_all=settings.get("exports_all", True),
                  exports=settings.get("exports") or [])
         self.ego_keys = [k for k in EGO_KEYS if k in (s.get("ego") or ())]
@@ -485,6 +495,9 @@ class Recorder:
         self.exports = list(export_names) if s.get("exports_all", True) else \
             [n for n in export_names if n in (s.get("exports") or ())]
         self.files = []
+        self.min_free_gb = min_free_gb
+        self.stopped = ""
+        self._disk_checked = None  # time.monotonic() of the last free-space check
         try:
             self._open(paths)
         except BaseException:
@@ -510,13 +523,34 @@ class Recorder:
         return {"main": log_path, "objects": base + "_objects.csv", "lane": base + "_lane.csv"}
 
     def write(self, scene, exports):
+        if self.stopped or self._disk_low():
+            return
         t, fr = round(scene["t"], 6), scene["frame"]
         e = scene["ego"]
-        self.main.writerow([t, fr] + [e.get(k) for k in self.ego_keys] + [exports.get(n) for n in self.exports])
+        self.main.writerow([t, fr] + _csv_nums([e.get(k) for k in self.ego_keys] + [exports.get(n) for n in self.exports]))
         for o in scene["objects"]:
-            self.obj.writerow([t, fr] + [o.get(k) for k in self.obj_keys])
+            self.obj.writerow([t, fr] + _csv_nums([o.get(k) for k in self.obj_keys]))
         if self.lane is not None and scene.get("lane"):
-            self.lane.writerow([t, fr] + [scene["lane"].get(k) for k in self.lane_keys])
+            self.lane.writerow([t, fr] + _csv_nums([scene["lane"].get(k) for k in self.lane_keys]))
+
+    def _disk_low(self):
+        """Less than min_free_gb left (checked once a second)? Then stop writing."""
+        if self.min_free_gb is None:
+            return False
+        now = time.monotonic()
+        if self._disk_checked is not None and now - self._disk_checked < 1.0:
+            return False
+        self._disk_checked = now
+        try:
+            free = shutil.disk_usage(os.path.dirname(os.path.abspath(self.paths[0]))).free / 1e9
+        except OSError:  # the drive went away
+            free = None
+        if free is not None and free >= self.min_free_gb:
+            return False
+        self.stopped = ("磁盘只剩 %.1f GB（需保留 %.0f GB），运行记录已停止写入，仿真继续" % (free, self.min_free_gb)
+                        if free is not None else "运行记录所在的盘已不可用，运行记录已停止写入，仿真继续")
+        self.close()
+        return True
 
     def selected_exports(self, exports):
         return {n: exports.get(n) for n in self.exports}

@@ -569,7 +569,8 @@ void App::DrawPanelDrive() {
   ui::Row("运行时长 s", "0 = 一直运行，直到点“停止”（默认）。设了时长，到时会自动结束并停车", fs * 8);
   EditDouble(cfg_["sync"], "duration", 1.0, "%.1f", 0.0, 1e6);
   ui::Row("运行记录 CSV", "每个采样时刻的自车状态和 CarSim 导出变量；旁边另写 _objects.csv（障碍物）和 _lane.csv（车道）。"
-                          "记录哪些量在“场景信息”页勾选，采样周期在“数据采集”页设置；空 = 不记录");
+                          "记录哪些量在“场景信息”页勾选，采样周期在“数据采集”页设置；空 = 不记录。"
+                          "每次运行覆盖上一次的文件；磁盘剩余不到 10 GB 时停止写记录");
   EditString(cfg_["run"], "log_path");
   ui::EndCard();
 }
@@ -1104,12 +1105,14 @@ void App::DrawPanelRecorder() {
   ui::Row("相机跟随 ID", "0 = 不跟随", fs * 8);
   ImGui::InputInt("##rf", &replay_follow_, 0);
   ImGui::SetCursorPosX(ImGui::GetCursorPosX() + ui::LabelWidth());
+  ImGui::BeginDisabled(Running());  // a replay would end the run and remove its car and traffic
   if (ui::Button(ICON_FA_PLAY, "回放", ui::Kind::Primary))
     Call("replay", {{"filename", rec_file_}, {"start", replay_start_}, {"duration", replay_duration_}, {"follow_id", replay_follow_}},
          [this](const json& r) {
            Log("回放：" + r.get<std::string>().substr(0, 200));
            RefreshWorld();  // the viewport follows the recorded ego
          });
+  ImGui::EndDisabled();
   ImGui::SameLine();
   if (ui::Button(ICON_FA_CIRCLE_INFO, "文件信息"))
     Call("recorder_info", {{"filename", rec_file_}}, [this](const json& r) { rec_info_ = r.get<std::string>(); });

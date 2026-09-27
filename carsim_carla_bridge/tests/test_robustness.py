@@ -103,14 +103,13 @@ def main():
         ok, msg = expect_error(c, "spawn_ego", "没有车型", blueprint="vehicle.no.such_car", spawn_index=3)
         check("unknown vehicle: clear error", ok, msg)
         check("unknown vehicle: ego kept", c.call("world_info")["ego_id"] == ego0 and len(heroes(w)) == 1)
-        c.call("add_sensor", type="imu")
         c.call("views_set", views=[{"id": "p0", "kind": "rgb", "mode": "chase", "width": 160, "height": 90, "fps": 5}])
         bad = json.loads(json.dumps(base))
         bad["carla"]["vehicle"] = "vehicle.no.such_car"
         ok, msg = expect_error(c, "cosim_start", "没有车型", config=bad)
-        kinds = [s["type"] for s in c.call("list_sensors")]
-        check("run with unknown vehicle: error, ego / sensors kept", ok and c.call("world_info")["ego_id"] == ego0 and kinds == ["imu"],
-              (msg, kinds))
+        cams = [a.id for a in w.get_actors().filter("sensor.camera.*") if a.parent and a.parent.id == ego0]
+        check("run with unknown vehicle: error, ego / views kept", ok and c.call("world_info")["ego_id"] == ego0 and bool(cams),
+              (msg, cams))
         ok, msg = expect_error(c, "views_set", "不能作为视图", views=[{"id": "p1", "kind": "imu"}])
         check("imu as a view is refused before touching the views", ok, msg)
         c.events.clear()

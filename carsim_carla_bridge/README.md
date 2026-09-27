@@ -35,7 +35,7 @@ CarSim 负责全部车辆动力学计算，CARLA 负责场景、渲染和传感�
 
 ```bash
 # 1) 启动 CARLA（改版或原版都可以），然后：
-python run_cosim.py --mock --duration 20 --record out/      # 不需要 CarSim，先验证链路
+python run_cosim.py --mock --duration 20                    # 不需要 CarSim，先验证链路
 # 2) 接入真实 CarSim（Windows）
 python run_cosim.py --sim C:\CarSim\simfile.sim --carsim-repo ..\python_carsim_env
 python run_cosim.py --sim C:\CarSim\simfile.sim --controller controllers\my_controller.py # 你的控制算法（写法见 controllers\example_controller.py）

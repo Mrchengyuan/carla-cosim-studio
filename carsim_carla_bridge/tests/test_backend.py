@@ -107,11 +107,7 @@ def main():
         tr = c.call("spawn_traffic", vehicles=8, walkers=5, seed=1)
         check("spawn_traffic", tr["vehicles"] >= 6 and tr["walkers"] >= 1, tr)
 
-        os.makedirs("/tmp/cc_gen/sens", exist_ok=True)
-        cam = c.call("add_sensor", type="rgb", x=-6, z=3, pitch=-15,
-                     attributes={"image_size_x": 640, "image_size_y": 360}, save_dir="/tmp/cc_gen/sens/rgb")
-        imu = c.call("add_sensor", type="imu", save_dir="/tmp/cc_gen/sens/imu")
-        check("add_sensor", cam["id"] > 0 and imu["id"] > 0)
+        os.makedirs("/tmp/cc_gen", exist_ok=True)
 
         # ---- multi-view: camera, semantic, depth, lidar and radar at once ----
         import base64
@@ -152,16 +148,15 @@ def main():
                 check("occupied spawn point is reported", "被其他车辆" in str(err), str(err)[-60:])
             c.call("ping")
             va = [e["ids"] for e in c.events if e.get("event") == "views_active"]
-            kinds = sorted(s["type"] for s in c.call("list_sensors"))
-            check("failed start keeps the ego, its sensors and views", c.call("world_info")["ego_id"] > 0
-                  and kinds == ["imu", "rgb"] and bool(va) and len(va[-1]) == 5, (kinds, va[-1:] if va else va))
+            check("failed start keeps the ego and its views", c.call("world_info")["ego_id"] > 0
+                  and bool(va) and len(va[-1]) == 5, va[-1:] if va else va)
         finally:
             if blocker is not None:
                 blocker.destroy()
         c.call("views_set", views=views[:2])   # kept across the run below (ego is respawned)
 
         rec = c.call("start_recorder", filename="/tmp/cc_gen/test_rec.log")
-        check("start_recorder", bool(rec))
+        check("start_recorder, reported by world_info", bool(rec) and c.call("world_info")["recording"] == rec, rec)
 
         cfg = c.call("default_config")
         cfg["carsim"]["mock"] = True
@@ -197,19 +192,13 @@ def main():
         winfo = c.call("world_info")
         check("world restored to async after cosim", winfo["synchronous"] is False, winfo["synchronous"])
 
-        sens = c.call("list_sensors")
-        check("sensors received data", all(s["count"] > 0 for s in sens), [(s["type"], s["count"]) for s in sens])
-        check("rgb frames saved", len(os.listdir("/tmp/cc_gen/sens/rgb")) > 0, len(os.listdir("/tmp/cc_gen/sens/rgb")))
         c.call("stop_recorder")
+        check("stop_recorder, reported by world_info", c.call("world_info")["recording"] == "")
         info_txt = c.call("recorder_info", filename="/tmp/cc_gen/test_rec.log")
         check("recorder file", "Frames" in info_txt or "frames" in info_txt, info_txt[:60].replace("\n", " "))
 
         actors = c.call("list_actors")
         check("list_actors", any(a["ego"] for a in actors), len(actors))
-        # Each run respawns the ego and re-adds its sensors, so look the camera up again.
-        cam_id = next(s["id"] for s in c.call("list_sensors") if s["type"] == "rgb")
-        c.call("remove_sensor", id=cam_id)
-        check("remove_sensor", len(c.call("list_sensors")) == 1)
         c.call("clear_traffic")
         after = c.call("list_actors", filter="vehicle.*")
         check("clear_traffic", len(after) == 1, len(after))
@@ -226,7 +215,7 @@ def main():
     finally:
         proc.terminate()
         proc.wait(10)
-        shutil.rmtree("/tmp/cc_gen", ignore_errors=True)  # saved frames, recording, log
+        shutil.rmtree("/tmp/cc_gen", ignore_errors=True)  # recording, log
 
 
 if __name__ == "__main__":

@@ -128,6 +128,7 @@ void App::BackendPathStatus(const std::string& path) {
   }
   if (server_paths_.size() > 64) server_paths_ = json::object();
   json& e = server_paths_[path];
+  if (!e.is_object()) e = json::object();  // a path seen for the first time (value() throws on null)
   const double now = ImGui::GetTime();
   if (!path.empty() && be_.Connected() && !e.value("pending", false) && now - e.value("asked", -10.0) > 1.0) {
     e["pending"] = true;

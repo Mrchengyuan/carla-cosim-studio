@@ -316,7 +316,8 @@ class BackendWiringTests(unittest.TestCase):
                 return 3
 
         settings_obj = SimpleNamespace(synchronous_mode=False, fixed_delta_seconds=None)
-        world = SimpleNamespace(get_settings=lambda: settings_obj, apply_settings=lambda s: None, tick=lambda: 0)
+        world = SimpleNamespace(get_settings=lambda: settings_obj, apply_settings=lambda s: None, tick=lambda: 0,
+                                reset_all_traffic_lights=lambda: None)
         backend = Backend()
         events = []
         backend.emit = events.append

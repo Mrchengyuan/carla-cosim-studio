@@ -1068,6 +1068,9 @@ class Backend:
             self._log("仿真开始：CARLA 物理，驾驶：%s" % d["drive"]["carla_driver"])
         for hit in info.get("collisions", []):  # touching at the start: counted once, here
             self._log("碰撞：撞到 %s（id %s），t = %.2f s" % (hit["model"], hit["id"], info["t"]), "warn")
+        warning = info.pop("warning", "")
+        if warning:  # the run record stopped at step 0 (disk full): for the log, once
+            self._log(warning, "warn")
         return info
 
     def _restore_ego(self, old, color, view_specs):

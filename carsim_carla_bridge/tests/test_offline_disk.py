@@ -171,10 +171,11 @@ class RunRecordTests(unittest.TestCase):
             d={"collect": {"sample_period": 0.0, "capture_every": 1}, "sync": {"frame_dt": 0.02},
                "scene": {"collision": "log"}},
             scene=SimpleNamespace(update=lambda frame, t, v: sc, record_view=lambda: sc, _ego_box=(0.0, 0.0)),
-            recorder=rec, exports=lambda: {}, end_reason="")
+            recorder=rec, exports=lambda: {}, end_reason="", frame=1, last_action=None)
         tel = session.scene_step(ses, 1, 0.02)
         self.assertIn("停止写入", tel["warning"])
         self.assertIsNone(ses.recorder)
+        ses.frame = 2
         self.assertNotIn("warning", session.scene_step(ses, 2, 0.04))
 
     def test_backend_logs_the_warning_not_the_telemetry(self):

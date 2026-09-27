@@ -302,7 +302,7 @@ class CoSimSession:
         return {"external_api": self.sync.external_api, "server_api": self.sync.server_api,
                 "reference_point": [round(float(x), 3) for x in self.sync.ref_local],
                 "t_step": t_step, "inner_steps": self.inner, "clock_warning": self.clock_warning,
-                "t": t0, "collisions": tel0["collisions"]}
+                "t": t0, "collisions": tel0["collisions"], "warning": tel0.get("warning", "")}
 
     def stop(self, release_vehicle=True):
         """Best effort: one failing step (CarSim or CARLA gone) must not skip the rest."""
@@ -442,7 +442,8 @@ class CarlaDriveSession:
         self.n_frames = max(1, int(round(d["sync"]["duration"] / dt))) if d["sync"]["duration"] > 0 else 0
         self._wall0 = time.perf_counter()
         return {"external_api": False, "server_api": None, "reference_point": [0, 0, 0], "t_step": dt, "inner_steps": 1,
-                "clock_warning": False, "dynamics": "CARLA", "t": 0.0, "collisions": tel0["collisions"]}
+                "clock_warning": False, "dynamics": "CARLA", "t": 0.0, "collisions": tel0["collisions"],
+                "warning": tel0.get("warning", "")}
 
     def _wheel_angles(self, steer, speed_kmh):
         """[FL, FR] steer angle, deg, + = right (as get_wheel_steer_angle)."""

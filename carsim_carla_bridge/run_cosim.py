@@ -87,6 +87,8 @@ def main():
         print("CarSim t_step=%g s, %d solver steps per CARLA frame" % (info["t_step"], info["inner_steps"]))
         for hit in info.get("collisions", []):  # touching at the start: counted once, here
             print("collision at t=%.2f s with %s (id %s)" % (info["t"], hit["model"], hit["id"]))
+        if info.get("warning"):
+            print("warning:", info["warning"])
         tel = None
         while not session.done:
             tel = session.step()

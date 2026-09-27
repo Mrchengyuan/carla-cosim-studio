@@ -361,6 +361,10 @@ python tests/test_scene.py                           # 交给控制算法的周�
 python tests/test_offline_fixes.py                   # 不需要 CARLA：采集命名、容量上限、失败时恢复
 python tests/test_offline_recording.py               # 不需要 CARLA：从 t = 0 起的采样、控制输出 u1 … un、第一帧场景、开始时的碰撞
 python tests/test_recording_carla.py                 # 运行记录和 5 帧采集的采样时刻与内容（测完自动删除）
+python tests/test_offline_state.py                   # 不需要 CARLA：“场景对象”页的删除、交通数量同步、CARLA 退出后的重新连接、第二个界面被拒绝
+python tests/test_state_carla.py                     # 同上在 CARLA 上，control() 很慢时 disk_info 立即返回
+python tests/test_offline_display.py                 # 不需要 CARLA：“车辆状态”页的位姿按 CarSim 坐标和单位、原版 CARLA 的 IMU 提示、雷达和 IMU 的符号
+python tests/test_display_carla.py                   # 车辆状态页位姿与算法拿到的一致、原版 CARLA 的 IMU 提示（模拟 CarSim）
 python tests/test_offline_runs.py                    # 不需要 CARLA：每次运行一个记录文件夹、run.json、运行指标、finish(reason)
 python tests/test_runs_carla.py                      # 同上在 CARLA 上（模拟 CarSim，测完自动删除）
 python tests/test_offline_config.py                  # 不需要 CARLA：界面保存的配置在命令行上照样运行；界面的配置代码（需要 C++ 编译器）
@@ -377,6 +381,8 @@ python tests/test_offline_exports.py                 # 不需要 CARLA：导出�
 python tests/test_exports_carla.py                   # 同上在 CARLA 上（模拟 CarSim）
 python tests/test_offline_algoerr.py                 # 不需要 CARLA：控制算法出错时的提示、辅助文件重新载入
 python tests/test_algoerr_carla.py                   # 同上经过界面后端
+python tests/test_offline_algoout.py                 # 不需要 CARLA：算法 print 的内容到“输出”页（每秒最多 20 行）、出错时的调用栈、control() 耗时
+python tests/test_algoout_carla.py                   # 同上经过界面后端（模拟 CarSim）
 python tests/test_offline_guimisc.py                 # 不需要 CARLA：界面与后端的版本检查、卡住的后端打印调用栈、界面的平台代码（需要 C++ 编译器）
 python tests/test_guimisc_carla.py                   # 同上经过界面后端，运行后自动驾驶试开已取消、停止后端时清理
 python tests/test_offline_tests.py                   # 不需要 CARLA：启动 / 停止脚本、test_modified_carla.py 失败时退出码非 0

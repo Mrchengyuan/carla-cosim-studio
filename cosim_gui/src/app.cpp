@@ -473,6 +473,7 @@ void App::RefreshAfterMapChange() {
 }
 
 void App::RefreshDisk() {
+  if (!be_.Connected()) return;  // the config pages stay open without a backend
   std::string dir = cfg_.contains("collect") ? cfg_["collect"].value("out_dir", std::string("datasets"))
                                              : std::string(".");
   Call("disk_info", {{"path", dir}}, [this](const json& r) { disk_ = r; });
@@ -1039,6 +1040,7 @@ void App::OnEvent(const json& ev) {
     ds_dirty_ = false;
     ds_exporting_ = false;
     ds_sessions_ = json();  // listed again by the next backend
+    disk_ = json::object();  // that backend's free space
     world_edit_ = json();
     weather_dirty_ = false;
     last_tel_ = json::object();

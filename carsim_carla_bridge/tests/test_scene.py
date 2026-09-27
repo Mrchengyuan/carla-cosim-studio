@@ -25,7 +25,7 @@ from test_backend import Conn, check  # noqa: E402
 
 import carla  # noqa: E402
 
-PORT = 57199
+PORT = 57196
 ALL_OBJECT_KEYS = ["id", "type", "parked", "model", "length", "width", "height", "X", "Y", "Z", "Yaw",
                    "Vx_global", "Vy_global", "Speed", "rel_x", "rel_y", "rel_yaw", "rel_vx", "rel_vy", "dist", "gap"]
 ALL_LANE_KEYS = ["width", "offset", "heading_err", "curvature", "center_rel", "center_global", "center_curvature",

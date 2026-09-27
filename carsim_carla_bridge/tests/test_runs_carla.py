@@ -27,7 +27,7 @@ sys.path.insert(0, HERE)
 sys.path.insert(0, os.path.join(HERE, ".."))
 from test_backend import Conn, check  # noqa: E402
 
-PORT = 57172
+PORT = 57174
 
 # Drives straight; finish() writes the reason it gets.
 CONTROLLER = '''

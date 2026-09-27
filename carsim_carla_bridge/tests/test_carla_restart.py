@@ -16,7 +16,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 from test_backend import Conn, check  # noqa: E402
 
-PORT = 57194
+PORT = 57195
 ROOT = os.path.join(HERE, "..", "..")
 
 

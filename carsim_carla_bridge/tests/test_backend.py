@@ -25,6 +25,8 @@ class Conn:
                 break
             except OSError:
                 time.sleep(0.2)
+        else:
+            raise ConnectionError("no backend on port %d" % port)
         self.buf = b""
         self.events = []
         self.next_id = 0
@@ -37,7 +39,10 @@ class Conn:
                 raise ConnectionError("backend closed")
             self.buf += chunk
         line, self.buf = self.buf.split(b"\n", 1)
-        return json.loads(line)
+        msg = json.loads(line)
+        if msg.get("rejected"):  # another client has this backend (e.g. two tests on one port)
+            raise ConnectionError(msg.get("msg"))
+        return msg
 
     def call(self, cmd, timeout=200, **args):
         self.next_id += 1

@@ -591,6 +591,10 @@ class Recorder:
     def selected_exports(self, exports):
         return {n: exports.get(n) for n in self.exports}
 
+    def flush(self):
+        for f in self.files:
+            f.flush()
+
     def close(self):
         for f in self.files:
             try:

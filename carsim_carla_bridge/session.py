@@ -408,8 +408,8 @@ class AlgoOutput:
     def take(self, end=False):
         """The lines to show since the last take; at the end of a run (end)
         also how many lines the limit left out."""
-        if self._skipped and (end or self.clock() - self._window >= 1.0):
-            self._roll(self.clock())
+        if end or (self._skipped and self.clock() - self._window >= 1.0):
+            self._roll(self.clock())  # at the end a new window: finish() gets its own 20 lines
         lines, self._lines = self._lines, []
         return lines
 
@@ -681,11 +681,17 @@ def call_finish(driver, reason):
     if fin is None:
         return []
     driver.finish = None
+    if getattr(driver, "running", None) is not None:
+        # control() has not returned (another thread: the backend exiting):
+        # the algorithm's code is not called twice at the same time.
+        return ["控制算法的 control() 没有返回，没有调用 finish()"]
     driver.running = (time.time(), threading.get_ident())  # for control_busy(): a slow finish() is the algorithm's
     try:
         fin(reason)
     except (Exception, SystemExit) as e:  # sys.exit() in finish() must not end the backend either
         return [_user_error("控制算法的 finish() 出错", e, driver.path)]
+    except KeyboardInterrupt:  # Ctrl+C again on the command line: the rest of the run's end still runs
+        return ["控制算法的 finish() 被 Ctrl+C 中断"]
     finally:
         driver.running = None
     return []
@@ -1021,27 +1027,35 @@ class CoSimSession:
     def stop(self, release_vehicle=True, end="stopped", reason=""):
         """Best effort: one failing step (CarSim or CARLA gone) must not skip the rest.
         end: "finished" / "stopped" / "error", reason: why (end_words() when
-        not given). The algorithm's finish(reason) comes first. Returns end_run()."""
+        not given). The algorithm's finish(reason) comes last, before the
+        record's files close: a slow finish() cut short (the GUI closed) must
+        not cost the record (on disk, run.json complete) or leave the CARLA
+        side running. Returns end_run()."""
         def step(fn):
             try:
                 fn()
             except Exception as e:
                 print("CoSimSession.stop: %s" % e, flush=True)
         reason = reason or end_words(self, end)
-        errors = call_finish(self.driver, reason)
+        if self.recorder is not None:
+            step(self.recorder.flush)
+        out = end_run(self, end, reason)
         if self.env is not None:
             step(self.env.close)
         if self.scene is not None:
             step(self.scene.stop)
-        if self.recorder is not None:
-            step(self.recorder.close)
-            self.recorder = None
         if release_vehicle and self.sync is not None:
             step(self.sync.release)
         if self._original_settings is not None:
             orig, self._original_settings = self._original_settings, None
             step(lambda: self.world.apply_settings(orig))
-        return end_run(self, end, reason, errors)
+        try:
+            out["errors"][:0] = call_finish(self.driver, reason)
+        finally:
+            if self.recorder is not None:
+                step(self.recorder.close)
+                self.recorder = None
+        return out
 
     # -------------------------------------------------------------------- step
     def step(self):

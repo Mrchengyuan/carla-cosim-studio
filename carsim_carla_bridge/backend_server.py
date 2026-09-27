@@ -1355,7 +1355,12 @@ class Backend:
         # The algorithm's finish(), the run record's run.json: they get how and why the run ended.
         summary = {}
         self.ending = ses  # a slow finish() is the algorithm's, not a hung CARLA (the heartbeat)
+        own = self.task is None  # CARLA or the ego lost (no request running): the heartbeat needs a task
+        if own:
+            self.task = ("结束运行", time.time())
         self._try(lambda: summary.update(ses.stop(release_vehicle=True, end=final, reason=detail) or {}))
+        if own:
+            self.task = None
         self.ending = None
         self._algo_output(ses, end=True)  # what finish() printed, and where it failed, before its error
         for msg in summary.get("errors", []):  # e.g. an error in the algorithm's finish()

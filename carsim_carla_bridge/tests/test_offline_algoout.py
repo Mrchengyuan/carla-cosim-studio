@@ -103,6 +103,17 @@ class OutputTests(Case):
             self.assertIn(text, log)  # backend.log keeps everything
         self.assertEqual(self.out.take(), [])
 
+    def test_finish_prints_and_trace_reach_the_gui(self):
+        # fix2/runs' finish(reason) is the algorithm's code too.
+        ctl = self.load("f/c.py", "class Controller:\n    def control(self, e, t, dt):\n        return [0.0, 0.0, 0.0]\n\n"
+                                  "    def finish(self, reason):\n        print('bye', reason)\n        1 / 0\n", "Controller")
+        errors = session.call_finish(ctl, "运行被停止")
+        lines = self.out.take(end=True)
+        self.assertEqual(lines[0], "bye 运行被停止")
+        self.assertIn("c.py 第 7 行 finish：1 / 0", lines[1])
+        self.assertIn("控制算法的 finish() 出错", errors[0])
+        self.assertIs(sys.stdout, self.real)
+
     def test_other_threads_are_not_the_algorithm(self):
         """The backend's other threads (heartbeat, sockets) may print while
         control() runs: that goes to the log only."""
@@ -323,7 +334,7 @@ class Session:
         self.ctrl_n, self.ctrl_ms_sum, self.ctrl_ms_max, self.ctrl_ms_max_t = 2, 3.0, 2.5, 0.02
         return {"t": 0.02 * self.frame, "frame": self.frame, "world_frame": self.frame, "done": False, "rt_factor": 1.0}
 
-    def stop(self, release_vehicle=True):
+    def stop(self, release_vehicle=True, **end):
         pass
 
 
@@ -408,7 +419,7 @@ class BackendTests(unittest.TestCase):
         self.assertEqual(self.events[-1]["state"], "stopped")
 
     def test_other_runs_have_no_control_time_line(self):
-        self.backend.session, self.backend.cosim_state = SimpleNamespace(stop=lambda release_vehicle=True: None), "running"
+        self.backend.session, self.backend.cosim_state = SimpleNamespace(stop=lambda release_vehicle=True, **end: None), "running"
         self.backend.cmd_cosim_stop()
         self.assertFalse([m for lv, m in self.logs() if "算法耗时" in m])
 

@@ -312,7 +312,7 @@ class RunStopTests(unittest.TestCase):
     def test_walkers_spawned_while_paused_start_when_the_run_stops(self):
         b = Backend()
         b.world = FakeWorld()
-        b.session, b.cosim_state = SimpleNamespace(stop=lambda release_vehicle: None), "paused"
+        b.session, b.cosim_state = SimpleNamespace(stop=lambda release_vehicle, **end: None), "paused"
         ctrl = FakeActor(5, "controller.ai.walker")
         b._pending_walkers = [(ctrl, 1.3)]
         started = []

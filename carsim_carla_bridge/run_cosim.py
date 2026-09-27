@@ -86,12 +86,16 @@ def main():
         print("CarSim reference point in vehicle frame [m]:", info["reference_point"])
         if info["clock_warning"]:
             print("warning: frame_dt is not a multiple of CarSim t_step; clocks will drift")
+        for msg in info.get("warnings", []):
+            print("warning:", msg)
         print("CarSim t_step=%g s, %d solver steps per CARLA frame" % (info["t_step"], info["inner_steps"]))
         tel = None
         while not session.done:
             tel = session.step()
             for hit in tel.get("collisions", []):
                 print("collision at t=%.2f s with %s (id %s)" % (tel["t"], hit["model"], hit["id"]))
+            for msg in tel.get("warnings", []):
+                print("warning: t=%.2f s: %s" % (tel["t"], msg))
         if getattr(session, "end_reason", ""):
             print("stopped:", session.end_reason)
         if tel:

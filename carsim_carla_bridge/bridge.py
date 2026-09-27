@@ -60,7 +60,7 @@ class CarSimExports:
 
     def __init__(self, names, units=None):
         self.index = {n: i for i, n in enumerate(names)}
-        units = units or cfg.UNITS
+        units = self.units = units or cfg.UNITS
         self._angle = 1.0 if units["angle"] == "deg" else math.degrees(1.0)
         self._speed = KMH_TO_MS if units["speed"] == "km/h" else 1.0
         self._rate = 1.0 if units["rate"] == "deg/s" else math.degrees(1.0)
@@ -92,6 +92,59 @@ class CarSimExports:
 
     def jounce(self, obs, name):         # -> m, + = compression
         return self.raw(obs, name) * self._jounce
+
+
+class ExportCheck:
+    """Plausibility of the CarSim exports. A list with the .sim's count but
+    another order, or other units than the CarSim page says, raises no error:
+    the pose, the algorithm and the records just get other variables. Warnings
+    only, each once. Call it with the exports at the start (car at rest), then
+    every frame from about 1 s on with the previous exports until done (the
+    car moved, and the speeds were checked against the motion of Xo / Yo)."""
+
+    MOVING = 2.0  # m/s
+
+    def __init__(self, ex, wheel_radius=None, z0=0.0):
+        """z0: the reference point's height above the ground (0 = front axle)."""
+        self.ex, self.z0 = ex, float(z0)
+        self.wheel_radius = list(wheel_radius or [0.33] * 4)
+        self.done = False
+        self._said = set()
+
+    def __call__(self, obs, prev=None, dt=0.0):
+        """New warnings (text, CarSim units); prev: the exports dt s earlier."""
+        ex, w = self.ex, {}
+        ua, us = ex.units.get("angle", "deg"), ex.units.get("speed", "km/h")
+        if abs(ex.raw(obs, "Zo") - self.z0) > 0.5:
+            w["Zo"] = "Zo = %.3g m，平路上应约为参考点离地高度 %.2f m（CarSim 路面本来就有这个高度时可忽略）" % (
+                ex.raw(obs, "Zo"), self.z0)
+        for n in ("Pitch", "Roll"):
+            if abs(ex.angle(obs, n)) > 10.0:
+                w[n] = "%s = %.4g %s（车身俯仰 / 侧倾一般不到 10°）" % (n, ex.raw(obs, n), ua)
+        sl, sr = ex.angle(obs, "Steer_L1"), ex.angle(obs, "Steer_R1")
+        big = max(abs(sl), abs(sr))  # below 1 deg: toe, not steering
+        if big > 1.0 and (sl * sr <= 0.0 or min(abs(sl), abs(sr)) < 0.5 * big):
+            w["Steer"] = "Steer_L1 = %.4g %s，Steer_R1 = %.4g %s（左右前轮转角应同号、大小相近）" % (
+                ex.raw(obs, "Steer_L1"), ua, ex.raw(obs, "Steer_R1"), ua)
+        if prev is not None and dt > 0:
+            v = math.hypot(ex.raw(obs, "Xo") - ex.raw(prev, "Xo"), ex.raw(obs, "Yo") - ex.raw(prev, "Yo")) / dt
+            if v >= self.MOVING:
+                self.done = True
+                moved = "%.4g %s" % (v / ex._speed, us)
+                # Vx alone (body x): Vy in its place reads about 0.
+                if ex.has("Vx") and not 0.7 * v < abs(ex.speed(obs, "Vx")) < 1.4 * v:
+                    w["Vx"] = "Vx = %.4g %s，但 Xo / Yo 的变化折合 %s" % (ex.raw(obs, "Vx"), us, moved)
+                # Wheel by wheel (slip stays well inside the band this early).
+                bad = [(s, abs(math.radians(ex.spin(obs, "AVy_" + s))) * r)
+                       for s, r in zip(WHEEL_SUFFIXES, self.wheel_radius) if ex.has("AVy_" + s)]
+                bad = [(s, vw) for s, vw in bad if not 0.6 * v < vw < 1.6 * v]
+                if bad:
+                    w["AVy"] = "车轮转速 %s（%s）按 CARLA 车的车轮半径折合 %s %s，但 Xo / Yo 的变化折合 %s" % (
+                        "、".join("AVy_" + s for s, _ in bad), ex.units.get("wheel_spin", "rpm"),
+                        "、".join("%.4g" % (vw / ex._speed) for _, vw in bad), us, moved)
+        new = [t for k, t in w.items() if k not in self._said]
+        self._said.update(w)
+        return ["导出变量可疑：%s。“CarSim 动力学”页的导出变量顺序或单位可能与 .sim 不一致" % t for t in new]
 
 
 @dataclass

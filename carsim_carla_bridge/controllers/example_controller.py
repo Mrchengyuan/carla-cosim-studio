@@ -5,21 +5,21 @@
 
 约定
     class Controller:
-        reset(self)                          可选，每次运行开始调用一次
-        control(self, exports, t, dt) -> list 每帧调用一次
+        reset(self)                                   可选，每次运行开始调用一次
+        control(self, exports, t, dt, scene) -> list  每帧调用一次
 
-    exports  dict，CarSim 全部导出变量，按名字取值，CarSim 单位
-             （如 exports["Vx"] km/h，exports["Yaw"] deg）。
+    exports  dict，CarSim 全部导出变量，按名字取值，CarSim 单位，跟随
+             “CarSim 动力学”页的单位设置（默认 exports["Vx"] km/h，exports["Yaw"] deg）。
              变量名就是“CarSim 动力学”页导出变量列表里填的名字。
     t, dt    CarSim 当前时间、控制周期（= 界面里的“仿真步长”），秒
+    scene    CARLA 场景信息（周围的车、行人、障碍物，前方车道，传感器数据，
+             见 scene_controller.py）；scene["units"] 是 exports 和 scene 用的单位，
+             例如 scene["units"]["speed"] 为 "km/h" 或 "m/s"。
+             不需要时只写 3 个参数 control(self, exports, t, dt)，就不传 scene。
     返回值   按 .sim 里导入变量（REPLACE）的顺序给出的数值。
              python_carsim_env 的默认顺序：[油门 0~1, 制动, 方向盘转角 deg（左正）]
 
-入口也可以是普通函数 control(exports, t, dt)，在界面“入口”里填函数名。
-
-要用 CARLA 场景里的信息（周围的车、行人、障碍物，前方车道，传感器数据），
-把 control 写成 4 个参数 control(self, exports, t, dt, scene)，见
-scene_controller.py。
+入口也可以是普通函数 control(exports, t, dt[, scene])，在界面“入口”里填函数名。
 """
 import math
 
@@ -30,9 +30,10 @@ class Controller:
     def reset(self):
         self.integral = 0.0
 
-    def control(self, exports, t, dt):
-        # 纵向：PI 定速
-        err = self.TARGET_KMH - exports["Vx"]
+    def control(self, exports, t, dt, scene):
+        # 纵向：PI 定速（按 km/h 调的参数；Vx 的单位看 scene["units"]）
+        v_kmh = exports["Vx"] * (1.0 if scene["units"]["speed"] == "km/h" else 3.6)
+        err = self.TARGET_KMH - v_kmh
         self.integral = max(-50.0, min(50.0, self.integral + err * dt))
         u = 0.08 * err + 0.02 * self.integral
         throttle = max(0.0, min(1.0, u))

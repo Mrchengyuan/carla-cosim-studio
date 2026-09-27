@@ -16,7 +16,7 @@ import carla
 
 import rig as rigmod
 import settings as st
-from bridge import CarlaVehicleSync, front_axle_local
+from bridge import CarlaVehicleSync, ExportCheck, front_axle_local
 from drivers import ManualDriver, RouteFollower
 from scene import Recorder, SceneProvider, gui_view
 
@@ -34,7 +34,7 @@ def make_env(d):
     if c["mock"]:
         from mock_carsim import MockCarSimEnv
         dur = d["sync"]["duration"]
-        return MockCarSimEnv(c["export_names"], t_stop=dur + 1.0 if dur > 0 else 1e9)
+        return MockCarSimEnv(c["export_names"], t_stop=dur + 1.0 if dur > 0 else 1e9, units=c["units"])
     if not c["sim_path"]:
         raise ValueError("CarSim .sim file not set (carsim.sim_path)")
     repo = os.path.abspath(c["repo_path"])
@@ -297,10 +297,17 @@ class CoSimSession:
         self.clock_warning = abs(self.inner * t_step - frame_dt) > 1e-9
         # duration <= 0: run until stopped (or until CarSim reaches t_stop).
         self.n_frames = max(1, int(round(d["sync"]["duration"] / frame_dt))) if d["sync"]["duration"] > 0 else 0
+        # Only the count is known to match the .sim: warn when the values do
+        # not look like the named variables (now, and once the car moves).
+        bb = self.vehicle.bounding_box
+        self.export_check = ExportCheck(self.sync.ex, self.sync.wheel_radius_m,
+                                        float(self.sync.ref_local[2]) - (bb.location.z - bb.extent.z))
+        self._t_start = self.env.t_current
         self._wall0 = time.perf_counter()
         return {"external_api": self.sync.external_api, "server_api": self.sync.server_api,
                 "reference_point": [round(float(x), 3) for x in self.sync.ref_local],
-                "t_step": t_step, "inner_steps": self.inner, "clock_warning": self.clock_warning}
+                "t_step": t_step, "inner_steps": self.inner, "clock_warning": self.clock_warning,
+                "warnings": self.export_check(self.obs)}
 
     def stop(self, release_vehicle=True):
         """Best effort: one failing step (CarSim or CARLA gone) must not skip the rest."""
@@ -333,6 +340,7 @@ class CoSimSession:
         action = self.driver(self.obs, env.t_current)
         if not all(math.isfinite(a) for a in action):
             raise RuntimeError("控制算法输出了无效数值（NaN / 无穷大）：%s" % list(action))
+        prev, t_prev = self.obs, env.t_current
         self.obs, _, done, info = env.control_step(action, self.inner)
         if info.get("error"):
             raise RuntimeError("CarSim error: %s" % info["error"])
@@ -340,6 +348,9 @@ class CoSimSession:
         if bad:
             # Never hand NaN / inf to CARLA as a pose; stop with a clear reason.
             raise RuntimeError("CarSim 输出了无效数值（NaN / 无穷大），仿真已停止：%s" % ", ".join(bad[:6]))
+        warnings = []
+        if not self.export_check.done and env.t_current - self._t_start >= 1.0:
+            warnings = self.export_check(self.obs, prev, env.t_current - t_prev)
         state = self.sync.sync(self.obs, env.t_current, frame_dt)
         world_frame = self.world.tick()
         self.frame += 1
@@ -364,6 +375,7 @@ class CoSimSession:
             "wheel_rotation": list(state.wheel_rotation),
             "wheel_suspension_mm": [x * 1000.0 for x in state.wheel_suspension],
             "action": [float(a) for a in action],
+            "warnings": warnings,
             "world_frame": world_frame,
             "dynamics": "CarSim",
             "done": self.done,

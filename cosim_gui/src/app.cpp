@@ -729,15 +729,19 @@ int Conform(json& v, const json& def) {
 
 void App::ConformConfig() {
   if (!cfg_defaults_.is_object()) return;
-  // The reference point is "front_axle" or [x, y, z]: the default's type
-  // (a string) must not replace a point set on the CarSim page.
-  json ref;
+  // The reference point is "front_axle" or [x, y, z], the CARLA interface
+  // "auto" or true / false: the default's type (a string) must not replace a
+  // point set or an interface forced on the CarSim page.
+  json ref, ext;
   if (cfg_.contains("sync") && cfg_["sync"].is_object() && cfg_["sync"].contains("reference_point")) {
     const json& r = cfg_["sync"]["reference_point"];
     if (r.is_array() && r.size() == 3 && std::all_of(r.begin(), r.end(), [](const json& v) { return v.is_number(); })) ref = r;
   }
+  if (cfg_.contains("sync") && cfg_["sync"].is_object() && cfg_["sync"].value("use_external_api", json()).is_boolean())
+    ext = cfg_["sync"]["use_external_api"];
   int fixed = Conform(cfg_, cfg_defaults_);
   if (!ref.is_null()) cfg_["sync"]["reference_point"] = ref;
+  if (!ext.is_null()) cfg_["sync"]["use_external_api"] = ext;
   // Rig sensors: objects with numbers where numbers belong.
   json& sensors = cfg_["rig"]["sensors"];
   json keep = json::array();

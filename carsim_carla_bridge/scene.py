@@ -30,6 +30,7 @@ import carla
 import rig as rigmod
 import settings as st
 from bridge import anchor_frame, front_axle_local
+from coords import euler_from_rot, rot_zyx
 
 RANGE_M = 50.0
 LANE_STEP_M = 2.0
@@ -215,6 +216,11 @@ class SceneProvider:
         # Continuous like CarSim's Yaw export (it keeps counting past +-180).
         self._yaw = eyaw if self._yaw is None else self._yaw + _wrap(eyaw - self._yaw)
         evx, evy = self._global_vec(ev.x, ev.y, ev.z)
+        # Pitch (+ = nose down) and roll (+ = right side down) like CarSim's
+        # exports, in the global frame: for the GUI's pose readout (gui_view)
+        # only, not in EGO_KEYS (never handed to the algorithm or recorded).
+        er = etf.rotation
+        _, pitch, roll = euler_from_rot(self._to_local @ rot_zyx(er.yaw, er.pitch, er.roll))
         ps = math.radians(eyaw)
         cp, sp = math.cos(ps), math.sin(ps)
 
@@ -225,7 +231,8 @@ class SceneProvider:
         ego_poly = _corners(self._ego_box[0], self._ego_box[1], 0.0, el, ew)
         scene = {"t": t, "frame": frame,
                  "ego": {"X": EX, "Y": EY, "Z": EZ, "Yaw": self._yaw * au, "Vx_global": evx * su, "Vy_global": evy * su,
-                         "Speed": math.hypot(evx, evy) * su, "length": 2 * el, "width": 2 * ew, "height": 2 * eh}}
+                         "Speed": math.hypot(evx, evy) * su, "length": 2 * el, "width": 2 * ew, "height": 2 * eh,
+                         "Pitch": -pitch * au, "Roll": roll * au}}
         types = set(self.s.get("object_types") or [])
         objs = []
 
@@ -287,7 +294,7 @@ class SceneProvider:
     def _select(self, sel, sensors):
         sc = self.latest
         v = {"t": sc["t"], "frame": sc["frame"],
-             "ego": {k: sc["ego"][k] for k in sel.get("ego") or () if k in sc["ego"]}}
+             "ego": {k: sc["ego"][k] for k in sel.get("ego") or () if k in EGO_KEYS and k in sc["ego"]}}
         keys = [k for k in OBJECT_KEYS if k in ALWAYS_OBJECT_KEYS or k in (sel.get("objects") or ())]
         v["objects"] = [{k: o[k] for k in keys} for o in sc["objects"]]
         if sel.get("lane") and "lane" in sc:
@@ -467,7 +474,8 @@ def lidar_iso(raw):
 
 def radar_iso(raw, speed_unit=3.6, angle_unit=1.0):
     """CARLA radar buffer -> N x 4 float32 [distance m, azimuth (+ left),
-    elevation, radial velocity]; angles and speed in CarSim units."""
+    elevation (+ up), radial velocity (< 0 = approaching)]; angles and speed
+    in CarSim units."""
     p = np.frombuffer(raw, dtype=np.float32).reshape(-1, 4)  # velocity, azimuth, altitude, depth (rad, m/s)
     if not len(p):
         return np.zeros((0, 4), np.float32)
@@ -477,7 +485,9 @@ def radar_iso(raw, speed_unit=3.6, angle_unit=1.0):
 
 def imu_gnss(kind, d, units):
     """An IMU / GNSS measurement in CarSim axes (x forward, y left, z up) and
-    units (Units), as the algorithm gets it (docs/场景与数据接口.md 4.6)."""
+    units (Units), as the algorithm gets it (docs/场景与数据接口.md 4.6).
+    accel stays m/s^2 with gravity; compass is CARLA's heading from north,
+    clockwise (not CarSim's Yaw). On stock CARLA the gyro reads 0."""
     if d is None:
         return None
     if kind == "imu":

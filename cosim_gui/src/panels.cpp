@@ -331,7 +331,7 @@ void App::DrawPanelActors() {
     ImGui::TableSetupColumn("ID");
     ImGui::TableSetupColumn("类型", ImGuiTableColumnFlags_WidthStretch, 3.0f);
     ImGui::TableSetupColumn("角色");
-    ImGui::TableSetupColumn("位置 (m)", ImGuiTableColumnFlags_WidthStretch, 2.0f);
+    ImGui::TableSetupColumn("CARLA 地图坐标 (m)", ImGuiTableColumnFlags_WidthStretch, 2.0f);
     ImGui::TableSetupColumn("");
     ImGui::TableSetupColumn("");
     ImGui::TableHeadersRow();
@@ -476,6 +476,7 @@ void App::DrawPanelVehicle() {
   sp = cfg_["carla"].value("spawn_index", 0);
   if (sp >= 0 && sp < n) {
     const json& q = spawn_points_[static_cast<size_t>(sp)];
+    ImGui::TextColored(p.text_dim, "CARLA 地图坐标（y 向右，航向顺时针）");
     ImGui::Text("x %.1f   y %.1f   z %.1f", q.value("x", 0.0), q.value("y", 0.0), q.value("z", 0.0));
     ImGui::Text("航向 %.0f°   （共 %d 个）", q.value("yaw", 0.0), n);
   }
@@ -628,7 +629,8 @@ void App::DrawPanelDrive() {
     ImGui::TextColored(p.text_dim, "S / ↓  制动");
     ImGui::TextColored(p.text_dim, "A D / ← →  转向");
     ImGui::TextColored(p.text_dim, "输入会平滑变化，像真实的踏板和方向盘");
-    ImGui::Text("油门 %.2f   制动 %.2f   转向 %+.2f", kb_throttle_, kb_brake_, kb_steer_);
+    // kb_steer_ is CARLA's steer (+ = right): shown + = left like CarSim.
+    ImGui::Text("油门 %.2f   制动 %.2f   转向 %+.2f（左为正）", kb_throttle_, kb_brake_, 0.0f - kb_steer_);
     ImGui::EndGroup();
     ui::EndCard();
   }

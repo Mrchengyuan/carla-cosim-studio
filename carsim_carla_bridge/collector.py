@@ -234,11 +234,16 @@ class DataCollector:
                 "started": time.strftime("%Y-%m-%d %H:%M:%S"),
                 "conventions": "carsim", "units": c.get("units") or {"speed": "km/h", "angle": "deg"},
                 "formats": {"lidar_bin": "float32 N x 4 [x forward, y left, z up, intensity] in the lidar frame (CarSim axes)",
-                            "depth_npy": "float32 H x W, metres, clipped at the camera's max_distance",
+                            "depth_npy": "float32 H x W, metres along the camera's optical axis (planar depth, "
+                                         "not the ray length), clipped at the camera's max_distance",
                             "semantic_png": "R channel = CARLA semantic tag",
                             "instance_png": "R = semantic tag, G + B*256 = object id",
-                            "radar": "rows of [distance m, azimuth (+ left), elevation, radial velocity], "
-                                     "angles and speed in the CarSim units above"}}
+                            "radar": "rows of [distance m, azimuth (+ left), elevation (+ up), radial velocity "
+                                     "(< 0 = approaching)], angles and speed in the CarSim units above",
+                            "imu": "frames/*.json sensors, CarSim axes (x forward, y left, z up): accel m/s^2 "
+                                   "including gravity (about +9.81 on z at rest), gyro in the CarSim rate unit "
+                                   "(0 on stock CARLA), compass = heading from north, clockwise, in the CarSim "
+                                   "angle unit"}}
         with open(os.path.join(self.root, "meta.json"), "w", encoding="utf-8") as f:
             json.dump(meta, f, indent=2, ensure_ascii=False)
         # Raw frames waiting for the writer: at most ~1 GB of them (the nuScenes

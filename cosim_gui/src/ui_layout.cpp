@@ -101,6 +101,29 @@ void ControlBar(const char* label, float v, float lo, float hi, const ImVec4& co
   if (ui::GetFonts().mono) ImGui::PopFont();
 }
 
+// Top of the brake bar: the brake is in the .sim's unit (a pressure in MPa
+// can reach ~10), so the bar reaches the largest value of this run, at least 1.
+float BrakeTop(const std::vector<float>& h, float v) {
+  float top = std::max(1.0f, v);
+  for (float x : h) top = std::max(top, x);
+  return top;
+}
+
+// Bar range for an import the GUI knows nothing about: the values of this
+// run, symmetric around 0 (a centred bar) once one of them was negative.
+bool ImportRange(const std::vector<float>& h, float v, float* lo, float* hi) {
+  float mn = std::min(0.0f, v), mx = std::max(0.0f, v);
+  for (float x : h) { mn = std::min(mn, x); mx = std::max(mx, x); }
+  if (mn < 0.0f) {
+    *hi = std::max(-mn, mx);
+    *lo = -*hi;
+    return true;
+  }
+  *lo = 0.0f;
+  *hi = mx > 0.0f ? mx : 1.0f;
+  return false;
+}
+
 // Toolbar tab that jumps to a page; pad: space left and right of the label.
 bool ToolTab(const char* label, bool active, float height, float pad) {
   const ui::Palette& p = ui::Colors();
@@ -1116,17 +1139,31 @@ void App::DrawHud(ImVec2 anchor) {
   const std::string tt = have ? Fmt("t %.2f s", last_tel_.value("t", 0.0)) : std::string("t - s");
   dl->AddText(mono, mono->FontSize, ImVec2(a.x + fs * 0.8f, b.y - fs * 1.5f), ImGui::GetColorU32(kHudDim), tt.c_str());
 
-  // Steering wheel: angle in degrees, + = right.
   const json act = have ? last_tel_["action"] : json::array();
+  if (!imports_named_) {
+    // The .sim's imports are not the default [油门, 制动, 方向盘]: their values as returned.
+    for (int i = 0; i < std::min(n_imports_, 3); ++i) {
+      const float y = a.y + fs * (0.8f + 1.35f * i);
+      dl->AddText(ImGui::GetFont(), fs * 0.85f, ImVec2(a.x + fs * 7.6f, y), ImGui::GetColorU32(kHudDim), Fmt("导入 %d", i + 1).c_str());
+      const std::string v = have ? Fmt("%+.4g", appui::NumAt(act, static_cast<size_t>(i))) : std::string("-");
+      const float vw = mono->CalcTextSizeA(mono->FontSize, 1e9f, 0, v.c_str()).x;
+      dl->AddText(mono, mono->FontSize, ImVec2(b.x - fs * 0.8f - vw, y), ImGui::GetColorU32(kHudText), v.c_str());
+    }
+    if (n_imports_ > 3)
+      dl->AddText(ImGui::GetFont(), fs * 0.8f, ImVec2(a.x + fs * 7.6f, a.y + fs * 4.85f), ImGui::GetColorU32(kHudDim),
+                  Fmt("共 %d 个导入", n_imports_).c_str());
+    return;
+  }
+  // Steering wheel: angle in degrees, + = left (CarSim's sign).
   const bool cosim = last_tel_.value("dynamics", std::string()) == "CarSim";
   const float sw_max = std::max(1.0f, cfg_.contains("sync") ? cfg_["sync"].value("steering_wheel_max_deg", 540.0f) : 540.0f);
   const float raw = act.size() > 2 ? static_cast<float>(appui::NumAt(act, 2)) : 0.0f;
-  const float wheel_deg = cosim ? -raw : raw * sw_max;  // CarSim: deg, + left; CARLA: -1..1, + right
+  const float wheel_deg = cosim ? raw : -raw * sw_max;  // CarSim: deg, + left; CARLA: -1..1, + right
   const ImVec2 wc(a.x + fs * 10.2f, a.y + H * 0.45f);
   const float r = fs * 2.1f;
   dl->AddCircle(wc, r, ImGui::GetColorU32(kHudText), 48, 2.6f);
   dl->AddCircle(wc, r * 0.28f, ImGui::GetColorU32(kHudDim), 24, 1.5f);
-  const float ang = wheel_deg * kPi / 180.0f;
+  const float ang = -wheel_deg * kPi / 180.0f;  // screen angles (y down) turn clockwise: to the right
   for (float base : {0.0f, kPi, kPi * 0.5f}) {  // right, left, bottom spokes (screen angles, y down)
     const float t = base + ang;
     dl->AddLine(ImVec2(wc.x + std::cos(t) * r * 0.28f, wc.y + std::sin(t) * r * 0.28f),
@@ -1139,7 +1176,7 @@ void App::DrawHud(ImVec2 anchor) {
   dl->AddText(ImVec2(wc.x - ws.x * 0.5f, b.y - fs * 1.4f), ImGui::GetColorU32(kHudDim), wd.c_str());
 
   // Pedals
-  const float thr = act.size() > 0 ? static_cast<float>(appui::NumAt(act, 0)) : 0.0f, brk = act.size() > 1 ? std::min(1.0f, static_cast<float>(appui::NumAt(act, 1))) : 0.0f;
+  const float thr = act.size() > 0 ? static_cast<float>(appui::NumAt(act, 0)) : 0.0f, brk = act.size() > 1 ? static_cast<float>(appui::NumAt(act, 1)) : 0.0f;
   auto pedal = [&](float x, float v, const ImVec4& col, const char* label) {
     const float y0 = a.y + fs * 0.8f, y1 = b.y - fs * 1.6f, bw = fs * 0.75f;
     dl->AddRectFilled(ImVec2(x, y0), ImVec2(x + bw, y1), ImGui::GetColorU32(ImVec4(1, 1, 1, 0.08f)), 2.0f);
@@ -1150,7 +1187,7 @@ void App::DrawHud(ImVec2 anchor) {
     dl->AddText(ImGui::GetFont(), ls, ImVec2(x + (bw - lw) * 0.5f, b.y - fs * 1.35f), ImGui::GetColorU32(kHudDim), label);
   };
   pedal(a.x + fs * 13.6f, thr, p.success, "油门");
-  pedal(a.x + fs * 15.4f, brk, p.danger, "制动");
+  pedal(a.x + fs * 15.4f, brk / BrakeTop(h_brk_, brk), p.danger, "制动");
 }
 
 // Spawn points as the road skeleton, the ego trail and the ego heading.
@@ -1220,7 +1257,9 @@ void App::DrawDock(float w, float h) {
       DrawPlots();
       ImGui::EndTabItem();
     }
-    if (ImGui::BeginTabItem(ICON_FA_GAUGE_HIGH "  车辆状态", nullptr, flags(1))) {
+    const bool vstate_open = ImGui::BeginTabItem(ICON_FA_GAUGE_HIGH "  车辆状态", nullptr, flags(1));
+    ui::RecordTarget("dock:vstate");
+    if (vstate_open) {
       DrawVehicleState();
       ImGui::EndTabItem();
     }
@@ -1277,7 +1316,7 @@ void App::DrawPlots() {
     ImPlot::EndPlot();
   }
   ImGui::SameLine();
-  if (ImPlot::BeginPlot("前轮转向角 (°)", sz, pf)) {
+  if (ImPlot::BeginPlot("前轮转向角 (°，左为正)", sz, pf)) {
     ImPlot::SetupAxes(nullptr, nullptr, ax, ImPlotAxisFlags_None);
     const std::vector<float> steer[2] = {h_steer_fl_, h_steer_fr_};
     fit(steer, 2, 4.0f, false);
@@ -1296,12 +1335,16 @@ void App::DrawPlots() {
     ImPlot::EndPlot();
   }
   ImGui::SameLine();
-  if (ImPlot::BeginPlot("油门 / 制动", sz, pf)) {
+  // What control() returned: the brake is in the .sim's unit (a pressure in MPa
+  // can reach ~10), other import sets are shown as they are: Y fits the data.
+  const std::vector<float> io[3] = {h_thr_, h_brk_, h_u3_};
+  const int n_io = imports_named_ ? 2 : std::max(1, std::min(n_imports_, 3));
+  if (ImPlot::BeginPlot(imports_named_ ? "油门 / 制动###io" : "导入 1 / 2 / 3###io", sz, pf)) {
     ImPlot::SetupAxes(nullptr, nullptr, ax, ImPlotAxisFlags_None);
-    ImPlot::SetupAxisLimits(ImAxis_Y1, -0.05, 1.05, ImPlotCond_Always);
+    fit(io, n_io, 1.1f, true);
     ImPlot::SetupLegend(ImPlotLocation_NorthWest, ImPlotLegendFlags_Horizontal);
-    ImPlot::PlotLine("油门", h_t_.data(), h_thr_.data(), n, line);
-    ImPlot::PlotLine("制动", h_t_.data(), h_brk_.data(), n, line);
+    for (int i = 0; i < n_io; ++i)
+      ImPlot::PlotLine(imports_named_ ? (i ? "制动" : "油门") : Fmt("导入 %d", i + 1).c_str(), h_t_.data(), io[i].data(), n, line);
     ImPlot::EndPlot();
   }
 }
@@ -1328,45 +1371,65 @@ void App::DrawVehicleState() {
     ImGui::TextColored(p.text_dim, ICON_FA_SLIDERS "  控制输入");
     const json a = have ? last_tel_["action"] : json::array();
     const bool cosim = last_tel_.value("dynamics", std::string()) == "CarSim";
-    const float thr = a.size() > 0 ? static_cast<float>(appui::NumAt(a, 0)) : 0.0f, brk = a.size() > 1 ? static_cast<float>(appui::NumAt(a, 1)) : 0.0f;
-    const float sw = a.size() > 2 ? static_cast<float>(appui::NumAt(a, 2)) : 0.0f;
-    const float steer = cosim ? -sw / std::max(1.0f, cfg_["sync"].value("steering_wheel_max_deg", 540.0f)) : sw;
-    ControlBar("油门", thr, 0, 1, p.success, false);
-    ControlBar("制动", std::min(1.0f, brk), 0, 1, p.danger, false);
-    ControlBar("转向", steer, -1, 1, p.accent, true);
+    if (imports_named_) {
+      const float thr = a.size() > 0 ? static_cast<float>(appui::NumAt(a, 0)) : 0.0f, brk = a.size() > 1 ? static_cast<float>(appui::NumAt(a, 1)) : 0.0f;
+      const float sw = a.size() > 2 ? static_cast<float>(appui::NumAt(a, 2)) : 0.0f;
+      // + = left (CarSim's sign); the bar runs from +1 (left) to -1 (right).
+      const float steer = cosim ? sw / std::max(1.0f, cfg_["sync"].value("steering_wheel_max_deg", 540.0f)) : -sw;
+      ControlBar("油门", thr, 0, 1, p.success, false);
+      ControlBar("制动", brk, 0, BrakeTop(h_brk_, brk), p.danger, false);
+      ImGui::BeginGroup();
+      ControlBar("转向", steer, 1, -1, p.accent, true);
+      ImGui::EndGroup();
+      if (ImGui::IsItemHovered()) ImGui::SetTooltip("方向盘转角 / 最大转角，左为正（CarSim 的符号）");
+    } else {
+      // Not the default [油门, 制动, 方向盘]: the first imports as control() returned them.
+      const std::vector<float>* hist[3] = {&h_thr_, &h_brk_, &h_u3_};
+      for (int i = 0; i < std::min(n_imports_, 3); ++i) {
+        const float v = static_cast<float>(appui::NumAt(a, static_cast<size_t>(i)));
+        float lo = 0, hi = 1;
+        const bool centred = ImportRange(*hist[i], v, &lo, &hi);
+        ControlBar(Fmt("导入 %d", i + 1).c_str(), v, lo, hi, p.accent, centred);
+      }
+      if (n_imports_ > 3) ImGui::TextColored(p.text_dim, "共 %d 个导入，这里显示前 3 个", n_imports_);
+    }
     if (collect_stats_.contains("frames")) {
       ImGui::TextColored(p.text_dim, ICON_FA_DATABASE "  采集 %d 帧  %.1f MB", collect_stats_.value("frames", 0),
                          collect_stats_.value("bytes", 0.0) / 1e6);
       const int maxf = cfg_["collect"].value("max_frames", 0);
       if (maxf > 0) ImGui::ProgressBar(std::min(1.0f, collect_stats_.value("frames", 0) / static_cast<float>(maxf)), ImVec2(-1, fs * 0.5f), "");
     }
-    // Pose
+    // Pose: the scene's ego, in CarSim's global frame (origin on the spawn
+    // point, x along its heading, y left) and the run's units, like Xo / Yo / Yaw.
     ImGui::TableSetColumnIndex(2);
-    ImGui::TextColored(p.text_dim, ICON_FA_LOCATION_CROSSHAIRS "  位姿");
+    ImGui::PushStyleColor(ImGuiCol_Text, p.text_dim);
+    ImGui::TextWrapped(ICON_FA_LOCATION_CROSSHAIRS "  位姿 · CarSim 全局坐标（原点 = 出生点，y 向左）");
+    ImGui::PopStyleColor();
+    ui::RecordTarget("vstate:pose");
+    if (ImGui::IsItemHovered())
+      ImGui::SetTooltip("CarSim 参考点在 CarSim 全局坐标系里的位置：原点 = 出生点，x 沿出生点方向，y 向左，z 向上；\n"
+                        "和导出变量 Xo、Yo、Yaw 对应。航向左为正，俯仰正 = 低头，侧倾正 = 右侧下沉；角度单位按“CarSim 动力学”页");
     if (ImGui::BeginTable("pose", 2, ImGuiTableFlags_SizingStretchSame | ImGuiTableFlags_RowBg)) {
-      const char* names[] = {"X m", "Y m", "Z m", "航向 °", "俯仰 °", "侧倾 °"};
-      double vals[6] = {0, 0, 0, 0, 0, 0};
-      if (have) {
-        const json& loc = last_tel_["location"];
-        const json& rot = last_tel_["rotation"];
-        const double v[] = {appui::NumAt(loc, 0), appui::NumAt(loc, 1), appui::NumAt(loc, 2),
-                            appui::NumAt(rot, 1), appui::NumAt(rot, 0), appui::NumAt(rot, 2)};
-        std::copy(v, v + 6, vals);
-      }
+      const std::string au = run_info_.value("units", json::object()).value("angle", std::string("deg")) == "rad" ? "rad" : "°";
+      const std::string names[] = {"X m", "Y m", "Z m", "航向 " + au, "俯仰 " + au, "侧倾 " + au};
+      static const char* kKeys[] = {"X", "Y", "Z", "Yaw", "Pitch", "Roll"};
+      const json none = json::object();
+      const json& eg = last_scene_.is_object() && last_scene_.contains("ego") && last_scene_["ego"].is_object() ? last_scene_["ego"] : none;
       for (int i = 0; i < 6; ++i) {
         ImGui::TableNextRow();
         ImGui::TableSetColumnIndex(0);
-        ImGui::TextColored(p.text_dim, "%s", names[i]);
+        ImGui::TextColored(p.text_dim, "%s", names[i].c_str());
         ImGui::TableSetColumnIndex(1);
         if (ui::GetFonts().mono) ImGui::PushFont(ui::GetFonts().mono);
-        if (have) ImGui::Text("%10.2f", vals[i]); else ImGui::TextDisabled("%10s", "-");
+        const auto it = eg.find(kKeys[i]);
+        if (have && it != eg.end() && it->is_number()) ImGui::Text("%10.2f", it->get<double>()); else ImGui::TextDisabled("%10s", "-");
         if (ui::GetFonts().mono) ImGui::PopFont();
       }
       ImGui::EndTable();
     }
     // Wheels
     ImGui::TableSetColumnIndex(3);
-    ImGui::TextColored(p.text_dim, ICON_FA_CIRCLE_DOT "  车轮");
+    ImGui::TextColored(p.text_dim, ICON_FA_CIRCLE_DOT "  车轮（转向左为正）");
     if (ImGui::BeginTable("wheels", 4, ImGuiTableFlags_BordersInnerH | ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingStretchSame)) {
       ImGui::TableSetupColumn("");
       ImGui::TableSetupColumn("转向 °");
@@ -1382,7 +1445,8 @@ void App::DrawVehicleState() {
         ImGui::TableNextRow();
         ImGui::TableSetColumnIndex(0); ImGui::TextColored(p.text_dim, "%s", kW[i]);
         if (ui::GetFonts().mono) ImGui::PushFont(ui::GetFonts().mono);
-        ImGui::TableSetColumnIndex(1); if (i < st.size()) ImGui::Text("%+7.2f", appui::NumAt(st, i)); else ImGui::TextDisabled("   -");
+        // CARLA's wheel angle (+ = right) shown + = left; 0 - x: no "-0.00" for a straight wheel.
+        ImGui::TableSetColumnIndex(1); if (i < st.size()) ImGui::Text("%+7.2f", 0.0 - appui::NumAt(st, i)); else ImGui::TextDisabled("   -");
         ImGui::TableSetColumnIndex(2); if (i < ro.size()) ImGui::Text("%6.0f", appui::NumAt(ro, i)); else ImGui::TextDisabled("   -");
         ImGui::TableSetColumnIndex(3); if (i < su.size()) ImGui::Text("%+6.1f", appui::NumAt(su, i)); else ImGui::TextDisabled("   -");
         if (ui::GetFonts().mono) ImGui::PopFont();

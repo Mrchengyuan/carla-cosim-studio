@@ -158,14 +158,14 @@ cmake --build build --config Release
 | **CARLA CoSim Studio (mod)** | 启动改版 CARLA（需要第 9 步） |
 | **Stop CARLA** | 关闭所有 CARLA，释放显存 |
 
-使用：双击 **CARLA CoSim Studio** → 等 10–30 秒 → 界面打开并自动连上 CARLA → 用完**直接关闭界面**，CARLA 会自动关闭。
+使用：双击 **CARLA CoSim Studio** → 等 10–30 秒 → 界面打开并自动连上 CARLA → 用完**直接关闭界面**，CARLA 会自动关闭。启动时的命令行窗口会一直开着，界面关闭后它自己关闭（不要先关它，否则 CARLA 不会自动关闭）；启动出错时错误显示在这个窗口里，也记在 `%LOCALAPPDATA%\carla_cosim_studio\launch_stock.log`（改版是 `launch_mod.log`）。
 
 路径和设置都在 `scripts\windows\env.bat` 里，用记事本打开即可修改：
 
 | 变量 | 默认值 | 含义 |
 |---|---|---|
 | `CARLA_ROOT` | `C:\carla-cosim-studio\CARLA_0.9.16` | 原版 CARLA 目录 |
-| `CARLA_MOD_ROOT` | `C:\carla\Build\UE4Carla\<版本>\WindowsNoEditor`（自动查找） | 改版 CARLA 打包目录 |
+| `CARLA_MOD_ROOT` | `C:\carla\Build\UE4Carla\<版本>\WindowsNoEditor`（自动用最新打包的一个） | 改版 CARLA 打包目录 |
 | `STUDIO_EXE` | `...\CARLA_CoSim_Studio_Windows\carla_cosim_studio.exe` | 界面程序 |
 | `COSIM_PYTHON` | `...\venv\Scripts\python.exe` | 后端使用的 Python |
 | `CARLA_PYTHONAPI` | `%CARLA_ROOT%\PythonAPI\carla` | CARLA 路径规划模块 |
@@ -261,11 +261,11 @@ Import（输入）保持你原来的三个，REPLACE 模式：油门、制动、
 3. 打补丁：`cd /d C:\carla` → `git apply C:\carla-cosim-studio\carla_patches\carla_0.9.16_external_dynamics.patch`，
    再 `git apply C:\carla-cosim-studio\carla_patches\carla_0.9.16_release_gil.patch`（`linux_libpng_url_fix.patch` 只在 Linux 需要）。以前按旧版补丁编译过的，只需打新增的部分，见编译指南第 2 节末尾。
 4. 在 “x64 Native Tools Command Prompt for VS 2022” 里：`Update.bat` → `make PythonAPI` → `make package`。
-5. 打包结果在 `C:\carla\Build\UE4Carla\<版本>\WindowsNoEditor\`（版本文件夹由 git 决定，例如 `0.9.16-dirty` 或一串提交号），`env.bat` 会自动找到它；放在别处的话改 `CARLA_MOD_ROOT`。
+5. 打包结果在 `C:\carla\Build\UE4Carla\<版本>\WindowsNoEditor\`（版本文件夹由 git 决定，例如 `0.9.16-dirty` 或一串提交号），`env.bat` 会自动用最新打包的一个；放在别处的话改 `CARLA_MOD_ROOT`。
 6. 安装改版 Python 包：`pip install C:\carla\PythonAPI\carla\dist\carla-0.9.16-cp310-cp310-win_amd64.whl --force-reinstall`，
    检查 `python -c "import carla; print(hasattr(carla.Vehicle, 'apply_external_state'))"` 输出 `True`。
 7. 双击 **CARLA CoSim Studio (mod)**；界面“连接”页会显示绿色的“改版 CARLA：可用”。
-8. 验证：`python carsim_carla_bridge\tests\test_modified_carla.py --port 3000`，应该 10 项全部 PASS。
+8. 验证：`python carsim_carla_bridge\tests\test_modified_carla.py --port 3000`，应该全部 PASS（最后一行是 `ALL MODIFIED-CARLA TESTS PASSED`；有一项 FAIL 时退出码为 1）。
 
 ---
 
@@ -305,6 +305,7 @@ world.tick()
 | 运行出错：“控制算法返回了 N 个值，但 .sim 里有 M 个导入变量” | `control()` 的返回值个数、顺序要和 `.sim` 的导入变量一致（CarSim 会把缺的默默填 0）。控制算法抛出的异常会显示类型和文件行号 |
 | 提示“主车已不在 CARLA 里” | 主车开出地图边界掉出了世界（CARLA 会删除掉出世界的车）或被别的程序删除；重新生成主车，并让 CarSim 的路线落在 CARLA 地图的道路范围内 |
 | 连接 CARLA 超时 | CARLA 没启动好，或被防火墙拦截：控制面板 → Windows Defender 防火墙 → 允许应用 → 勾选 CarlaUE4 |
+| 双击快捷方式后 CARLA 没起来 / 界面没打开 | 看命令行窗口里的错误，或 `%LOCALAPPDATA%\carla_cosim_studio\launch_stock.log`（改版是 `launch_mod.log`）。提示“端口 … 被其他程序占用，不是 CARLA”：关掉占着端口的程序，或在 `env.bat` 里改 `CARLA_PORT` / `CARLA_MOD_PORT` |
 | 提示 57100 端口被占用 | 上次的后端还在：任务管理器结束 `python.exe`，或 `netstat -ano \| findstr 57100` 找到进程号后 `taskkill /PID <号> /F` |
 | `No module named agents` | 找不到 CARLA 路径规划模块：在 `env.bat` 设置 `CARLA_PYTHONAPI` |
 | CarSim 报找不到 DLL / 许可证错误 | 用 64 位 Python；确认 `.sim` 里的求解器路径正确、许可证服务在运行；先单独跑通 `python_carsim_env` |

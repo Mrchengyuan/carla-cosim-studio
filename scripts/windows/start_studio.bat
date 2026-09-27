@@ -10,16 +10,26 @@ call "%~dp0env.bat"
 rem (Paths are quoted inside ( ) blocks: a ")" in them, e.g. "Program Files (x86)",
 rem would end the block.)
 if /i "%~1"=="mod" (
+  set "MODE=mod"
   set "CROOT=%CARLA_MOD_ROOT%"
   set "PORT=%CARLA_MOD_PORT%"
+  set "PORTVAR=CARLA_MOD_PORT"
 ) else (
+  set "MODE=stock"
   set "CROOT=%CARLA_ROOT%"
   set "PORT=%CARLA_PORT%"
+  set "PORTVAR=CARLA_PORT"
 )
 set "EXE=%CROOT%\CarlaUE4.exe"
+rem Every message also goes to a log: what went wrong can still be read (and
+rem sent) after this window is closed.
+set "LOG=%LOCALAPPDATA%\carla_cosim_studio\launch_%MODE%.log"
+if not exist "%LOCALAPPDATA%\carla_cosim_studio" md "%LOCALAPPDATA%\carla_cosim_studio"
+> "%LOG%" echo %date% %time% start_studio.bat %MODE%
+call :say CARLA："%EXE%"，端口 %PORT%
 if not exist "%STUDIO_EXE%" (
-  echo [错误] 找不到界面程序 "%STUDIO_EXE%"
-  echo        请把 Release 里的 CARLA_CoSim_Studio_Windows.zip 解压到 "%COSIM_ROOT%"
+  call :say [错误] 找不到界面程序 "%STUDIO_EXE%"
+  call :say 请把 Release 里的 CARLA_CoSim_Studio_Windows.zip 解压到 "%COSIM_ROOT%"
   pause & exit /b 1
 )
 
@@ -27,33 +37,57 @@ set STARTED=0
 call :listening %PORT%
 if errorlevel 1 (
   if not exist "%EXE%" (
-    echo [错误] 找不到 CARLA："%EXE%"
-    echo        请检查 scripts\windows\env.bat 里的 CARLA_ROOT / CARLA_MOD_ROOT
+    call :say [错误] 找不到 CARLA："%EXE%"
+    call :say 请检查 scripts\windows\env.bat 里的 CARLA_ROOT / CARLA_MOD_ROOT
     pause & exit /b 1
   )
-  echo 正在启动 CARLA（端口 %PORT%）...
+  call :say 正在启动 CARLA（端口 %PORT%）...
   start "CARLA" /min "%EXE%" -RenderOffScreen -nosound -carla-rpc-port=%PORT%
   set STARTED=1
   call :wait_port %PORT% 300
   if errorlevel 1 (
-    echo [错误] CARLA 没有启动成功（中途退出，或 300 秒内没有打开端口）
+    call :say [错误] CARLA 没有启动成功（中途退出，或 300 秒内没有打开端口）
     call "%~dp0stop_carla.bat" quiet "%CROOT%"
+    pause & exit /b 1
+  )
+) else (
+  call :is_carla %PORT%
+  if errorlevel 1 (
+    call :say [错误] 端口 %PORT% 被其他程序占用，不是 CARLA。请关掉它，或在 scripts\windows\env.bat 里给 %PORTVAR% 换一个空闲端口
     pause & exit /b 1
   )
 )
 
-echo 打开 CARLA CoSim Studio ...
+call :say 打开 CARLA CoSim Studio ...
 "%STUDIO_EXE%" --python "%COSIM_PYTHON%" --backend-dir "%COSIM_ROOT%\carsim_carla_bridge" --carla-port %PORT% --auto-connect
+call :say 界面已关闭，退出码 %errorlevel%
 
 rem Only the CARLA this script started (another one, e.g. the other kind, keeps running).
 if "%STARTED%"=="1" call "%~dp0stop_carla.bat" quiet "%CROOT%"
 endlocal
 exit /b 0
 
+:say
+rem Shows a message and adds it to the log.
+echo(%*
+>> "%LOG%" echo(%*
+exit /b 0
+
 :listening
 rem errorlevel 0 when something listens on 127.0.0.1:%1. Matched by the empty
 rem foreign address, not the word LISTENING: netstat translates it.
 netstat -an | findstr /r /c:"127.0.0.1:%1  *0.0.0.0:0 " /c:"0.0.0.0:%1  *0.0.0.0:0 " >nul
+exit /b %errorlevel%
+
+:is_carla
+rem errorlevel 0 when the program listening on port %1 is CARLA: another program
+rem may hold the port (3000 is common for web apps). CARLA is known by the name
+rem of the listening process; otherwise it is asked its version once (never
+rem probe CARLA with repeated connects: it crashes after a few hundred).
+set "_pid="
+for /f "tokens=5" %%P in ('netstat -ano ^| findstr /r /c:"127.0.0.1:%1  *0.0.0.0:0 " /c:"0.0.0.0:%1  *0.0.0.0:0 "') do if not defined _pid set "_pid=%%P"
+if defined _pid tasklist /fi "pid eq %_pid%" /nh | find /i "CarlaUE4" >nul && exit /b 0
+"%COSIM_PYTHON%" -c "import carla, sys; c = carla.Client('localhost', int(sys.argv[1])); c.set_timeout(10); c.get_server_version()" %1 >nul 2>&1
 exit /b %errorlevel%
 
 :wait_port

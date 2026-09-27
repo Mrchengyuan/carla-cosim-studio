@@ -11,17 +11,36 @@ LOG="${XDG_CACHE_HOME:-$HOME/.cache}/carla_cosim_studio/launch_$MODE.log"
 mkdir -p "$(dirname "$LOG")" && : > "$LOG" && exec > >(tee -a "$LOG") 2>&1
 echo "$(date '+%F %T') start_studio.sh $MODE"
 if [ "$MODE" = "mod" ]; then
-  PORT=$CARLA_MOD_PORT; SESSION=carla_mod; NAME="改版 CARLA"; TIMEOUT=3600; KIND=mod  # the first start compiles shaders (20-40 min)
+  PORT=$CARLA_MOD_PORT; PORTVAR=CARLA_MOD_PORT; SESSION=carla_mod; NAME="改版 CARLA"; TIMEOUT=3600; KIND=mod  # the first start compiles shaders (20-40 min)
   START="bash '$COSIM_ROOT/scripts/carla_mod_server.sh'"
 else
-  PORT=$CARLA_PORT; SESSION=carla_server; NAME="原版 CARLA"; TIMEOUT=300; KIND=stock
+  PORT=$CARLA_PORT; PORTVAR=CARLA_PORT; SESSION=carla_server; NAME="原版 CARLA"; TIMEOUT=300; KIND=stock
   START="bash '$COSIM_ROOT/scripts/carla_server.sh'"
 fi
 listening() { ss -ltn | grep -q ":$PORT "; }
+# Name of the program listening on $PORT (empty when it is another user's).
+listener() { ss -ltnpH "sport = :$PORT" | sed -n 's/.*users:(("\([^"]*\)".*/\1/p' | sed -n 1p; }
+# Another program may hold the port (3000 is common for web apps). CARLA is
+# known by the listener's name without touching the port; otherwise (another
+# user's process, docker) it is asked its version once. Never probe CARLA with
+# repeated connects: it crashes after a few hundred.
+is_carla() {
+  case "$1" in CarlaUE4*|UE4Editor*) return 0 ;; esac
+  "$COSIM_PYTHON" -c 'import carla, sys; c = carla.Client("localhost", int(sys.argv[1])); c.set_timeout(10); c.get_server_version()' "$PORT" >/dev/null 2>&1
+}
 notify() { command -v zenity >/dev/null && zenity "$@" 2>/dev/null; }
 [ -x "$STUDIO_BIN" ] || { notify --error --text="找不到界面程序 $STUDIO_BIN，请先编译 cosim_gui"; echo "missing $STUDIO_BIN"; exit 1; }
 
 STARTED=0
+if listening; then
+  OWNER=$(listener)
+  if ! is_carla "$OWNER"; then
+    notify --error --title="CARLA CoSim Studio" --width=420 --text="端口 $PORT 被其他程序${OWNER:+（$OWNER）}占用，不是 CARLA。\n请关掉它，或在 scripts/env.sh 里给 $PORTVAR 换一个空闲端口。\n启动记录：$LOG"
+    echo "port $PORT is used by another program${OWNER:+ ($OWNER)}, not by CARLA"
+    exit 1
+  fi
+  echo "端口 $PORT 上已有 CARLA 在运行${OWNER:+（$OWNER）}"
+fi
 if ! listening; then
   if tmux has-session -t "$SESSION" 2>/dev/null; then
     # Another launcher (icon double-clicked twice) is starting it: wait for

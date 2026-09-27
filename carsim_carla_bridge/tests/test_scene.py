@@ -220,12 +220,13 @@ def main():
               and sorted(recs[5]["ego"]) == ["Speed", "X"], "%s, scene keys %s" % (recs[5]["obj_keys"], recs[5]["keys"]))
         main = read_csv(os.path.join(tmp, "run", "mylog.csv"))
         objs = read_csv(os.path.join(tmp, "run", "mylog_objects.csv"))
-        check("records keep their own selection", list(main[0]) == ["t", "frame", "ego_X", "Xo", "Vx"]
+        check("records keep their own selection", list(main[0]) == ["t", "frame", "ego_X", "Xo", "Vx", "u1", "u2", "u3"]
               and list(objs[0]) == ["t", "frame", "id", "type", "rel_x"]
               and not os.path.exists(os.path.join(tmp, "run", "mylog_lane.csv")), list(main[0]))
         frames = [int(x["frame"]) for x in main]
-        check("run record every 5th frame", all(f % 5 == 0 for f in frames) and 80 <= len(main) <= 95
-              and all(b - a == 5 for a, b in zip(frames, frames[1:])), "%d rows" % len(main))
+        dt5 = 5 * r["sync"]["frame_dt"]  # every 5th run step from t = 0 (not CARLA's frame counter)
+        check("run record every 5th frame", all(abs(float(x["t"]) - i * dt5) < 1e-6 for i, x in enumerate(main))
+              and 80 <= len(main) <= 95 and all(b - a == 5 for a, b in zip(frames, frames[1:])), "%d rows" % len(main))
         same_t = {x["frame"]: x["t"] for x in main}
         check("objects rows share the samples", objs and all(o["frame"] in same_t and o["t"] == same_t[o["frame"]] for o in objs),
               "%d object rows" % len(objs))
@@ -256,7 +257,8 @@ def main():
         stems = {n: sorted(os.path.splitext(os.path.basename(p))[0] for p in glob.glob(os.path.join(root, n, "*")))
                  for n in ("cam", "lidar", "frames")}
         check("frames/ in step with the sensor files", st["state"] == "finished" and len(stems["frames"]) == 5
-              and stems["cam"] == stems["lidar"] == stems["frames"] and all(int(x) % 2 == 0 for x in stems["frames"]), stems["frames"])
+              and stems["cam"] == stems["lidar"] == stems["frames"]
+              and all(int(b) - int(a) == 2 for a, b in zip(stems["frames"], stems["frames"][1:])), stems["frames"])
         fr = json.load(open(os.path.join(root, "frames", stems["frames"][-1] + ".json")))
         check("frame record = the record selection (algorithm had every key)",
               fr["objects"] and set(fr["objects"][0]) == {"id", "type", "rel_x", "rel_y", "rel_vx", "rel_vy", "dist", "gap"}

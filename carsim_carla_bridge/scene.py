@@ -82,6 +82,21 @@ def box_gap(pa, pb):
     return min(d, min(_seg_dist(p, pa[i], pa[(i + 1) % 4]) for p in pb for i in range(4)))
 
 
+def map_vehicles(world):
+    """Parked cars modelled into the map (environment objects, not actors):
+    [(id, label e.g. "Car", box centre (CARLA world, m), yaw (deg), half extent (m))]."""
+    out = []
+    for lab in MAP_VEHICLES:
+        L = getattr(carla.CityObjectLabel, lab, None)
+        if L is None:
+            continue
+        for o in world.get_environment_objects(L):
+            b = o.bounding_box
+            out.append((o.id, lab, (b.location.x, b.location.y, b.location.z), b.rotation.yaw,
+                        (b.extent.x, b.extent.y, b.extent.z)))
+    return out
+
+
 class Units:
     """CarSim's export units (settings "carsim" -> "units")."""
 
@@ -121,7 +136,9 @@ class SceneProvider:
         self._yaw = None                    # ego yaw, continuous like CarSim's (not wrapped)
 
     # --------------------------------------------------------------- lifecycle
-    def start(self, t=0.0, ego_velocity=None):
+    def start(self):
+        """Spawn the rig sensors. The first scene is the update() after the
+        next tick, so it has a frame number and the sensors' data."""
         w = self.world
         self.map = w.get_map()
         src = self._anchor_src or self.ego.get_transform()
@@ -136,14 +153,7 @@ class SceneProvider:
         # Ego box centre in the ego frame (CarSim axes: y left).
         self._ego_box = (eb.location.x - self.ref_local[0], -(eb.location.y - self.ref_local[1]))
         if "parked" in (self.s.get("object_types") or []):
-            for lab in MAP_VEHICLES:
-                L = getattr(carla.CityObjectLabel, lab, None)
-                if L is None:
-                    continue
-                for o in w.get_environment_objects(L):
-                    b = o.bounding_box
-                    self._parked.append((o.id, "map." + lab, (b.location.x, b.location.y, b.location.z),
-                                         b.rotation.yaw, (b.extent.x, b.extent.y, b.extent.z)))
+            self._parked = [(i, "map." + lab, c, yaw, ext) for i, lab, c, yaw, ext in map_vehicles(w)]
         bl = w.get_blueprint_library()
         for c in self.sensor_cfgs:
             bp = bl.find(rigmod.SENSOR_BLUEPRINTS[c["type"]])
@@ -158,8 +168,6 @@ class SceneProvider:
             a.listen(q.put)
             self.actors.append(a)
             self.queues.append(q)
-        self.update(None, t, ego_velocity)
-        self._touching = set()  # an overlap already there at the start counts as a new contact
 
     def stop(self):
         for a in self.actors:
@@ -424,14 +432,8 @@ class SceneProvider:
             return lidar_iso(d.raw_data)
         if kind == "radar":
             return radar_iso(d.raw_data, su, au)
-        if kind == "imu":
-            a, g = d.accelerometer, d.gyroscope
-            ru = self.units.rate
-            return {"accel": [a.x, -a.y, a.z], "gyro": [math.degrees(-g.x) * ru, math.degrees(g.y) * ru,
-                                                         math.degrees(-g.z) * ru],
-                    "compass": math.degrees(d.compass) * au}
-        if kind == "gnss":
-            return {"lat": d.latitude, "lon": d.longitude, "alt": d.altitude}
+        if kind in ("imu", "gnss"):
+            return imu_gnss(kind, d, self.units)
         out = []
         for ev in d:
             e = {"frame": ev.frame}
@@ -469,14 +471,29 @@ def radar_iso(raw, speed_unit=3.6, angle_unit=1.0):
                      p[:, 0] * speed_unit], axis=1).astype(np.float32)
 
 
+def imu_gnss(kind, d, units):
+    """An IMU / GNSS measurement in CarSim axes (x forward, y left, z up) and
+    units (Units), as the algorithm gets it (docs/场景与数据接口.md 4.6)."""
+    if d is None:
+        return None
+    if kind == "imu":
+        a, g, ru = d.accelerometer, d.gyroscope, units.rate
+        return {"accel": [a.x, -a.y, a.z], "gyro": [math.degrees(-g.x) * ru, math.degrees(g.y) * ru,
+                                                     math.degrees(-g.z) * ru],
+                "compass": math.degrees(d.compass) * units.angle}
+    return {"lat": d.latitude, "lon": d.longitude, "alt": d.altitude}
+
+
 # ----------------------------------------------------------------- recording
 class Recorder:
     """The selected scene keys and CarSim exports as CSV files, one row per
     sample (per object in the objects file). paths: {"main", "objects",
     "lane"}; the lane file only when scalar lane keys are selected."""
 
-    def __init__(self, paths, settings, export_names):
-        """settings: the "scene" settings; the keys come from its "record" part."""
+    def __init__(self, paths, settings, export_names, n_actions=0):
+        """settings: the "scene" settings; the keys come from its "record" part.
+        n_actions: how many CarSim imports control() returns (main file
+        columns u1..un; none with CARLA dynamics)."""
         s = dict(settings.get("record") or {}, exports_all=settings.get("exports_all", True),
                  exports=settings.get("exports") or [])
         self.ego_keys = [k for k in EGO_KEYS if k in (s.get("ego") or ())]
@@ -484,6 +501,7 @@ class Recorder:
         self.lane_keys = [k for k in LANE_KEYS if k in (s.get("lane") or ()) and k not in LANE_LISTS]
         self.exports = list(export_names) if s.get("exports_all", True) else \
             [n for n in export_names if n in (s.get("exports") or ())]
+        self.n_actions = int(n_actions or 0)
         self.files = []
         try:
             self._open(paths)
@@ -499,7 +517,8 @@ class Recorder:
             w.writerow(header)
             self.files.append(f)
             return w
-        self.main = open_csv(paths["main"], ["t", "frame"] + ["ego_" + k for k in self.ego_keys] + self.exports)
+        self.main = open_csv(paths["main"], ["t", "frame"] + ["ego_" + k for k in self.ego_keys] + self.exports
+                             + ["u%d" % (i + 1) for i in range(self.n_actions)])
         self.obj = open_csv(paths["objects"], ["t", "frame"] + self.obj_keys)
         self.lane = open_csv(paths["lane"], ["t", "frame"] + self.lane_keys) if self.lane_keys else None
         self.paths = [f.name for f in self.files]
@@ -509,10 +528,14 @@ class Recorder:
         base = os.path.splitext(log_path)[0]
         return {"main": log_path, "objects": base + "_objects.csv", "lane": base + "_lane.csv"}
 
-    def write(self, scene, exports):
+    def write(self, scene, exports, action=None):
+        """action: the control() output held over the step that led to this
+        sample (None at t0, before the first call): columns u1..un."""
         t, fr = round(scene["t"], 6), scene["frame"]
         e = scene["ego"]
-        self.main.writerow([t, fr] + [e.get(k) for k in self.ego_keys] + [exports.get(n) for n in self.exports])
+        u = list(action or [])[:self.n_actions]
+        self.main.writerow([t, fr] + [e.get(k) for k in self.ego_keys] + [exports.get(n) for n in self.exports]
+                           + u + [None] * (self.n_actions - len(u)))
         for o in scene["objects"]:
             self.obj.writerow([t, fr] + [o.get(k) for k in self.obj_keys])
         if self.lane is not None and scene.get("lane"):

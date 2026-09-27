@@ -11,11 +11,17 @@ Output layout (one folder per session):
         meta.json               map, weather, rig, settings, conventions
         calib.json              per sensor: extrinsic (sensor->ego 4x4) + camera K
         <sensor_name>/<frame>.jpg|png|bin|npy|csv
-        labels/<frame>.json     3D boxes (CARLA ego frame), for the KITTI / nuScenes export
-        ego/<frame>.json        CARLA pose, velocity, acceleration, control, imu / gnss
+        labels/<frame>.json     3D boxes (CARLA ego frame; actors and the map's parked
+                                cars), for the KITTI / nuScenes export
+        ego/<frame>.json        CARLA pose, velocity (CarSim's in co-sim), acceleration,
+                                control, imu / gnss
         frames/<frame>.json     CarSim time, the selected CarSim exports and scene keys
-                                (ego, obstacles, lane, collisions; CarSim frames and units)
+                                (ego, obstacles, lane, collisions), the control() output
+                                (action) and imu / gnss (sensors); CarSim frames and units
         frames.csv, objects.csv, lane.csv   the same for every sample, one table each
+
+<frame> is CARLA's world frame number. Samples are every capture_every run
+steps from step 0 (the run's start), like the run record.
 
 Safety: start() refuses to run when the estimated size exceeds the free disk
 space minus a reserve, and stop conditions (frames / seconds / GB) are
@@ -81,15 +87,19 @@ def _check_name(name, what):
 
 class DataCollector:
     def __init__(self, world, ego, sensors, cfg, extra_state=None, emit=None, shared=None,
-                 scene=None, exports=None, export_names=(), ref_local=None):
+                 scene=None, exports=None, export_names=(), ref_local=None, action=None, n_actions=0):
         """sensors: rig sensor dicts; cfg: collect settings; extra_state():
         dict merged into ego/<frame>.json; shared: a scene.SceneProvider that
         already runs these sensors (its .frame / .datas are read instead of
         spawning a second set); scene: the run's SceneProvider, exports():
         the CarSim exports of the step, export_names: their names (for
         frames/ and the CSV files); ref_local: the CarSim reference point in the
-        CARLA vehicle frame (sensor mounts are relative to it; front axle when None)."""
+        CARLA vehicle frame (sensor mounts are relative to it; front axle when None);
+        action(): the last control() output (CarSim imports, None before the
+        first call), n_actions: how many (frames/ "action", frames.csv u1..un)."""
         self.ref_local = ref_local
+        self.action, self.n_actions = action or (lambda: None), int(n_actions or 0)
+        self._map_cars = []  # the map's parked cars, for labels/
         self.shared = shared
         self.scene, self.exports = scene, exports or (lambda: {})
         self.export_names = list(export_names)
@@ -162,8 +172,11 @@ class DataCollector:
             self.recorder = scn.Recorder({"main": os.path.join(self.root, "frames.csv"),
                                           "objects": os.path.join(self.root, "objects.csv"),
                                           "lane": os.path.join(self.root, "lane.csv")},
-                                         self.scene.s, self.export_names)
+                                         self.scene.s, self.export_names, self.n_actions)
 
+        if c.get("labels", True):
+            import scene as scn
+            self._map_cars = scn.map_vehicles(self.world)  # static: once
         bl = self.world.get_blueprint_library()
         if self.ref_local is None:
             from bridge import front_axle_local
@@ -247,14 +260,17 @@ class DataCollector:
         self._emit_stats(force=True)
 
     # --------------------------------------------------------------- tick
-    def on_tick(self, frame):
-        """Call right after world.tick(); frame = its return value."""
+    def on_tick(self, frame, step=None):
+        """Call right after world.tick(); frame = its return value (names the
+        files), step = the run step: a sample every capture_every steps from
+        step 0, the same steps as the run record (frame when None)."""
         if self.done:
             return
         if self._frame0 is None:
             self._frame0 = frame
         every = max(1, int(self.cfg.get("capture_every", 1)))
-        if self.cfg.get("max_gb") and frame % every == 0:
+        sample = (frame if step is None else step) % every == 0
+        if self.cfg.get("max_gb") and sample:
             # Queued frames have not counted toward the limit yet. Far from it
             # the writer runs alongside CARLA; near it, wait for the queue so
             # queued writes cannot overshoot the limit.
@@ -310,12 +326,16 @@ class DataCollector:
             if s["type"] in EVENT_TYPES and i < len(datas):
                 self._events[i] = self._events.get(i, []) + list(datas[i] or [])
                 datas[i] = None
-                if frame % every == 0:
+                if sample:
                     datas[i], self._events[i] = self._events[i] or None, []
-        if frame % every == 0:
-            sample = (frame, datas, self._ego_state(frame), self._labels() if self.cfg.get("labels", True) else None,
-                      self._frame_record(frame))
-            self.q.put(sample)       # blocks if the writer falls behind
+        if sample:
+            rec = self._frame_record(frame)
+            if rec is not None:
+                nav = self._nav_record(datas)
+                if nav:
+                    rec["sensors"] = nav
+            self.q.put((frame, datas, self._ego_state(frame),
+                        self._labels() if self.cfg.get("labels", True) else None, rec))  # blocks if the writer falls behind
             self.frames += 1
         self._last_frame = frame
         self._check_limits()
@@ -333,7 +353,18 @@ class DataCollector:
         # A copy: the writer thread must not share dicts with the running simulation.
         rec = copy.deepcopy({k: v[k] for k in ("t", "frame", "ego", "objects", "lane", "collisions") if k in v})
         rec["exports"] = self.recorder.selected_exports(self.exports())
+        if self.n_actions:
+            a = self.action()
+            rec["action"] = None if a is None else [float(x) for x in a]
         return rec
+
+    def _nav_record(self, datas):
+        """IMU / GNSS of a sample for frames/<frame>.json, in CarSim axes and
+        units like the algorithm's scene["sensors"] (ego/ keeps CARLA's raw values)."""
+        import scene as scn
+        units = scn.Units(self.cfg.get("units"))
+        return {s["name"]: {"type": s["type"], "data": scn.imu_gnss(s["type"], d, units)}
+                for s, d in zip(self.sensor_cfgs, datas) if s["type"] in ("imu", "gnss")}
 
     def _check_limits(self):
         c = self.cfg
@@ -393,6 +424,16 @@ class DataCollector:
                          "center_ego": c_ego[:3].tolist(), "extent": _vec(bb.extent),
                          "yaw_ego": (t.rotation.yaw - ego_tf.rotation.yaw + 180.0) % 360.0 - 180.0,
                          "world": _tf_dict(t), "velocity": _vec(a.get_velocity())})
+        el = ego_tf.location
+        for oid, lab, c, yaw, ext in self._map_cars:  # seen by the sensors like any car
+            if math.dist(c, (el.x, el.y, el.z)) > radius:
+                continue
+            c_ego = inv @ np.array([c[0], c[1], c[2], 1.0])
+            objs.append({"id": oid, "type_id": "map." + lab, "class": lab.lower(),
+                         "center_ego": c_ego[:3].tolist(), "extent": list(ext),
+                         "yaw_ego": (yaw - ego_tf.rotation.yaw + 180.0) % 360.0 - 180.0,
+                         "world": {"x": c[0], "y": c[1], "z": c[2], "roll": 0.0, "pitch": 0.0, "yaw": yaw},
+                         "velocity": [0.0, 0.0, 0.0]})
         return {"objects": objs}
 
     # ----------------------------------------------------------------- writer
@@ -465,7 +506,7 @@ class DataCollector:
                         continue
                     self.bytes += os.path.getsize(path)
                 if rec is not None:
-                    self.recorder.write(rec, rec["exports"])
+                    self.recorder.write(rec, rec["exports"], rec.get("action"))
                 for sub, obj in (("ego", ego), ("labels", labels), ("frames", rec)):
                     if obj is None:
                         continue

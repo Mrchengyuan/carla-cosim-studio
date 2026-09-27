@@ -1116,13 +1116,17 @@ class Backend:
         try:
             info = self.session.start()
             if col_cfg["enabled"]:
-                sc = self.session.scene
+                ses, sc = self.session, self.session.scene
                 self.collector = coll.DataCollector(w, self.ego, sensors, col_cfg,
                                                     emit=self.emit,
+                                                    # stock CARLA reads 0 for the teleported car
+                                                    extra_state=ses.ego_motion if cosim else None,
                                                     shared=sc if sc is not None and sc.sensor_cfgs else None,
-                                                    scene=sc, exports=self.session.exports, ref_local=sc.ref_local,
-                                                    export_names=self.session.export_names())
+                                                    scene=sc, exports=ses.exports, ref_local=sc.ref_local,
+                                                    export_names=ses.export_names(),
+                                                    action=lambda: ses.last_action, n_actions=ses.n_actions())
                 info["collect"] = self.collector.start()
+                self.collector.on_tick(sc.frame, 0)  # step 0 (t0): the first sample, like the run record
                 self._log("数据采集开始：%d 个传感器 → %s（预计 %.1f MB/s）" % (
                     len(self.collector.sensor_cfgs), info["collect"]["root"], info["collect"]["estimate"]["mb_per_s"]))
         except BaseException:  # SystemExit from a user controller included
@@ -1139,6 +1143,8 @@ class Backend:
                 self._log("frame_dt 不是 CarSim t_step 的整数倍，两边时钟会漂移", "warn")
         else:
             self._log("仿真开始：CARLA 物理，驾驶：%s" % d["drive"]["carla_driver"])
+        for hit in info.get("collisions", []):  # touching at the start: counted once, here
+            self._log("碰撞：撞到 %s（id %s），t = %.2f s" % (hit["model"], hit["id"], info["t"]), "warn")
         return info
 
     def _restore_ego(self, old, color, sensor_specs, view_specs):
@@ -1292,7 +1298,7 @@ class Backend:
             for hit in tel.get("collisions", []):
                 self._log("碰撞：撞到 %s（id %s），t = %.2f s" % (hit["model"], hit["id"], tel["t"]), "warn")
             if self.collector is not None:
-                self.collector.on_tick(tel["world_frame"])
+                self.collector.on_tick(tel["world_frame"], tel["frame"])
                 if self.collector.done:
                     self._log("数据采集结束：%s，共 %d 帧，%.1f MB" % (
                         self.collector.stop_reason, self.collector.frames, self.collector.bytes / 1e6))

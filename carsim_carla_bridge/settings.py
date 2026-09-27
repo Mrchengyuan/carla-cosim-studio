@@ -103,7 +103,8 @@ def load_dict(path=None, override=None):
 
 
 def sample_every(d):
-    """Frames between two samples of the records / data collection."""
+    """Run steps between two samples of the records / data collection
+    (counted from step 0, the run's start)."""
     c, dt = d["collect"], float(d["sync"]["frame_dt"])
     period = float(c.get("sample_period", 0.0) or 0.0)
     if period > 0 and dt > 0:

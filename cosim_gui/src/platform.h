@@ -11,7 +11,8 @@ using Socket = std::intptr_t;
 constexpr Socket kInvalidSocket = -1;
 
 bool NetInit();
-Socket TcpConnect(const std::string& host, int port, std::string& err);
+// Gives up after timeout_ms (it runs on the UI thread).
+Socket TcpConnect(const std::string& host, int port, std::string& err, int timeout_ms = 300);
 bool SendAll(Socket s, const std::string& data);
 int Recv(Socket s, char* buf, int len);  // <= 0: closed or error
 void CloseSocket(Socket s);
@@ -29,11 +30,15 @@ bool IsAlive(const Process& p);
 // Asks it to exit and waits up to 5 s for its cleanup, then kills it; hard:
 // kill at once (a process that hangs cannot clean up anyway).
 void Kill(Process& p, bool hard = false);
+// POSIX: SIGTERM (the backend cleans up and exits), without waiting. No-op on
+// Windows, which has no such request.
+void Terminate(const Process& p);
 // How a process that is no longer alive ended, e.g. "信号 11（段错误）".
 std::string ExitDescription(const Process& p);
 // POSIX: SIGUSR1, which makes the Python backend print every thread's stack
-// into its log (faulthandler). No-op on Windows.
-void DumpStacks(const Process& p);
+// into its log (faulthandler). False when nothing was sent (always on Windows:
+// ask the backend over its connection instead).
+bool DumpStacks(const Process& p);
 
 std::string ExecutableDir();
 // Command-line arguments as UTF-8 (on Windows argv is in the ANSI code page,

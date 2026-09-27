@@ -41,7 +41,9 @@ class App {
   // ImGui::NewFrame: tour clicks queued here win over the cursor on every OS.
   void BeforeNewFrame() { TourClick(); }
   void AfterRender(int fb_w, int fb_h);
-  bool WantsQuit() const { return quit_; }
+  // quit_ was asked for: the backend is stopped first, with the window still
+  // drawing; true once it is gone.
+  bool WantsQuit();
   // The window's close button and 文件 → 退出: with unsaved config changes, ask first.
   void AskQuit();
   std::string WindowTitle() const;  // ends in " *" while the config has unsaved changes
@@ -69,6 +71,7 @@ class App {
   void DrawSceneBev(const json& sc, ImVec2 size);
   void DrawLogList(int warns, int errors);
   void DrawStatusBar();
+  bool PageEnabled(int panel) const;  // pages that only edit the config or read datasets work without CARLA
 
   // ---------------------------------------------------------- panels (panels.cpp)
   void DrawPanelConnect();
@@ -97,6 +100,7 @@ class App {
   // ---------------------------------------------------------- actions (app.cpp)
   void StartBackend();
   void StopBackend();
+  void StopBackendPoll();  // every frame while StopBackend waits for the backend to exit
   void RestartBackend();
   void ConnectBackend(bool quiet = false);  // quiet: a retry while it starts, no error
   void ConnectCarla(bool recover = false);
@@ -180,6 +184,8 @@ class App {
   bool busy_carla_gone_ = false;  // ... and CARLA does not listen any more
   std::string busy_where_;        // task "control": the line the user's control() is at
   std::string backend_problem_;   // backend hung or died: viewport banner with a restart button
+  double stop_since_ = -1;        // StopBackend asked the backend to exit at this time (< 0: not stopping)
+  bool stop_asked_ = false, stop_termed_ = false;  // ... over the connection / SIGTERM sent
   bool dark_ = true, theme_changed_ = false;
   int panel_ = kPanelConnect;
   std::string busy_;
@@ -192,6 +198,8 @@ class App {
   std::vector<std::string> maps_, weathers_;
   std::string map_choice_, weather_choice_ = "ClearNoon";
   json weather_edit_ = json::object();
+  bool weather_dirty_ = false;    // weather_edit_ has slider changes not applied yet
+  json world_edit_;               // 仿真设置 changes not applied yet (null: none)
   json vehicles_ = json::array();
   int vehicle_sel_ = -1;
   std::string vehicle_filter_;

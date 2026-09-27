@@ -180,7 +180,7 @@ cmake --build build --config Release
    - 点 **保存设置**，再点 **连接 CARLA**。
 4. 用完：关闭界面，再关闭 CARLA 窗口。
 
-命令行参数（写在快捷方式的“目标”后面）：`--python <路径>`、`--backend-dir <目录>`、`--carla-port 2000`、`--auto-connect`、`--config <json>`、`--light`、`--font <字体文件>`、`--size 2560x1440`（窗口大小）、`--scale 1.5`（界面缩放，高分屏用）。
+命令行参数（写在快捷方式的“目标”后面）：`--python <路径>`、`--backend-dir <目录>`、`--carla-port 2000`、`--auto-connect`、`--config <json>`（相对路径从当前目录算起）、`--light`（`--config`、`--light` 只对这一次启动有效）、`--font <字体文件>`、`--size 2560x1440`（窗口大小）、`--scale 1.5`（界面缩放，高分屏用）。
 
 ---
 
@@ -301,7 +301,7 @@ world.tick()
 | 状态栏“后端 未运行” | Python 路径不对或缺包。看 `carsim_carla_bridge\backend.log`；在“连接”页填 `venv\Scripts\python.exe` 的完整路径 |
 | 视口上方红色提示“后端卡住了：控制算法 control() 已经 N 秒没有返回（my_ctrl.py 第 42 行）” | 不是 CARLA 的问题：你的控制算法停在提示里的那一行（例如 input()、断点、第一次调用时生成求解器）。不用重启后端，control() 返回后提示条自动消失 |
 | 画面不动，视口上方红色提示“后端卡住了” | 后端里的 CARLA 调用没有返回（常见原因：原版 Python 包里 CARLA 0.9.16 交通管理器的死循环，一辆交通车被撞飞时触发）。点提示条上的“重启后端”，界面会重启后端、重新连接并清理旧后端留下的主车和交通。用自己编译的改版 CARLA 的 Python 包则没有这个问题 |
-| 视口上方红色提示“后端进程意外退出” | 点“重启后端”即可继续；出错记录在 `carsim_carla_bridge\backend.log`，重启后保存为 `backend.prev.log` |
+| 视口上方红色提示“后端进程意外退出” | 点“重启后端”即可继续；出错记录在 `carsim_carla_bridge\backend.log`，重启后保存为 `backend.prev.log`。“退出码 9009，找不到 Python 解释器”：系统里的 `python` 只是应用商店的占位程序，在“连接”页填 `venv\Scripts\python.exe` 的完整路径；“退出码 0xC0000005，访问冲突”：carla 库崩溃，调用栈在 `backend.log` 里 |
 | 视口上方红色提示“CARLA 服务器已退出或连不上” | CARLA 退出了（运行中或空闲时，几秒内就会发现）。重新启动 CARLA 后点“连接”即可继续 |
 | 运行出错：“控制算法返回了 N 个值，但 .sim 里有 M 个导入变量” | `control()` 的返回值个数、顺序要和 `.sim` 的导入变量一致（CarSim 会把缺的默默填 0）。控制算法抛出的异常会显示类型和文件行号 |
 | 提示“主车已不在 CARLA 里” | 主车开出地图边界掉出了世界（CARLA 会删除掉出世界的车）或被别的程序删除；重新生成主车，并让 CarSim 的路线落在 CARLA 地图的道路范围内 |

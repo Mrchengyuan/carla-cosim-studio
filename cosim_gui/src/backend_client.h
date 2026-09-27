@@ -26,7 +26,7 @@ class BackendClient {
 
   ~BackendClient() { Disconnect(); }
 
-  bool Connect(const std::string& host, int port, std::string& err);
+  bool Connect(const std::string& host, int port, std::string& err, int timeout_ms = 300);
   void Disconnect();
   bool Connected() const { return connected_; }
 

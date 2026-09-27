@@ -206,8 +206,8 @@ until ss -ltn | grep -q ":2000 "; do sleep 2; done; echo "CARLA 已就绪"
 | `--backend-dir <目录>` | `carsim_carla_bridge` 目录（默认自动查找） |
 | `--carla-port <端口>` | CARLA 端口（默认 2000） |
 | `--auto-connect` | 启动后自动连接 CARLA |
-| `--config <json>` | 启动时载入配置文件 |
-| `--light` | 浅色主题 |
+| `--config <json>` | 启动时载入配置文件（相对路径从当前目录算起；只这一次有效，不改下次启动载入的配置） |
+| `--light` | 浅色主题（只这一次有效） |
 | `--size 2560x1440` | 窗口大小（默认 1680x1000） |
 | `--scale 1.5` | 界面缩放（字体和控件一起放大，高分屏或截图用） |
 | `--font <ttf/ttc>` | 指定中文字体 |
@@ -357,6 +357,8 @@ python tests/test_offline_exports.py                 # 不需要 CARLA：导出�
 python tests/test_exports_carla.py                   # 同上在 CARLA 上（模拟 CarSim）
 python tests/test_offline_algoerr.py                 # 不需要 CARLA：控制算法出错时的提示、辅助文件重新载入
 python tests/test_algoerr_carla.py                   # 同上经过界面后端
+python tests/test_offline_guimisc.py                 # 不需要 CARLA：界面与后端的版本检查、卡住的后端打印调用栈、界面的平台代码（需要 C++ 编译器）
+python tests/test_guimisc_carla.py                   # 同上经过界面后端，运行后自动驾驶试开已取消、停止后端时清理
 python tests/test_offline_tests.py                   # 不需要 CARLA：启动 / 停止脚本、test_modified_carla.py 失败时退出码非 0
 python tests/test_tests_carla.py                     # 启动 / 停止脚本（改版加 --mod，不是 --port）
 python tests/test_all_vehicles.py                    # 每种车型都当一次主车联合仿真，服务器不能崩

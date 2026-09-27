@@ -242,29 +242,43 @@ void App::DrawPanelWorld() {
   for (const auto& w : kW) {
     float v = weather_edit_.value(w.key, 0.0f);
     ui::Row(w.name);
-    if (ImGui::SliderFloat(Fmt("##%s", w.key).c_str(), &v, w.lo, w.hi, "%.1f")) weather_edit_[w.key] = v;
+    if (ImGui::SliderFloat(Fmt("##%s", w.key).c_str(), &v, w.lo, w.hi, "%.1f")) {
+      weather_edit_[w.key] = v;
+      weather_dirty_ = true;
+    }
   }
   ImGui::SetCursorPosX(ImGui::GetCursorPosX() + ui::LabelWidth());
   if (ui::Button(ICON_FA_WAND_MAGIC_SPARKLES, "应用天气参数", ui::Kind::Primary)) ApplyWeatherParams();
   ui::EndCard();
 
   ui::BeginCard(ICON_FA_SLIDERS, "仿真设置");
-  bool sync = world_.value("synchronous", false);
+  // Changes wait in world_edit_ until 应用: the server's state, read again on
+  // every spawn or run end, must not undo them.
+  const json& cur = world_edit_.is_object() ? world_edit_ : world_;
+  json ws = {{"synchronous", cur.value("synchronous", false)}, {"frame_dt", cur.value("frame_dt", 0.0)},
+             {"no_rendering", cur.value("no_rendering", false)}, {"idle_tick", cur.value("idle_tick", false)}};
+  bool changed = false;
+  bool sync = ws["synchronous"].get<bool>();
   ui::Row("同步模式", "同步模式下服务器每次 tick 才前进一帧；运行仿真时会自动切换为同步，结束后恢复");
-  if (ImGui::Checkbox("##sync", &sync)) world_["synchronous"] = sync;
-  double dt = world_.value("frame_dt", 0.0);
-  ui::Row("固定步长 s", "0 表示可变步长", fs * 8);
-  if (ImGui::InputDouble("##dt", &dt, 0.005, 0.01, "%.3f")) world_["frame_dt"] = std::max(0.0, dt);
-  bool norender = world_.value("no_rendering", false);
+  if (ImGui::Checkbox("##sync", &sync)) { ws["synchronous"] = sync; changed = true; }
+  double dt = ws["frame_dt"].get<double>();
+  ui::Row("空闲时固定步长 s", "不运行仿真时服务器每帧的仿真时间，0 表示可变步长。运行仿真用“驾驶模式 → 仿真步长”，结束后恢复这里的设置", fs * 8);
+  if (ImGui::InputDouble("##dt", &dt, 0.005, 0.01, "%.3f")) { ws["frame_dt"] = std::max(0.0, dt); changed = true; }
+  bool norender = ws["no_rendering"].get<bool>();
   ui::Row("关闭渲染", "只算物理、不渲染画面，适合只要车辆动力学或加速训练；相机传感器此时没有图像");
-  if (ImGui::Checkbox("##norender", &norender)) world_["no_rendering"] = norender;
-  bool idle = world_.value("idle_tick", false);
+  if (ImGui::Checkbox("##norender", &norender)) { ws["no_rendering"] = norender; changed = true; }
+  bool idle = ws["idle_tick"].get<bool>();
   ui::Row("空闲时持续推进", "同步模式且没有仿真在运行时，由后端按固定步长持续 tick，否则服务器画面会停住");
-  if (ImGui::Checkbox("##idle", &idle)) world_["idle_tick"] = idle;
+  if (ImGui::Checkbox("##idle", &idle)) { ws["idle_tick"] = idle; changed = true; }
+  if (changed) world_edit_ = ws;
   ImGui::SetCursorPosX(ImGui::GetCursorPosX() + ui::LabelWidth());
   if (ui::Button(ICON_FA_CIRCLE_CHECK, "应用", ui::Kind::Primary)) ApplyWorldSettings();
   ImGui::SameLine();
-  if (ui::Button(ICON_FA_ROTATE, "刷新")) RefreshWorld();
+  if (ui::Button(ICON_FA_ROTATE, "刷新")) {
+    world_edit_ = json();  // (drops the changes not applied, weather too)
+    weather_dirty_ = false;
+    RefreshWorld();
+  }
   ui::EndCard();
 }
 
@@ -1242,11 +1256,17 @@ void App::DrawPanelView() {
   ImGui::SetCursorPosX(ImGui::GetCursorPosX() + ui::LabelWidth());
   ImGui::BeginDisabled(world_.value("ego_id", 0) == 0);
   if (!view_on_) {
-    if (ui::Button(ICON_FA_PLAY, "打开画面", ui::Kind::Primary)) StartView();
+    if (ui::Button(ICON_FA_PLAY, "打开画面", ui::Kind::Primary)) {
+      view_auto_ = true;
+      StartView();
+    }
   } else if (ui::Button(ICON_FA_STOP, "关闭画面")) {
+    // Like the viewport's ×: it stays closed, also for the next run's new ego.
     Call("view_stop", json::object(), nullptr);
     view_on_ = false;
+    view_auto_ = false;
   }
+  ui::RecordTarget("view:page_toggle");
   ImGui::EndDisabled();
   if (world_.value("ego_id", 0) == 0) { ImGui::SameLine(); ImGui::TextColored(p.text_dim, "先在“车辆与视角”页生成主车"); }
   if (view_on_) { ImGui::SameLine(); ImGui::TextColored(p.text_dim, "%d×%d · 已接收 %d 帧", view_w_, view_h_, view_frames_); }

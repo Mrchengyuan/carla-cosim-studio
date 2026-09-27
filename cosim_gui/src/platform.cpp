@@ -31,7 +31,7 @@ bool NetInit() {
 #endif
 }
 
-Socket TcpConnect(const std::string& host, int port, std::string& err) {
+Socket TcpConnect(const std::string& host, int port, std::string& err, int timeout_ms) {
   addrinfo hints{};
   hints.ai_family = AF_INET;
   hints.ai_socktype = SOCK_STREAM;
@@ -65,7 +65,7 @@ Socket TcpConnect(const std::string& host, int port, std::string& err) {
     FD_ZERO(&ex);
     FD_SET(fd, &wr);
     FD_SET(fd, &ex);
-    timeval tv{0, 300000};
+    timeval tv{timeout_ms / 1000, (timeout_ms % 1000) * 1000};
     if (select(static_cast<int>(fd + 1), nullptr, &wr, &ex, &tv) > 0 && FD_ISSET(fd, &wr)) {
       int so_err = 0;
       socklen_t len = sizeof(so_err);
@@ -238,9 +238,22 @@ void Kill(Process& p, bool hard) {
   p.status = -1;
 }
 
+void Terminate(const Process& p) {
+#ifndef _WIN32
+  if (IsAlive(p)) kill(static_cast<pid_t>(p.handle), SIGTERM);
+#else
+  (void)p;
+#endif
+}
+
 std::string ExitDescription(const Process& p) {
 #ifdef _WIN32
-  return p.status == -1 ? std::string("原因未知") : "退出码 " + std::to_string(static_cast<unsigned>(p.status));
+  if (p.status == -1) return "原因未知";
+  const unsigned code = static_cast<unsigned>(p.status);
+  // 9009: "python" is only the Microsoft Store's placeholder (Python not installed).
+  if (code == 9009) return "退出码 9009，找不到 Python 解释器，请在“连接”页设置";
+  if (code == 0xC0000005u) return "退出码 0xC0000005，访问冲突（段错误）";
+  return "退出码 " + std::to_string(code);
 #else
   if (p.status == -1) return "原因未知";
   if (WIFEXITED(p.status))
@@ -256,11 +269,12 @@ std::string ExitDescription(const Process& p) {
 #endif
 }
 
-void DumpStacks(const Process& p) {
+bool DumpStacks(const Process& p) {
 #ifndef _WIN32
-  if (IsAlive(p)) kill(static_cast<pid_t>(p.handle), SIGUSR1);
+  return IsAlive(p) && kill(static_cast<pid_t>(p.handle), SIGUSR1) == 0;
 #else
   (void)p;
+  return false;
 #endif
 }
 

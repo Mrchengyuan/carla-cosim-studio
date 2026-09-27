@@ -129,6 +129,12 @@ void PushHist(std::vector<float>& h, float v, size_t max) {
 // Banner and log line of a run stopped by an error (cosim_state "error").
 std::string RunErrorNote(const std::string& why) { return "运行出错已停止：" + why + "（详情见底部“输出”）"; }
 
+// PROTOCOL of backend_server.py this GUI was built for (its "hello"): raise both
+// together whenever a command, event or config field the GUI relies on changes.
+constexpr int kBackendProtocol = 1;
+
+const char* const kStoppingBackend = "正在停止后端（清理 CARLA 中的主车、传感器和交通）...";
+
 }  // namespace
 
 bool appui::Base64(const std::string& in, std::vector<unsigned char>& out) { return Base64Decode(in, out); }
@@ -213,8 +219,13 @@ void App::Init(int argc, char** argv) {
     else if (a == "--backend-dir") { next(v); prefs_["backend_dir"] = prefs_cli_["backend_dir"] = fs::absolute(fs::u8path(v)).u8string(); }
     else if (a == "--carla-port") { next(v); prefs_["carla_port"] = prefs_cli_["carla_port"] = std::atoi(v.c_str()); }
     else if (a == "--font") next(font_path_);
-    else if (a == "--config") { next(v); prefs_["last_config"] = v; }
-    else if (a == "--light") prefs_["dark_theme"] = false;
+    else if (a == "--config") {
+      next(v);
+      // Like --python: from here (a path typed in the GUI is from the bridge directory).
+      if (!v.empty() && !fs::u8path(v).is_absolute()) v = fs::absolute(fs::u8path(v)).lexically_normal().u8string();
+      prefs_["last_config"] = prefs_cli_["last_config"] = v;
+    }
+    else if (a == "--light") prefs_["dark_theme"] = prefs_cli_["dark_theme"] = false;
     else if (a == "--auto-connect") auto_connect_ = true;
     else if (a == "--size" || a == "--scale") next(v);  // handled in main.cpp
   }
@@ -232,9 +243,10 @@ void App::Init(int argc, char** argv) {
 }
 
 void App::SavePrefs() {
+  if (!tour_dir_.empty()) return;  // a scripted tour never changes the user's settings
   prefs_["dark_theme"] = dark_;
-  // What the launcher passed (e.g. port 3000 for the modified CARLA) is for
-  // this session only, unless the user changed it on the page.
+  // What the launcher passed (e.g. port 3000 for the modified CARLA, --light,
+  // --config) is for this session only, unless the user changed it on the page.
   json out = prefs_;
   if (prefs_cli_.is_object())
     for (auto& kv : prefs_cli_.items())
@@ -280,6 +292,7 @@ const json* App::SelectedVehicleSpec() const {
 // --------------------------------------------------------------------------
 void App::StartBackend() {
   if (plat::IsAlive(backend_proc_)) return;
+  stop_since_ = -1;  // the old one is gone: nothing left to wait for
   if (backend_proc_.valid()) plat::Kill(backend_proc_, true);  // gone already: just release it
   backend_rejected_ = false;
   if (!backend_problem_.empty()) {
@@ -308,14 +321,44 @@ void App::StartBackend() {
 }
 
 void App::StopBackend() {
-  if (be_.Connected()) {
-    be_.Request("shutdown", json::object(), nullptr);
-    for (int i = 0; i < 30 && plat::IsAlive(backend_proc_); ++i) glfwWaitEventsTimeout(0.1);
+  if (stop_since_ >= 0) return;  // already stopping
+  // The backend cleans CARLA up and exits by itself; the window keeps drawing
+  // meanwhile (StopBackendPoll ends it if it does not).
+  stop_asked_ = be_.Connected();
+  if (stop_asked_) be_.Request("shutdown", json::object(), nullptr);
+  stop_termed_ = false;
+  stop_since_ = ImGui::GetTime();
+  busy_ = kStoppingBackend;
+}
+
+// Done once the backend has exited (one started elsewhere: once it closed the
+// connection). Asked over the connection it has 3 s; then (at once when it
+// could not be asked) SIGTERM, which cleans up too (POSIX; Windows has none);
+// 5 s later it is killed.
+void App::StopBackendPoll() {
+  if (stop_since_ < 0) return;
+  const double waited = ImGui::GetTime() - stop_since_, term_at = stop_asked_ ? 3.0 : 0.0;
+  const bool gone = backend_proc_.valid() ? !plat::IsAlive(backend_proc_) : !be_.Connected();
+  if (!gone && waited < term_at + 5.0) {
+    if (waited >= term_at && !stop_termed_) {
+      stop_termed_ = true;
+      plat::Terminate(backend_proc_);
+    }
+    busy_ = kStoppingBackend;  // (the connection it closes clears it)
+    return;
   }
+  stop_since_ = -1;
   be_.Disconnect();
-  if (backend_proc_.valid()) plat::Kill(backend_proc_);
+  if (backend_proc_.valid()) plat::Kill(backend_proc_, true);  // gone already, or it had its time
   OnEvent({{"event", "disconnected"}, {"quiet", true}});  // nothing of that backend's state is valid
-  Log("后端已停止，CARLA 中的主车、传感器和交通已清理");
+  if (gone) Log("后端已停止，CARLA 中的主车、传感器和交通已清理");
+  else Log("后端没有按时退出，已强制结束（CARLA 中可能还留有它的主车、传感器或交通）", "warn");
+}
+
+bool App::WantsQuit() {
+  if (!quit_) return false;
+  if (stop_since_ < 0 && (be_.Connected() || plat::IsAlive(backend_proc_))) StopBackend();
+  return stop_since_ < 0;
 }
 
 void App::RestartBackend() {
@@ -323,9 +366,12 @@ void App::RestartBackend() {
   // its log (kept as backend.prev.log), stop it hard, start a fresh one and
   // reconnect, removing what the old one left in CARLA.
   if (plat::IsAlive(backend_proc_)) {
-    plat::DumpStacks(backend_proc_);
+    // Windows has no SIGUSR1: there the backend's socket thread prints them
+    // on a "dump_stacks" line (the worker, which may be what hangs, is not needed).
+    if (!plat::DumpStacks(backend_proc_) && be_.Connected()) be_.Request("dump_stacks", json::object(), nullptr);
     for (int i = 0; i < 5; ++i) glfwWaitEventsTimeout(0.1);
   }
+  stop_since_ = -1;  // (a 停止后端 still waiting: this ends it)
   be_.Disconnect();
   plat::Kill(backend_proc_, true);
   OnEvent({{"event", "disconnected"}, {"quiet", true}});  // same reset as a lost connection
@@ -337,11 +383,25 @@ void App::RestartBackend() {
 
 void App::ConnectBackend(bool quiet) {
   std::string err;
-  if (!be_.Connect("127.0.0.1", prefs_.value("backend_port", 57100), err)) {
+  // A quiet retry while the backend starts: a short time-out (a backend
+  // listening on this machine answers at once); on Windows every refused try
+  // would otherwise stall the window for all of it.
+  if (!be_.Connect("127.0.0.1", prefs_.value("backend_port", 57100), err, quiet ? 50 : 300)) {
     if (!quiet) Log(err, "error");
     return;
   }
   Log("已连接后端");
+  // A git pull updates the Python side at once, this program only when it is
+  // rebuilt: say so instead of misbehaving silently.
+  be_.Request("hello", json::object(), [this](bool ok, const json& r, const std::string& err) {
+    // A lost connection fails it too; only an old backend does not know the command.
+    if (!ok && err.find("未知命令") == std::string::npos) return;
+    const int theirs = ok && r.is_object() && r.contains("protocol") && r["protocol"].is_number_integer()
+                           ? r["protocol"].get<int>() : 0;
+    if (theirs != kBackendProtocol)
+      Log(Fmt("界面与后端的版本不一致（界面 %d，后端 %d）：请重新编译 CoSim Studio，或把桥接目录更新到与界面相同的版本",
+              kBackendProtocol, theirs), "error");
+  });
   // Always start from the backend's full defaults and lay what we already have
   // (e.g. a loaded, possibly partial config file) on top, so every section the
   // pages read exists.
@@ -384,6 +444,8 @@ void App::SetWorld(const json& r) {
   if (run_note_ego_ < 0 && r.is_object()) run_note_ego_ = r.value("ego_id", 0);  // a failed start: its ego
   if (!Running() && r.is_object() && r.value("ego_id", 0) != run_note_ego_) run_note_.clear();
   world_ = r.is_object() ? r : json::object();
+  // Off after a run (the ego is respawned, then parked) or for a new ego: the backend knows.
+  if (world_.contains("ego_autopilot") && world_["ego_autopilot"].is_boolean()) autopilot_ = world_["ego_autopilot"].get<bool>();
   // The backend tracks CARLA's recorder (it stops it on exit, reconnect, map change and replay).
   recording_ = world_.contains("recording") && world_["recording"].is_string() &&
                !world_["recording"].get<std::string>().empty();
@@ -394,7 +456,7 @@ void App::RefreshWorld() {
     SetWorld(r);
     // The backend's run state is authoritative (e.g. after a reconnect).
     if (r.contains("cosim_state") && r["cosim_state"].is_string()) run_state_ = r["cosim_state"].get<std::string>();
-    weather_edit_ = r.value("weather", json::object());
+    if (!weather_dirty_) weather_edit_ = r.value("weather", json::object());  // slider changes not applied yet stay
   });
 }
 
@@ -433,6 +495,7 @@ void App::LoadMap(const std::string& name) {
 void App::ApplyWeatherPreset(const std::string& preset) {
   Call("set_weather", {{"preset", preset}}, [this, preset](const json& r) {
     weather_edit_ = r;
+    weather_dirty_ = false;
     Log("天气：" + preset);
   });
 }
@@ -440,17 +503,20 @@ void App::ApplyWeatherPreset(const std::string& preset) {
 void App::ApplyWeatherParams() {
   Call("set_weather", {{"params", weather_edit_}}, [this](const json& r) {
     weather_edit_ = r;
+    weather_dirty_ = false;
     Log("天气参数已应用");
   });
 }
 
 void App::ApplyWorldSettings() {
-  json a = {{"synchronous", world_.value("synchronous", false)},
-            {"frame_dt", world_.value("frame_dt", 0.0)},
-            {"no_rendering", world_.value("no_rendering", false)},
-            {"idle_tick", world_.value("idle_tick", false)}};
+  const json& w = world_edit_.is_object() ? world_edit_ : world_;
+  json a = {{"synchronous", w.value("synchronous", false)},
+            {"frame_dt", w.value("frame_dt", 0.0)},
+            {"no_rendering", w.value("no_rendering", false)},
+            {"idle_tick", w.value("idle_tick", false)}};
   Call("world_settings", a, [this](const json& r) {
     SetWorld(r);
+    world_edit_ = json();
     Log("仿真设置已应用");
   });
 }
@@ -845,6 +911,7 @@ void App::OnEvent(const json& ev) {
         RefreshWorld();
         RefreshDisk();
       }
+      if (panel_ == kPanelDataset && be_.Connected()) DatasetRefresh();  // a collection may have added a session
       kb_throttle_ = kb_brake_ = kb_steer_ = 0;
     }
   } else if (type == "telemetry") {
@@ -913,6 +980,8 @@ void App::OnEvent(const json& ev) {
     view_on_ = false;
     recording_ = false;  // the recorder runs inside CARLA
     world_ = json::object();
+    world_edit_ = json();
+    weather_dirty_ = false;
     last_tel_ = json::object();
     run_note_level_ = "error";
     run_note_ego_ = 0;
@@ -960,9 +1029,12 @@ void App::OnEvent(const json& ev) {
     ds_pending_ = 0;
     ds_dirty_ = false;
     ds_exporting_ = false;
+    ds_sessions_ = json();  // listed again by the next backend
+    world_edit_ = json();
+    weather_dirty_ = false;
     last_tel_ = json::object();
     busy_task_.clear();
-    if (!ev.contains("quiet")) Log("与后端的连接断开了", "error");
+    if (!ev.contains("quiet") && stop_since_ < 0) Log("与后端的连接断开了", "error");  // (not the one 停止后端 ended)
   }
 }
 
@@ -1084,6 +1156,8 @@ void App::BuildTour() {
          cfg_["collect"]["enabled"] = false;
          cfg_["collect"]["out_dir"] = ds;
        }, idle, "09_collect_config"},
+      // Listed now, empty: the session collected below must show up later without 刷新.
+      {kPanelDataset, [] {}, [this, idle] { return idle() && ds_sessions_.is_array() && ds_sessions_.empty(); }, ""},
       {kPanelView, [this] {
          view_mode_ = "chase";
          view_res_ = 2;
@@ -1133,7 +1207,10 @@ void App::BuildTour() {
        [this] { return view_on_ && view_mode_ == "wheel" && busy_.empty() && views_pending_ == 0 && view_frames_ > 3; }, ""},
       {kPanelDrive, [this] { click_target_ = "view:close"; }, [this] { return !view_on_; }, ""},
       {kPanelDrive, [this] { click_target_ = "viewport:action"; }, [this] { return view_on_; }, ""},
-      {-1, [this] { click_target_ = "tab:传感器"; }, [this] { return panel_ == kPanelRig; }, ""},
+      // The 实时画面 page's button closes the view like the viewport's ×: it does not reopen by itself.
+      {kPanelView, [this] { click_target_ = "view:page_toggle"; }, [this] { return !view_on_ && !view_auto_; }, ""},
+      {kPanelView, [this] { click_target_ = "view:page_toggle"; }, [this] { return view_on_ && view_auto_; }, ""},
+      {-1, [this] { click_target_ = "tab:场景"; }, [this] { return panel_ == kPanelScene; }, ""},
       {-1, [this] { click_target_ = "nav:数据采集"; }, [this] { return panel_ == kPanelCollect; }, ""},
       // Tiny capture (3 frames of a single small camera) to show live stats;
       // the tour output folder is deleted by the caller afterwards.
@@ -1157,7 +1234,7 @@ void App::BuildTour() {
          return !Running() && collect_stats_.value("frames", 0) >= 3 && run_note_.find("数据采集") != std::string::npos;
        }, "12_collect_done"},
       // Dataset browser and export, by clicks.
-      {kPanelDataset, [this] { cfg_["collect"]["enabled"] = false; click_target_ = "ds:refresh"; },
+      {kPanelDataset, [this] { cfg_["collect"]["enabled"] = false; },
        [this, idle] { return idle() && ds_sessions_.is_array() && !ds_sessions_.empty(); }, ""},
       {kPanelDataset, [this] { click_target_ = "ds:session:tour"; },
        [this, idle] { return idle() && !ds_root_.empty() && ds_pending_ == 0 && ds_panes_[0].frames > 0 && ds_panes_[1].frames > 0; }, ""},
@@ -1230,7 +1307,7 @@ void App::TourTick() {
   static bool started = false;
   static int since_ready = 0, frames_in_step = 0;
   if (tour_i_ >= tour_->size()) {
-    if (++tour_wait_ > 30) {
+    if (++tour_wait_ > 30 && !quit_) {  // (the backend then stops while frames go on)
       Log("TOUR DONE");
       quit_ = true;
     }

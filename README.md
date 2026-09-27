@@ -284,6 +284,8 @@ python run_cosim.py --mock --duration 20                                        
 | `tests/test_carsim_carla.py` | 在 CARLA 上：配置出错在重新生成主车之前被拒绝、仿真步长对齐 t_step（CARLA 也用它）、日志说明模拟 CarSim、暂停不计入实时倍率、假 CarSim 求解器的运行以正确原因结束 | 待在 CARLA 上运行 |
 | `tests/test_offline_algoerr.py` | 不需要 CARLA：场景里没勾选的键、缺少传感器数据 / 导出变量时指向对应页面，子目录里的辅助文件下次运行重新载入、两个文件夹里的同名辅助文件、与已载入模块重名时拒绝、算法目录排在 python_carsim_env 之前，`sys.exit`、辅助文件里出错时给出两处行号，找不到入口函数时列出候选，`control()` 慢时 busy 心跳指向用户代码行，启动失败 / 工作线程出错时告诉界面原因 | 18/18 |
 | `tests/test_algoerr_carla.py` | 经过界面后端在 CARLA 上：启动失败说明原因（界面横幅）、没勾选的场景键指向“场景信息”页、`control()` 里 `sys.exit()`、辅助文件出错给出两处行号、与已载入模块同名的文件（config.py）被拒绝、子目录里的辅助文件重新载入、`control()` 慢时 busy 心跳指向用户代码行而不是 CARLA 卡住 | 待在 CARLA 上运行 |
+| `tests/test_offline_guimisc.py` | 不需要 CARLA：界面与后端协议版本一致（`hello`）、卡住的后端由套接字线程打印全部线程调用栈（Windows 没有 SIGUSR1）、`world_info` 报告自动驾驶试开、界面的平台代码（连接超时、结束后端进程、退出原因；另用 MinGW 编译 Windows 版） | 7/7（其中 C++ 14/14） |
+| `tests/test_guimisc_carla.py` | 在 CARLA 上经过界面后端：版本一致、运行后自动驾驶试开已取消、运行中打印调用栈不用等工作线程、停止后端时清理主车 | 待在 CARLA 上运行 |
 | `tests/test_all_vehicles.py` | 41 种车型（含自行车、摩托车、6 轮卡车、巴士）逐一当主车做联合仿真，CARLA 服务器不能崩 | 41/41 |
 | `tests/test_carla_restart.py` | 运行中关掉 CARLA 再重新启动（会真的停止并重启 CARLA；改版加 `--mod`）：后端不能崩、立刻说明原因、能连上新的服务器继续用 | 4/4（两种包、两种 CARLA） |
 | `tests/test_modified_carla.py` | 改版 CARLA：位姿、速度、角速度、IMU（陀螺仪、加速度计）、四轮转向、悬架、物理交接 | 11 项，加速度计一项待在改版 CARLA 上运行（此前 10/10） |

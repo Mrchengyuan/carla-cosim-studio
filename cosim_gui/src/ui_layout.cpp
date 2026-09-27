@@ -101,13 +101,13 @@ void ControlBar(const char* label, float v, float lo, float hi, const ImVec4& co
   if (ui::GetFonts().mono) ImGui::PopFont();
 }
 
-// Toolbar tab that jumps to a page.
-bool ToolTab(const char* label, bool active, float height) {
+// Toolbar tab that jumps to a page; pad: space left and right of the label.
+bool ToolTab(const char* label, bool active, float height, float pad) {
   const ui::Palette& p = ui::Colors();
   const float fs = ImGui::GetFontSize();
   const bool disabled = (ImGui::GetCurrentContext()->CurrentItemFlags & ImGuiItemFlags_Disabled) != 0;
   const ImVec2 ts = ImGui::CalcTextSize(label);
-  const ImVec2 size(ts.x + fs * 1.4f, height);
+  const ImVec2 size(ts.x + pad * 2.0f, height);
   const ImVec2 pos = ImGui::GetCursorScreenPos();
   const bool clicked = ImGui::InvisibleButton(label, size);
   ui::RecordTarget(std::string("tab:") + label);
@@ -120,7 +120,7 @@ bool ToolTab(const char* label, bool active, float height) {
   } else if (hov && !disabled) {
     dl->AddRectFilled(pos, ImVec2(pos.x + size.x, pos.y + size.y), ImGui::GetColorU32(ImGuiCol_ButtonHovered), 3.0f);
   }
-  dl->AddText(ImVec2(pos.x + fs * 0.7f, pos.y + (height - fs) * 0.5f),
+  dl->AddText(ImVec2(pos.x + pad, pos.y + (height - fs) * 0.5f),
               ImGui::GetColorU32(disabled ? ui::WithAlpha(p.text_dim, 0.5f) : (active ? p.text : p.text_dim)), label);
   return clicked && !disabled;
 }
@@ -167,7 +167,9 @@ void App::Frame() {
 }
 
 void App::FrameBody() {
-  if (!be_.Connected() && plat::IsAlive(backend_proc_) && tour_dir_.empty() && frame_ % 30 == 0) ConnectBackend(true);
+  StopBackendPoll();
+  if (!be_.Connected() && plat::IsAlive(backend_proc_) && tour_dir_.empty() && stop_since_ < 0 && frame_ % 30 == 0)
+    ConnectBackend(true);
   if (tour_) TourTick();
   // Desktop launcher: connect to CARLA as soon as the backend answers.
   if (auto_connect_ && be_.Connected() && busy_.empty() && be_.PendingCount() == 0) {
@@ -220,7 +222,8 @@ void App::FrameBody() {
   } else if (backend_problem_.rfind("后端卡住了", 0) == 0) {
     backend_problem_.clear();  // it went on after all
   }
-  if (backend_proc_.valid() && !be_.Connected() && !plat::IsAlive(backend_proc_) && backend_problem_.empty()) {
+  if (backend_proc_.valid() && !be_.Connected() && !plat::IsAlive(backend_proc_) && backend_problem_.empty() &&
+      stop_since_ < 0) {
     // (Not probing CARLA's port here: CARLA 0.9.16 can crash on connections
     // that close right away. With the original carla package the backend
     // dies when CARLA does, hence the hint.)
@@ -236,6 +239,7 @@ void App::FrameBody() {
   static int last_panel = -1;
   if (panel_ != last_panel) {
     if (panel_ == kPanelCollect || panel_ == kPanelRig) RefreshDisk();
+    if (panel_ == kPanelDataset && be_.Connected()) DatasetRefresh();  // a new collection, another output directory
     last_panel = panel_;
   }
   DatasetTick();
@@ -374,8 +378,7 @@ void App::DrawMenuBar() {
   if (ImGui::BeginMenu("转到")) {
     for (const auto& g : Nav())
       for (const auto& it : g.items)
-        if (ImGui::MenuItem(Fmt("%s  %s", it.icon, it.name).c_str(), nullptr, panel_ == it.panel,
-                            it.panel == kPanelConnect || carla_connected_)) {
+        if (ImGui::MenuItem(Fmt("%s  %s", it.icon, it.name).c_str(), nullptr, panel_ == it.panel, PageEnabled(it.panel))) {
           panel_ = it.panel;
           monitor_open_ = true;
         }
@@ -553,23 +556,11 @@ void App::DrawToolbar() {
     SaveConfig(cfg_path_.empty() ? std::string("cosim_config.json") : cfg_path_);
   ui::ToolSeparator(bh);
 
-  // Workflow tabs: jump straight to the page of each step.
+  // Workflow tabs: jump straight to the page of each step ("场景": what the
+  // control algorithm gets, like the dock's 场景 tab).
   struct T { const char* label; int panel; };
-  static const T kTabs[] = {{"场景", kPanelWorld}, {"车辆", kPanelVehicle}, {"传感器", kPanelRig},
-                            {"驾驶", kPanelDrive}, {"CarSim", kPanelCoSim}, {"采集", kPanelCollect}};
-  ImGui::BeginDisabled(!carla_connected_);
-  for (size_t i = 0; i < 6; ++i) {
-    if (i) ImGui::SameLine();
-    if (ToolTab(kTabs[i].label, panel_ == kTabs[i].panel, bh)) {
-      panel_ = kTabs[i].panel;
-      monitor_open_ = true;
-    }
-  }
-  ImGui::EndDisabled();
-
-  // Right: simulation clock, like an instrument panel.
-  const bool have = !last_tel_.empty() && Running();
-  ImFont* mono = ui::GetFonts().mono ? ui::GetFonts().mono : ImGui::GetFont();
+  static const T kTabs[] = {{"地图", kPanelWorld}, {"车辆", kPanelVehicle}, {"传感器", kPanelRig}, {"驾驶", kPanelDrive},
+                            {"CarSim", kPanelCoSim}, {"场景", kPanelScene}, {"采集", kPanelCollect}};
   // Mock CarSim is a toy model: say so where the run is watched, not only on its page.
   const bool mock = cfg_.contains("carsim") && cfg_["carsim"].value("mock", false) && cfg_.contains("drive") &&
                     cfg_["drive"].value("dynamics", std::string("cosim")) == "cosim";
@@ -577,6 +568,24 @@ void App::DrawToolbar() {
   const float mock_tw = ImGui::GetFont()->CalcTextSizeA(fs * 0.82f, 1e9f, 0, kMock).x;
   const float box_w = fs * 29.5f + (mock ? mock_tw + fs * 1.6f : 0.0f);
   const float right = ImGui::GetWindowContentRegionMax().x;
+  // Narrow windows (1280 px): tighter tabs, so the readout box on the right keeps its room.
+  float labels_w = 0;
+  for (const T& t : kTabs) labels_w += ImGui::CalcTextSize(t.label).x + ImGui::GetStyle().ItemSpacing.x;
+  const float room = right - ImGui::GetCursorPosX() - fs - box_w;
+  const float tab_pad = std::max(fs * 0.3f, std::min(fs * 0.7f, (room - labels_w) / (2.0f * IM_ARRAYSIZE(kTabs))));
+  for (int i = 0; i < IM_ARRAYSIZE(kTabs); ++i) {
+    if (i) ImGui::SameLine();
+    ImGui::BeginDisabled(!PageEnabled(kTabs[i].panel));
+    if (ToolTab(kTabs[i].label, panel_ == kTabs[i].panel, bh, tab_pad)) {
+      panel_ = kTabs[i].panel;
+      monitor_open_ = true;
+    }
+    ImGui::EndDisabled();
+  }
+
+  // Right: simulation clock, like an instrument panel.
+  const bool have = !last_tel_.empty() && Running();
+  ImFont* mono = ui::GetFonts().mono ? ui::GetFonts().mono : ImGui::GetFont();
   ImGui::SameLine(std::max(ImGui::GetCursorPosX() + fs, right - box_w));
   const ImVec2 bp = ImGui::GetCursorScreenPos();
   const float bw = ImGui::GetWindowPos().x + right - bp.x;
@@ -636,6 +645,19 @@ void App::DrawToolbar() {
 }
 
 // --------------------------------------------------------------------------
+// The config pages are for preparing a run (controller, .sim, exports, rig,
+// collection) and need only the backend's defaults; 数据浏览 reads the files
+// through the backend; the rest act on the CARLA world.
+bool App::PageEnabled(int panel) const {
+  switch (panel) {
+    case kPanelConnect: return true;
+    case kPanelRig: case kPanelDrive: case kPanelCoSim: case kPanelScene: case kPanelCollect:
+      return cfg_defaults_.is_object() || carla_connected_;
+    case kPanelDataset: return be_.Connected();
+    default: return carla_connected_;
+  }
+}
+
 void App::DrawNav() {
   const ui::Palette& p = ui::Colors();
   const float fs = ImGui::GetFontSize();
@@ -677,7 +699,7 @@ void App::DrawNav() {
     dl->AddText(bold, fs, ImVec2(pos.x + fs * 3.0f, ty), ImGui::GetColorU32(p.text), g.caption);
     if (!collapsed) {
       for (const auto& it : g.items) {
-        const bool disabled = it.panel != kPanelConnect && !carla_connected_;
+        const bool disabled = !PageEnabled(it.panel);
         const bool sel = panel_ == it.panel;
         ImGui::PushID(it.panel);
         pos = ImGui::GetCursorScreenPos();

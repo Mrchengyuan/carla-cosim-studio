@@ -27,7 +27,7 @@ double BytesPerFrame(const json& s, const std::string& image_format, double dt) 
     return px3 * (k == "semantic" ? 0.016 : 0.022);
   }
   if (k == "lidar") return a.value("points_per_second", 56000.0) * dt * 0.5 * 16;
-  if (k == "radar") return a.value("points_per_second", 1500.0) / 10.0 * 32;
+  if (k == "radar") return a.value("points_per_second", 1500.0) * (dt > 0 ? dt : 0.1) * 32;
   return 200;
 }
 
@@ -133,7 +133,7 @@ void App::LoadRigPreset(const std::string& preset) {
          cfg_["rig"]["preset"] = preset;
          cfg_["rig"]["frame"] = "carsim";  // replaces an unconverted old rig too
          rig_sel_ = r.empty() ? -1 : 0;
-         RefreshVehicles();  // rig_build may have measured the vehicle
+         if (carla_connected_) RefreshVehicles();  // rig_build may have measured the vehicle
          Log(Fmt("已加载传感器套件：%d 个传感器", static_cast<int>(r.size())));
        }, "正在按车型尺寸生成套件 ...");
 }

@@ -49,6 +49,10 @@ WEATHER_FIELDS = ["cloudiness", "precipitation", "precipitation_deposits", "wind
 # was thrown by a collision or is falling out of the world.
 RUNAWAY_SPEED = 50.0
 PROBE_ROLE = "cosim_probe"  # cars vehicle_specs spawns to measure a vehicle model
+# What "hello" reports; the GUI (kBackendProtocol in cosim_gui/src/app.cpp) warns
+# when it was built for another one. Raise both together whenever a command,
+# event or config field the GUI relies on changes.
+PROTOCOL = 1
 
 
 class Backend:
@@ -347,6 +351,9 @@ class Backend:
     def cmd_ping(self):
         return "pong"
 
+    def cmd_hello(self):
+        return {"protocol": PROTOCOL}
+
     def cmd_connect(self, host="localhost", port=2000, timeout=20.0, recover=False):
         # This backend kept the world ticking itself: sync mode is no sign of a
         # frozen world then.
@@ -434,6 +441,7 @@ class Backend:
             "spectator_mode": self.spectator_mode,
             "cosim_state": self.cosim_state,
             "idle_tick": self.idle_tick,
+            "ego_autopilot": self.ego_autopilot and self._alive(self.ego),
             "external_api_server": getattr(self, "server_api", None),
             "recording": self.recording or "",
         }
@@ -1426,10 +1434,23 @@ def _json_safe(o):
         return str(o)
 
 
+def _socket_thread_request(req, send):
+    """Requests the socket thread answers itself, since the worker may be the
+    thread that hangs: "dump_stacks" prints every thread's stack into the log
+    (the GUI sends it before restarting a backend where there is no SIGUSR1,
+    i.e. on Windows). False: a request for the worker."""
+    if req.get("cmd") != "dump_stacks":
+        return False
+    faulthandler.dump_traceback(all_threads=True)
+    send({"id": req.get("id"), "ok": True, "result": True})
+    return True
+
+
 def serve(port, exit_with_client=False):
     # A crash inside the carla library (a C++ thread) leaves no Python error:
     # print every thread's stack into the log instead. SIGUSR1 prints them for
-    # a backend that hangs (the GUI sends it before restarting one).
+    # a backend that hangs (the GUI sends it before restarting one; on Windows
+    # a "dump_stacks" request, see _socket_thread_request).
     faulthandler.enable(all_threads=True)
     if hasattr(signal, "SIGUSR1"):
         faulthandler.register(signal.SIGUSR1, all_threads=True)
@@ -1511,6 +1532,8 @@ def serve(port, exit_with_client=False):
                         continue
                     if not isinstance(req, dict):
                         send({"event": "log", "level": "error", "msg": "后端收到的请求不是 JSON 对象，已忽略"})
+                        continue
+                    if _socket_thread_request(req, send):
                         continue
                     backend.requests.put((req, send))
         except OSError:

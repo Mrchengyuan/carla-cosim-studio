@@ -29,6 +29,7 @@ bool Viewable(const std::string& t) {
 
 // --------------------------------------------------------------------------
 void App::DatasetRefresh() {
+  if (ds_sessions_.is_null()) ds_sessions_ = json::array();  // asked for: the page does not ask again
   const std::string dir = cfg_.contains("collect") ? cfg_["collect"].value("out_dir", std::string("datasets")) : "datasets";
   Call("dataset_list", {{"out_dir", dir}}, [this](const json& r) { ds_sessions_ = r; });
 }
@@ -244,10 +245,8 @@ void App::DrawDatasetViewport(float w, float h) {
 void App::DrawPanelDataset() {
   const ui::Palette& p = ui::Colors();
   const float fs = ImGui::GetFontSize();
-  if (ds_sessions_.is_null() && be_.Connected()) {
-    ds_sessions_ = json::array();
-    DatasetRefresh();
-  }
+  // (Opening this page lists them too, see FrameBody; this is for a backend that came later.)
+  if (ds_sessions_.is_null() && be_.Connected()) DatasetRefresh();
 
   ui::BeginCard(ICON_FA_FOLDER_OPEN, "数据集");
   const std::string dir = cfg_.contains("collect") ? cfg_["collect"].value("out_dir", std::string("datasets")) : "datasets";

@@ -205,7 +205,11 @@ int main(int argc_raw, char** argv_raw) {
 
   std::string shown_title = "CARLA CoSim Studio";
   while (!app.WantsQuit() && !g_quit_signal) {
-    glfwPollEvents();
+    // Minimised: swapping does not wait for a hidden window on many drivers, and
+    // the loop would spin a core CarSim or CARLA need; still take in the
+    // backend's messages about 60 times a second.
+    if (glfwGetWindowAttrib(window, GLFW_ICONIFIED)) glfwWaitEventsTimeout(0.016);
+    else glfwPollEvents();
     // Closing the window asks first when the config has unsaved changes.
     if (glfwWindowShouldClose(window)) {
       glfwSetWindowShouldClose(window, GLFW_FALSE);

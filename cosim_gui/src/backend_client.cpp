@@ -3,9 +3,9 @@
 #include <algorithm>
 #include <unordered_map>
 
-bool BackendClient::Connect(const std::string& host, int port, std::string& err) {
+bool BackendClient::Connect(const std::string& host, int port, std::string& err, int timeout_ms) {
   Disconnect();
-  sock_ = plat::TcpConnect(host, port, err);
+  sock_ = plat::TcpConnect(host, port, err, timeout_ms);
   if (sock_ == plat::kInvalidSocket) return false;
   connected_ = true;
   reader_ = std::thread(&BackendClient::ReaderLoop, this, sock_);  // its own copy: Disconnect() resets sock_

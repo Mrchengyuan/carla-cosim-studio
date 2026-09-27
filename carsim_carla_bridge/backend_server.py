@@ -25,6 +25,7 @@ import shutil
 import signal
 import socket
 import subprocess
+import sys
 import threading
 import time
 import traceback
@@ -35,7 +36,7 @@ import collector as coll
 import dataset as dsmod
 import rig as rigmod
 import settings as st
-from session import CarlaDriveSession, CoSimSession, check_run_config, check_run_files
+from session import CarlaDriveSession, CoSimSession, check_run_config, check_run_files, control_busy
 from views import ViewStreamer
 
 WEATHER_PRESETS = [n for n in dir(carla.WeatherParameters)
@@ -1058,8 +1059,8 @@ class Backend:
                 self.collector.on_tick(sc.frame, 0)  # step 0 (t0): the first sample, like the run record
                 self._log("数据采集开始：%d 个传感器 → %s（预计 %.1f MB/s）" % (
                     len(self.collector.sensor_cfgs), info["collect"]["root"], info["collect"]["estimate"]["mb_per_s"]))
-        except BaseException:  # SystemExit from a user controller included
-            self._stop_cosim_if_running("error")
+        except BaseException as e:  # SystemExit from a user controller included
+            self._stop_cosim_if_running("error", str(e) or type(e).__name__)  # the banner says why
             raise
         self._set_cosim_state("running")
         if info.get("server_api") is not None:
@@ -1338,10 +1339,10 @@ class Backend:
         while True:
             try:
                 self._worker_iteration()
-            except BaseException:
+            except BaseException as e:
                 traceback.print_exc()
                 self.task = None
-                self._try(lambda: self._stop_cosim_if_running("error", "后端内部错误"))
+                self._try(lambda: self._stop_cosim_if_running("error", "后端内部错误：%s: %s" % (type(e).__name__, e)))
                 time.sleep(0.1)
 
     def _worker_iteration(self):
@@ -1433,8 +1434,11 @@ def serve(port, exit_with_client=False):
                 if gone:
                     backend._fast_timeout = True
                     backend._try(lambda: backend.client.set_timeout(0.5))
-                backend.emit({"event": "busy", "task": task[0], "seconds": round(time.time() - task[1], 1),
-                              "carla_gone": gone})
+                ev = {"event": "busy", "task": task[0], "seconds": round(time.time() - task[1], 1), "carla_gone": gone}
+                ctl = control_busy(getattr(backend.session, "driver", None))
+                if ctl is not None:  # the user's control() has not returned: not a CARLA problem
+                    ev.update(task="control", seconds=round(time.time() - ctl[0], 1), where=ctl[1])
+                backend.emit(ev)
     threading.Thread(target=heartbeat, daemon=True).start()
     srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     if os.name == "nt":  # there SO_REUSEADDR lets a second backend listen on the same port
@@ -1505,6 +1509,12 @@ def serve(port, exit_with_client=False):
 
 
 if __name__ == "__main__":
+    # print() in the user's control() goes to backend.log. On Windows a
+    # redirected stdout uses the ANSI code page (cp936), where printing e.g.
+    # "✓" raises inside control() and stops the run.
+    for stream in (sys.stdout, sys.stderr):
+        if stream is not None and hasattr(stream, "reconfigure"):
+            stream.reconfigure(encoding="utf-8", errors="backslashreplace")
     ap = argparse.ArgumentParser()
     ap.add_argument("--port", type=int, default=57100)
     ap.add_argument("--exit-with-client", action="store_true",

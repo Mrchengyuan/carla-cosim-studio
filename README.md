@@ -225,7 +225,7 @@ class Controller:
         return [throttle, brake, steer_sw]    # 按 .sim 里导入变量的顺序
 ```
 - `exports`：全部 CarSim 导出变量，键是导出变量名；`t`：CarSim 时间；`dt`：控制周期（= 仿真步长）。
-- 界面里的相对路径以 `carsim_carla_bridge` 目录为准（命令行里以当前目录为准）；每次点“运行”都会重新加载这个文件，改完代码直接再运行，不用重启界面。
+- 界面里的相对路径以 `carsim_carla_bridge` 目录为准（命令行里以当前目录为准）；每次点“运行”都会重新加载这个文件（连同它从同一目录和子目录 import 的文件），改完代码直接再运行，不用重启界面。
 - 示例：`controllers/example_controller.py`（定速 + 蛇形）、`controllers/scene_controller.py`（沿车道行驶，前方有车或障碍物就跟车 / 停车）、`controllers/simple_path_follower.py`（python_carsim_env 里的 SimplePathFollower）。
 
 **用 CARLA 场景里的信息**：把 `control` 写成 4 个参数，每帧就会多收到一个 `scene`（算法本来就在 Python 后端里运行，场景信息直接从 CARLA 读出来交给它，不经过界面；界面只是把同一份数据显示出来）。只写 3 个参数的算法照旧运行。

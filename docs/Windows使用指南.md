@@ -299,6 +299,7 @@ world.tick()
 | 界面上图标显示成方框 | `fonts` 文件夹没有和 exe 放在一起 |
 | 中文显示异常 | 程序使用系统自带的微软雅黑（`C:\Windows\Fonts\msyh.ttc`）；精简版系统可用 `--font` 指定其他中文字体 |
 | 状态栏“后端 未运行” | Python 路径不对或缺包。看 `carsim_carla_bridge\backend.log`；在“连接”页填 `venv\Scripts\python.exe` 的完整路径 |
+| 视口上方红色提示“后端卡住了：控制算法 control() 已经 N 秒没有返回（my_ctrl.py 第 42 行）” | 不是 CARLA 的问题：你的控制算法停在提示里的那一行（例如 input()、断点、第一次调用时生成求解器）。不用重启后端，control() 返回后提示条自动消失 |
 | 画面不动，视口上方红色提示“后端卡住了” | 后端里的 CARLA 调用没有返回（常见原因：原版 Python 包里 CARLA 0.9.16 交通管理器的死循环，一辆交通车被撞飞时触发）。点提示条上的“重启后端”，界面会重启后端、重新连接并清理旧后端留下的主车和交通。用自己编译的改版 CARLA 的 Python 包则没有这个问题 |
 | 视口上方红色提示“后端进程意外退出” | 点“重启后端”即可继续；出错记录在 `carsim_carla_bridge\backend.log`，重启后保存为 `backend.prev.log` |
 | 视口上方红色提示“CARLA 服务器已退出或连不上” | CARLA 在运行中退出了。重新启动 CARLA 后点“连接”即可继续 |

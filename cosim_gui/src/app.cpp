@@ -119,6 +119,9 @@ void PushHist(std::vector<float>& h, float v, size_t max) {
   if (h.size() > max) h.erase(h.begin(), h.begin() + static_cast<std::ptrdiff_t>(h.size() - max));
 }
 
+// Banner and log line of a run stopped by an error (cosim_state "error").
+std::string RunErrorNote(const std::string& why) { return "运行出错已停止：" + why + "（详情见底部“输出”）"; }
+
 }  // namespace
 
 bool appui::Base64(const std::string& in, std::vector<unsigned char>& out) { return Base64Decode(in, out); }
@@ -367,6 +370,7 @@ void App::ConnectCarla(bool recover) {
 void App::SetWorld(const json& r) {
   // The "run ended, ego parked" banner is about that ego: drop it once the
   // ego is gone or replaced (map switched, ego deleted or respawned).
+  if (run_note_ego_ < 0 && r.is_object()) run_note_ego_ = r.value("ego_id", 0);  // a failed start: its ego
   if (!Running() && r.is_object() && r.value("ego_id", 0) != run_note_ego_) run_note_.clear();
   world_ = r.is_object() ? r : json::object();
   // The backend tracks CARLA's recorder (it stops it on exit, reconnect, map change and replay).
@@ -530,10 +534,25 @@ void App::StartRun() {
   last_scene_ = json();
   scene_hover_.clear();
   collect_stats_ = json::object();
-  Call("cosim_start", {{"config", cfg_}}, [this](const json& r) {
+  busy_ = "正在启动 ...";
+  be_.Request("cosim_start", {{"config", cfg_}}, [this](bool ok, const json& r, const std::string& err) {
+    busy_.clear();
+    if (!ok) {
+      // The run did not start (e.g. an error in the control algorithm): say
+      // why on the viewport and show the output. A start that failed once the
+      // run existed has just logged the reason (cosim_state "error").
+      if (log_.empty() || log_.back().text != RunErrorNote(err)) Log(err, "error");
+      run_note_level_ = "error";
+      run_note_ = "运行没有启动：" + err;
+      run_note_ego_ = -1;  // about the ego the failed start leaves (it respawns it), see SetWorld
+      log_open_ = true;
+      dock_tab_select_ = 2;
+      if (carla_connected_) RefreshWorld();
+      return;
+    }
     run_info_ = r;
     RefreshWorld();
-  }, "正在启动 ...");
+  });
 }
 
 void App::RunCommand(const std::string& cmd) { Call(cmd, json::object(), nullptr); }
@@ -828,7 +847,7 @@ void App::OnEvent(const json& ev) {
       const double t = last_tel_.value("t", 0.0);
       if (run_state_ == "error") {
         run_note_level_ = "error";
-        run_note_ = "运行出错已停止：" + ev.value("detail", std::string()) + "（详情见底部“输出”）";
+        run_note_ = RunErrorNote(ev.value("detail", std::string()));
       } else if (!ev.value("detail", std::string()).empty()) {
         const std::string why = ev.value("detail", std::string());
         run_note_level_ = "warn";
@@ -914,6 +933,7 @@ void App::OnEvent(const json& ev) {
     busy_task_ = ev.value("task", std::string());
     busy_secs_ = ev.value("seconds", 0.0);
     busy_carla_gone_ = ev.value("carla_gone", false);
+    busy_where_ = ev.value("where", std::string());
     busy_seen_ = ImGui::GetTime();
   } else if (type == "carla_lost") {
     // The CARLA server is gone: nothing of that world exists any more.

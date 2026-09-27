@@ -4,12 +4,14 @@ Shared by run_cosim.py (CLI loop) and backend_server.py (GUI backend), so
 both run exactly the same code path.
 """
 
+import ast
 import ctypes
 import importlib.util
 import inspect
 import math
 import os
 import sys
+import threading
 import time
 import traceback
 
@@ -20,7 +22,7 @@ import settings as st
 from bridge import REQUIRED_EXPORTS, CarlaVehicleSync, ExportCheck, front_axle_local
 from collector import DISK_RESERVE_GB
 from drivers import ManualDriver, RouteFollower
-from scene import Recorder, SceneProvider, gui_view
+from scene import ALWAYS_OBJECT_KEYS, EGO_KEYS, LANE_KEYS, OBJECT_KEYS, Recorder, SceneProvider, gui_view
 
 
 def demo_driver(t):
@@ -195,16 +197,161 @@ def make_driver(d, ex, n_imports=None, scene=None):
     raise ValueError("unknown CarSim driver '%s'" % drv)
 
 
+_HERE = os.path.dirname(os.path.abspath(__file__))
+# Python's own library: a conda / Windows install may sit inside the algorithm's
+# folder (e.g. the algorithm right in the home folder).
+_PYLIB = tuple({os.path.normcase(os.path.join(os.path.abspath(p), ""))
+                for p in (sys.prefix, sys.base_prefix, sys.exec_prefix, sys.base_exec_prefix)})
+_START_PATH = set(sys.path)  # e.g. PYTHONPATH: never taken off sys.path again
+_last_folder = None  # the algorithm folder of the previous load
+
+
+def _own_file(f, folder):
+    """Is file f the algorithm's own code in folder or a sub-folder? Not a
+    library (a venv inside it) and not one of the backend's modules (the
+    algorithm may sit next to them or at the repo root)."""
+    if f.startswith("<"):  # <frozen importlib._bootstrap>, <string>
+        return False
+    f, top = os.path.normcase(os.path.abspath(f)), os.path.normcase(os.path.join(folder, ""))
+    if not f.startswith(top) or f.startswith(_PYLIB) or os.path.dirname(f) == os.path.normcase(_HERE):
+        return False
+    parts = f[len(top):].split(os.sep)
+    return "site-packages" not in parts and "dist-packages" not in parts
+
+
+def _short(f, folder):
+    f = os.path.abspath(f)
+    return os.path.relpath(f, folder) if f.startswith(os.path.join(folder, "")) else os.path.basename(f)
+
+
+def _where(frames, path):
+    """'（mpc.py 第 57 行，由 my_ctrl.py 第 12 行调用）': the innermost line in the
+    algorithm's own files and, when that is a helper module, the line of the
+    algorithm file that led there. frames: (file, line), outermost first."""
+    folder = os.path.dirname(path)
+    mine = [(f, n) for f, n in frames if os.path.abspath(f) == path or _own_file(f, folder)]
+    if not mine:
+        return ""
+    f, n = mine[-1]
+    where = "%s 第 %d 行" % (_short(f, folder), n)
+    top = next((m for g, m in reversed(mine) if os.path.abspath(g) == path), None)
+    if os.path.abspath(f) != path and top is not None:
+        where += "，由 %s 第 %d 行调用" % (os.path.basename(path), top)
+    return "（%s）" % where
+
+
+def _tb(e):
+    return [(f.filename, f.lineno) for f in traceback.extract_tb(e.__traceback__)]
+
+
 def _user_error(what, e, path):
     """'控制算法出错：ValueError: boom（my_ctrl.py 第 12 行）': the user needs the
-    line of their own file, not the backend's."""
-    line = next((f.lineno for f in reversed(traceback.extract_tb(e.__traceback__))
-                 if os.path.abspath(f.filename) == path), None)
-    msg, fname = str(e), path
+    lines of their own files, not the backend's."""
+    msg, where = str(e), _where(_tb(e), path)
     if isinstance(e, SyntaxError) and e.lineno:  # possibly in a module the algorithm imports
-        line, msg, fname = e.lineno, e.msg, e.filename or path
-    where = "（%s 第 %d 行）" % (os.path.basename(fname), line) if line else ""
+        msg, where = e.msg, "（%s 第 %d 行）" % (_short(e.filename or path, os.path.dirname(path)), e.lineno)
     return "%s：%s: %s%s" % (what, type(e).__name__, msg, where)
+
+
+def _scene_miss(k, sel, rig=()):
+    """Why the scene handed to control() has no key k: it is not ticked
+    "给算法" on the 场景信息 page, or a ticked sensor is no enabled sensor of
+    the rig (rig: the 传感器套件 sensors, if known). '' when k is no scene key."""
+    sensors = sel.get("sensors") or ()
+    if k == "lane" and not sel.get("lane"):
+        return "“场景信息”页车道一栏没有勾选“给算法”的量"
+    if k == "sensors":  # there only when a ticked sensor is an enabled one of the rig
+        if not sensors:
+            return "“场景信息”页没有勾选给算法的传感器"
+        return "“场景信息”页勾选给算法的传感器（%s）在“传感器套件”里没有启用或已经删掉" % "、".join(sensors)
+    if k in sensors:  # scene["sensors"] has every ticked sensor the rig has enabled
+        return "这个传感器在“传感器套件”里没有启用或已经删掉"
+    if any(s.get("name") == k for s in rig):
+        return "没有在“场景信息”页给这个传感器勾选“给算法”"
+    if k == "collisions" and sel.get("collision", "log") == "off":
+        return "“场景信息”页碰撞选了“不检测”"
+    for keys, ticked in ((EGO_KEYS, sel.get("ego") or ()), (LANE_KEYS, sel.get("lane") or ()),
+                         (OBJECT_KEYS, list(ALWAYS_OBJECT_KEYS) + list(sel.get("objects") or ()))):
+        if k in keys and k not in ticked:
+            return "没有在“场景信息”页给它勾选“给算法”"
+    return ""
+
+
+def _name_clashes(path):
+    """Modules of the algorithm's folder that its code imports under a name
+    sys.modules already holds from another file (the backend's config.py,
+    CARLA's agents package, the standard library): `import config` would
+    silently return that one. Its code: the algorithm file and the files of
+    the folder it imports, directly or through them (not every script lying
+    in the folder). [(name, own file, the loaded file), ...]"""
+    folder = os.path.dirname(path)
+    taken = []
+    for n in sorted(os.listdir(folder)):
+        own = os.path.join(folder, n) if n.endswith(".py") else os.path.join(folder, n, "__init__.py")
+        name = n[:-3] if n.endswith(".py") else n
+        m = sys.modules.get(name)
+        if m is None or not os.path.isfile(own):
+            continue
+        f = getattr(m, "__file__", None)
+        if not (isinstance(f, str) and os.path.normcase(os.path.abspath(f)) == os.path.normcase(own)):
+            taken.append((name, n if n.endswith(".py") else n + os.sep, f))
+    if not taken:
+        return []
+
+    def files(base, name):  # module a.b.c under base: a/__init__.py, a/b/__init__.py, a/b/c.py
+        out = []
+        for part in name.split("."):
+            base = os.path.join(base, part)
+            f = next((g for g in (base + ".py", os.path.join(base, "__init__.py")) if os.path.isfile(g)), None)
+            if f is None:
+                break
+            out.append(f)
+        return out
+
+    imported, todo, seen = set(), [path], set()
+    while todo:
+        f = todo.pop()
+        if f in seen:
+            continue
+        seen.add(f)
+        try:
+            with open(f, "rb") as fh:
+                tree = ast.parse(fh.read())
+        except (OSError, SyntaxError, ValueError):
+            continue  # a syntax error is reported by the import itself
+        for node in ast.walk(tree):  # also imports inside functions
+            mods = []
+            if isinstance(node, ast.Import):
+                imported.update(a.name.split(".")[0] for a in node.names)
+                mods = [(folder, a.name) for a in node.names]
+            elif isinstance(node, ast.ImportFrom):
+                base = folder
+                if node.level:  # from . import x: relative to the package of f
+                    base = os.path.dirname(f)
+                    for _ in range(node.level - 1):
+                        base = os.path.dirname(base)
+                elif node.module:
+                    imported.add(node.module.split(".")[0])
+                pre = node.module + "." if node.module else ""
+                mods = ([(base, node.module)] if node.module else []) + \
+                       [(base, pre + a.name) for a in node.names if a.name != "*"]  # a.name may be a module
+            todo += [g for base, name in mods for g in files(base, name) if _own_file(g, folder)]
+    return [t for t in taken if t[0] in imported]
+
+
+def control_busy(driver):
+    """While the user's control() (a load_controller() driver) runs: (since
+    when, '（my_ctrl.py 第 42 行）' where it is now), else None. For the
+    backend's "busy" heartbeat: a slow control() is not a hung CARLA."""
+    running = getattr(driver, "running", None)
+    if running is None:
+        return None
+    since, thread = running
+    frame, stack = sys._current_frames().get(thread), []
+    while frame is not None:
+        stack.append((frame.f_code.co_filename, frame.f_lineno))
+        frame = frame.f_back
+    return since, _where(stack[::-1], driver.path)
 
 
 def _wants_scene(fn):
@@ -230,22 +377,37 @@ def load_controller(d, ex, n_imports=None, scene=None):
     exports is {name: value} of every CarSim export, in CarSim units.
     See controllers/example_controller.py.
     """
+    global _last_folder
     c = d["run"]["controller"]
     path = os.path.abspath(c["path"])
     if not os.path.isfile(path):
         raise ValueError("控制算法文件不存在：%s" % path)
-    # Let the algorithm import its neighbours and python_carsim_env modules.
+    # "Reloaded every run" also for the helper modules it imports from its
+    # folder and sub-folders, and none of a previous algorithm folder's
+    # modules (e.g. its utils.py) stays in the way.
     folder = os.path.dirname(path)
-    for p in (os.path.abspath(d["carsim"]["repo_path"]), folder):
-        if p not in sys.path:
-            sys.path.insert(0, p)
-    # "Reloaded every run" also for helper modules next to the algorithm file.
-    # (Not when the file sits next to the backend's own modules.)
-    if folder != os.path.dirname(os.path.abspath(__file__)):
+    for old in {folder, _last_folder} - {None}:
         for name, m in list(sys.modules.items()):
             f = getattr(m, "__file__", None)
-            if f and os.path.dirname(os.path.abspath(f)) == folder:
+            if isinstance(f, str) and _own_file(f, old):
                 del sys.modules[name]
+    # Let the algorithm import its neighbours (before anything else) and
+    # python_carsim_env modules.
+    if _last_folder not in (None, folder) and _last_folder not in _START_PATH and _last_folder in sys.path:
+        sys.path.remove(_last_folder)
+    _last_folder = folder
+    repo = os.path.abspath(d["carsim"]["repo_path"])
+    if repo not in sys.path:
+        sys.path.insert(0, repo)
+    if folder in sys.path:
+        sys.path.remove(folder)
+    sys.path.insert(0, folder)
+    importlib.invalidate_caches()  # files added since the last run
+    clash = _name_clashes(path)
+    if clash:
+        name, own, other = clash[0]
+        raise RuntimeError("你的 %s 和后端已经加载的同名模块（%s）冲突：import %s 拿到的是那个模块，不是你的文件。"
+                           "请把 %s 改个名字（import 语句一起改）" % (own, other or "Python 内置模块", name, own))
     spec = importlib.util.spec_from_file_location("user_controller", path)
     mod = importlib.util.module_from_spec(spec)
     sys.modules["user_controller"] = mod  # dataclasses & co. look the module up here
@@ -254,15 +416,20 @@ def load_controller(d, ex, n_imports=None, scene=None):
         spec.loader.exec_module(mod)
         obj = getattr(mod, entry, None)
         if obj is None:
-            raise ValueError("%s 里没有找到 %s" % (os.path.basename(path), entry))
+            found = ["%s（%s）" % (n, "类" if isinstance(v, type) else "函数") for n, v in vars(mod).items()
+                     if not n.startswith("_") and (n == "control" and callable(v) or
+                                                   isinstance(v, type) and callable(getattr(v, "control", None)))]
+            raise ValueError("%s 里没有找到 %s；%s" % (
+                os.path.basename(path), entry, "找到了：%s——把“入口”改成其中一个" % "、".join(found) if found
+                else "“入口”要填带 control() 方法的类名，或 control(exports, t, dt) 这样的函数名"))
         if isinstance(obj, type):
             obj = obj()
             if hasattr(obj, "reset"):
                 obj.reset()
             obj = obj.control
     except SystemExit as e:  # e.g. argparse at module level: must not end the backend
-        raise RuntimeError("控制算法 %s 在加载时调用了 sys.exit（常见原因：模块顶层用了 argparse）：%s"
-                           % (os.path.basename(path), e))
+        raise RuntimeError("控制算法 %s 在加载时调用了 sys.exit（常见原因：模块顶层用了 argparse）：%s%s"
+                           % (os.path.basename(path), e, _where(_tb(e), path)))
     except ValueError as e:
         if "没有找到" in str(e):
             raise
@@ -275,16 +442,29 @@ def load_controller(d, ex, n_imports=None, scene=None):
 
     def control(obs, t):
         exports = {n: ex.raw(obs, n) for n in names}
+        control.running = (time.time(), threading.get_ident())  # for control_busy()
         try:
             out = obj(exports, t, dt, scene() if scene else None) if with_scene else obj(exports, t, dt)
         except KeyError as e:
-            if e.args and e.args[0] not in exports:
-                raise RuntimeError(_user_error("控制算法出错", e, path) +
-                                   "——导出变量里没有 %r（导出变量在“CarSim 动力学”页设置，现有：%s）"
-                                   % (e.args[0], "、".join(names[:12]) + (" ..." if len(names) > 12 else ""))) from e
-            raise RuntimeError(_user_error("控制算法出错", e, path)) from e
+            k = e.args[0] if len(e.args) == 1 and isinstance(e.args[0], str) else None
+            no_export = "导出变量里没有 %r（导出变量在“CarSim 动力学”页设置，现有：%s）" % (
+                k, "、".join(names[:12]) + (" ..." if len(names) > 12 else ""))
+            why = _scene_miss(k, d.get("scene") or {}, (d.get("rig") or {}).get("sensors") or ()) \
+                if with_scene and k is not None else ""
+            if why:  # scene objects / lane only have the keys ticked for the algorithm
+                hint = "——场景里没有 %r：%s" % (k, why)
+                if k in EGO_KEYS and k not in exports:  # could also be meant as a CarSim export
+                    hint += "；" + no_export
+            else:
+                hint = "——" + no_export if k is not None and k not in exports else ""
+            raise RuntimeError(_user_error("控制算法出错", e, path) + hint) from e
+        except SystemExit as e:  # sys.exit() / argparse in control(): must not end the backend
+            raise RuntimeError("控制算法在 control() 里调用了 sys.exit(%s)%s"
+                               % ("" if e.code is None else repr(e.code), _where(_tb(e), path))) from e
         except Exception as e:
             raise RuntimeError(_user_error("控制算法出错", e, path)) from e
+        finally:
+            control.running = None
         n = n_imports() if n_imports else None
         want = "按 .sim 里导入变量的顺序返回 %s 个数，例如 [油门, 制动, 方向盘角]" % (n or "若干")
         if out is None:
@@ -299,6 +479,7 @@ def load_controller(d, ex, n_imports=None, scene=None):
             # CarSim would silently fill missing imports with 0 (e.g. no steering).
             raise RuntimeError("控制算法返回了 %d 个值，但 .sim 里有 %d 个导入变量；应%s" % (len(vals), n, want))
         return vals
+    control.path, control.running = path, None
     return control
 
 
@@ -453,6 +634,11 @@ class CoSimSession:
         else:
             self.driver = make_driver(d, self.sync.ex, lambda: self.env.config.get("n_import"),
                                       lambda: self.scene.view())
+        folder = os.path.dirname(getattr(self.driver, "path", ""))
+        if folder:  # make_env put python_carsim_env first: the algorithm's own modules go before it again
+            if folder in sys.path:
+                sys.path.remove(folder)
+            sys.path.insert(0, folder)
         # CarSim's origin is the spawn point: a .sim that starts elsewhere (e.g.
         # at a road station) puts the car that far from the spawn point.
         ex = self.sync.ex

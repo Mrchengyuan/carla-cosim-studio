@@ -105,11 +105,11 @@ def main():
             r["sync"]["duration"] = 2.0
             r["run"]["log_path"] = os.path.join(tmp, "run%d.csv" % k)
             c.events.clear()
-            c.call("cosim_start", config=r, timeout=120)
+            info = c.call("cosim_start", config=r, timeout=120)
             st = run_until_state(c, ("finished", "error", "stopped"), 120)
             check("run %d finished" % k, st["state"] == "finished", st.get("detail"))
             calls = [json.loads(line) for line in open(log)]
-            runs.append((read_csv(r["run"]["log_path"]), calls))
+            runs.append((read_csv(os.path.join(info["record_dir"], "run%d.csv" % k)), calls))
         main1, calls = runs[0]
         check("first control(): integer frame and the camera image",
               isinstance(calls[0]["frame"], int) and calls[0]["cam"] == [36, 64, 3], calls[0])

@@ -83,6 +83,7 @@ def main():
     anchor = world.get_map().get_spawn_points()[d["carla"]["spawn_index"]]
     vehicle = world.spawn_actor(world.get_blueprint_library().find(d["carla"]["vehicle"]), anchor)
     session = CoSimSession(world, vehicle, anchor, d)
+    end, why = "stopped", ""  # Ctrl+C: stopped
     try:
         # Let the vehicle land under PhysX before the bridge reads its geometry.
         s = world.get_settings()
@@ -119,9 +120,20 @@ def main():
             print("stopped:", session.end_reason)
         if tel:
             print("ran %.1f s simulated (%.2fx real time)" % (tel["t"], tel["rt_factor"]))
+        end = "finished"
+    except Exception as e:
+        end, why = "error", str(e) or type(e).__name__
+        raise
     finally:
         try:
-            session.stop(release_vehicle=False)
+            # The algorithm's finish() and the run record's run.json get how the run ended.
+            summary = session.stop(release_vehicle=False, end=end, reason=why) or {}
+            for msg in summary.get("errors", []):
+                print("warning:", msg)
+            if summary.get("record_dir"):
+                print("run record:", summary["record_dir"])
+            if summary.get("kpi_text"):
+                print("KPI:", summary["kpi_text"])
         finally:
             try:
                 vehicle.destroy()

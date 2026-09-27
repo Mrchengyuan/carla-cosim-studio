@@ -102,7 +102,7 @@ class RunRecordTests(unittest.TestCase):
             ses.frame = k
             session.scene_step(ses, world.tick(), 0.02 * k)
         ses.recorder.close()
-        rows = read_csv(os.path.join(self.tmp.name, "run.csv"))
+        rows = read_csv(os.path.join(ses.record_dir, "run.csv"))  # the run's folder, next to run.csv
         self.assertEqual(rows[0], ["t", "frame", "ego_X", "Xo", "u1", "u2", "u3"])
         self.assertEqual([r[0] for r in rows[1:]], ["0.0", "0.1", "0.2"])
         self.assertEqual([r[1] for r in rows[1:]], ["1003", "1008", "1013"])
@@ -384,7 +384,7 @@ class StartEndsRunTests(unittest.TestCase):
             def step(self):
                 steps.append(1)
 
-            def stop(self, release_vehicle=True):
+            def stop(self, release_vehicle=True, **end):
                 pass
 
             def ego_motion(self):

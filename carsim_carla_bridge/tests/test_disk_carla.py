@@ -107,10 +107,10 @@ def main():
         cfg["sync"]["duration"] = 0.1
         cfg["run"]["log_path"] = os.path.join(tmp, "run", "log.csv")
         c.events.clear()
-        c.call("cosim_start", config=cfg)
+        info = c.call("cosim_start", config=cfg)
         st = c.wait_event(lambda e: e.get("event") == "cosim_state" and e["state"] in ("finished", "error", "stopped"), 60)
         check("5-frame run finished", st["state"] == "finished", (st["state"], st.get("detail")))
-        with open(cfg["run"]["log_path"], newline="", encoding="utf-8") as f:
+        with open(os.path.join(info["record_dir"], "log.csv"), newline="", encoding="utf-8") as f:
             rows = list(csv.reader(f))
         digits = [sig_digits(v) for r in rows[1:] for v in r[2:]]
         digits = [d for d in digits if d is not None]

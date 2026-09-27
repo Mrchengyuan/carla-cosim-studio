@@ -9,8 +9,10 @@ import contextlib
 import ctypes
 import importlib.util
 import inspect
+import json
 import math
 import os
+import shutil
 import sys
 import threading
 import time
@@ -23,7 +25,8 @@ import settings as st
 from bridge import REQUIRED_EXPORTS, CarlaVehicleSync, ExportCheck, front_axle_local
 from collector import DISK_RESERVE_GB
 from drivers import ManualDriver, RouteFollower
-from scene import ALWAYS_OBJECT_KEYS, EGO_KEYS, LANE_KEYS, OBJECT_KEYS, Recorder, SceneProvider, gui_view
+from scene import (ALWAYS_OBJECT_KEYS, EGO_KEYS, LANE_KEYS, OBJECT_KEYS, Recorder, RunKpi, SceneProvider, gui_view,
+                   kpi_text)
 
 
 def demo_driver(t):
@@ -533,10 +536,12 @@ def load_controller(d, ex, n_imports=None, scene=None, output=None):
                                           the car (scene.py; scene() returns it)
 
     exports is {name: value} of every CarSim export, in CarSim units.
-    See controllers/example_controller.py. output: an AlgoOutput that gets
-    what the algorithm prints (loading, reset(), every control() call) and
-    its traceback. The returned driver's .ms is how long the last
-    control() call took (ms).
+    finish(reason) of the instance (else of the module), if there is one,
+    is the returned function's .finish: call_finish() calls it when the run
+    ends. See controllers/example_controller.py. output: an AlgoOutput that
+    gets what the algorithm prints (loading, reset(), every control() call,
+    finish()) and its traceback. The returned driver's .ms is how long the
+    last control() call took (ms).
     """
     global _last_folder
     c = d["run"]["controller"]
@@ -576,6 +581,7 @@ def load_controller(d, ex, n_imports=None, scene=None, output=None):
     cap = contextlib.nullcontext() if output is None else output
     if output is not None:
         output.path = path
+    inst = None
     try:
         with cap:
             spec.loader.exec_module(mod)
@@ -588,10 +594,12 @@ def load_controller(d, ex, n_imports=None, scene=None, output=None):
                     os.path.basename(path), entry, "找到了：%s——把“入口”改成其中一个" % "、".join(found) if found
                     else "“入口”要填带 control() 方法的类名，或 control(exports, t, dt) 这样的函数名"))
             if isinstance(obj, type):
-                obj = obj()
+                inst = obj = obj()
                 if hasattr(obj, "reset"):
                     obj.reset()
                 obj = obj.control
+            # A class: its finish method; a function entry: the module's finish().
+            fin = getattr(inst, "finish", None) if inst is not None else getattr(mod, "finish", None)
     except SystemExit as e:  # e.g. argparse at module level: must not end the backend
         raise RuntimeError("控制算法 %s 在加载时调用了 sys.exit（常见原因：模块顶层用了 argparse）：%s%s"
                            % (os.path.basename(path), e, _where(_tb(e), path)))
@@ -648,7 +656,14 @@ def load_controller(d, ex, n_imports=None, scene=None, output=None):
             # CarSim would silently fill missing imports with 0 (e.g. no steering).
             raise RuntimeError("控制算法返回了 %d 个值，但 .sim 里有 %d 个导入变量；应%s" % (len(vals), n, want))
         return vals
+    if callable(fin) and output is not None:
+        user_finish = fin
+
+        def fin(reason):  # what finish() prints, and its traceback, to the output like control()'s
+            with cap:
+                user_finish(reason)
     control.path, control.running, control.ms = path, None, None
+    control.finish = fin if callable(fin) else None
     return control
 
 
@@ -656,6 +671,131 @@ def load_controller(d, ex, n_imports=None, scene=None, output=None):
 IMU_STOCK_WARNING = ("原版 CARLA（兼容模式）下 IMU 的陀螺仪 gyro 读数恒为 0（车是按 CarSim 的位姿直接摆放的，没有物理角速度），"
                      "加速度计 accel 是摆放位置的差分、噪声较大；算法需要角速度、加速度时请用 CarSim 的导出变量 "
                      "AVx / AVy / AVz、Ax / Ay，要真实的 IMU 读数请用改版 CARLA")
+
+
+def call_finish(driver, reason):
+    """The algorithm's finish(reason), once, when the run ends. Its error is
+    returned for the output, never raised: the run is over and everything
+    after it must still close. [] without a finish()."""
+    fin = getattr(driver, "finish", None)
+    if fin is None:
+        return []
+    driver.finish = None
+    driver.running = (time.time(), threading.get_ident())  # for control_busy(): a slow finish() is the algorithm's
+    try:
+        fin(reason)
+    except (Exception, SystemExit) as e:  # sys.exit() in finish() must not end the backend either
+        return [_user_error("控制算法的 finish() 出错", e, driver.path)]
+    finally:
+        driver.running = None
+    return []
+
+
+# ------------------------------------------------------------------ run records
+def run_dir(log_path, stem):
+    """A new folder for one run's record, <record dir>/<YYYYmmdd_HHMMSS>_<stem>,
+    and the base name of its CSV files: "log" (log.csv, log_objects.csv,
+    log_lane.csv). An older config's file name (cosim_log.csv) gives the
+    record dir (its folder) and the base name (cosim_log)."""
+    root, base = log_path, "log"
+    if log_path.lower().endswith(".csv"):
+        root, base = os.path.dirname(log_path), os.path.splitext(os.path.basename(log_path))[0]
+    root = os.path.abspath(root or ".")
+    if os.path.isfile(root):
+        raise ValueError("运行记录目录 %s 是一个文件，不是目录（“驾驶模式”页）" % root)
+    os.makedirs(root, exist_ok=True)
+    name, n = time.strftime("%Y%m%d_%H%M%S") + "_" + stem, 1
+    while True:  # two runs in the same second: _2, _3 ...
+        path = os.path.join(root, name if n == 1 else "%s_%d" % (name, n))
+        try:
+            os.mkdir(path)
+            return path, base
+        except FileExistsError:
+            n += 1
+
+
+def _controller_file(d):
+    """The algorithm file of a run (None when no algorithm of the user's drives)."""
+    if d["drive"]["dynamics"] == "cosim" and d["run"]["driver"] == "custom":
+        return os.path.abspath(d["run"]["controller"]["path"])
+    return None
+
+
+def _run_stem(d):
+    """What drove the run, for its record folder: the algorithm file's name, else the driver."""
+    ctrl = _controller_file(d)
+    if ctrl:
+        return os.path.splitext(os.path.basename(ctrl))[0]
+    return d["run"]["driver"] if d["drive"]["dynamics"] == "cosim" else "carla_" + d["drive"]["carla_driver"]
+
+
+def _units(d):
+    """The CarSim export units the scene and the figures use."""
+    return {**st.default_dict()["carsim"]["units"], **(d["carsim"].get("units") or {})}
+
+
+def _write_json(path, obj):
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(obj, f, ensure_ascii=False, indent=2, default=str)
+
+
+def _run_json(ses, end=None, reason=None):
+    """run.json: where and how the run went (end / reason None while it runs)."""
+    d, kpi = ses.d, ses.kpi
+    cosim = d["drive"]["dynamics"] == "cosim"
+    name = getattr(getattr(ses.scene, "map", None), "name", None)
+    return {"map": name.split("/")[-1] if isinstance(name, str) else None,
+            "spawn_index": d["carla"]["spawn_index"],
+            "traffic_seed": (getattr(ses, "run_meta", None) or {}).get("traffic_seed"),  # None: no traffic
+            "dynamics": d["drive"]["dynamics"],
+            "driver": d["run"]["driver"] if cosim else d["drive"]["carla_driver"],
+            "controller": _controller_file(d),
+            # The modified CARLA's external-dynamics interface, else the stock-CARLA fallback.
+            "external_api": bool(getattr(getattr(ses, "sync", None), "external_api", False)),
+            "carsim_sim": os.path.abspath(d["carsim"]["sim_path"]) if cosim and not d["carsim"]["mock"] else None,
+            "carsim_mock": cosim and bool(d["carsim"]["mock"]),
+            "t_start": kpi.t_start if kpi else None, "t_end": kpi.t_end if kpi else None,
+            "end": end, "end_reason": reason,
+            "kpi": kpi.result() if kpi and kpi.samples else None,
+            "units": _units(d)}
+
+
+def _record_start(ses):
+    """What a run record keeps besides the CSV files: the run's config, a
+    copy of the algorithm file it loaded and run.json (completed at the end)."""
+    folder = ses.record_dir
+    _write_json(os.path.join(folder, "config.json"), ses.d)
+    ctrl = _controller_file(ses.d)
+    if ctrl and os.path.isfile(ctrl):
+        shutil.copy2(ctrl, folder)
+    _write_json(os.path.join(folder, "run.json"), _run_json(ses))
+
+
+def end_words(ses, end):
+    """Why a run ended when the caller gives no reason (the command line)."""
+    if end == "finished":
+        if ses.end_reason:
+            return ses.end_reason
+        if getattr(ses, "n_frames", 0) > 0 and ses.frame >= ses.n_frames:
+            return "达到设定的运行时长 %.0f s" % ses.d["sync"]["duration"]
+        return "CarSim 到达 .sim 里设定的结束时间" if ses.d["drive"]["dynamics"] == "cosim" else "运行结束"
+    return "运行出错" if end == "error" else "运行被停止"
+
+
+def end_run(ses, end, reason, errors=()):
+    """At the end of a run: run.json in its record folder (how it ended, the
+    key figures). Returns what the output shows: {"record_dir", "errors",
+    and "kpi" / "kpi_text" once there was a sample}."""
+    out = {"record_dir": ses.record_dir, "errors": list(errors)}
+    try:
+        if ses.kpi is not None and ses.kpi.samples:
+            out["kpi"] = ses.kpi.result()
+            out["kpi_text"] = kpi_text(out["kpi"], _units(ses.d)["angle"])
+        if ses.record_dir:
+            _write_json(os.path.join(ses.record_dir, "run.json"), _run_json(ses, end, reason))
+    except Exception as e:  # e.g. the drive went away: the run is over anyway
+        out["errors"].append("运行记录的 run.json 没能写入：%s: %s" % (type(e).__name__, e))
+    return out
 
 
 def start_scene(ses, anchor, ref_local=None, t=0.0, ego_velocity=None):
@@ -682,9 +822,22 @@ def start_scene(ses, anchor, ref_local=None, t=0.0, ego_velocity=None):
         sp.stop()
         raise
     ses.scene = sp
+    ses.kpi = RunKpi(st.sample_every(d) * float(d["sync"]["frame_dt"]), d["scene"].get("collision", "log") != "off",
+                     _units(d)["angle"])
     if d["run"]["log_path"]:
-        ses.recorder = Recorder(Recorder.run_paths(d["run"]["log_path"]), sp.s, ses.export_names(), ses.n_actions(),
-                                min_free_gb=DISK_RESERVE_GB)
+        # Every run a folder of its own: the CSV files, config.json, the algorithm file, run.json.
+        ses.record_dir, base = run_dir(d["run"]["log_path"], _run_stem(d))
+        try:
+            ses.recorder = Recorder(Recorder.run_paths(os.path.join(ses.record_dir, base + ".csv")), sp.s,
+                                    ses.export_names(), ses.n_actions(), min_free_gb=DISK_RESERVE_GB)
+            _record_start(ses)
+        except BaseException:
+            if ses.recorder is not None:
+                ses.recorder.close()
+                ses.recorder = None
+            shutil.rmtree(ses.record_dir, ignore_errors=True)  # made just now, for this run
+            ses.record_dir = None
+            raise
     # Sensors spawned before a tick deliver that frame: the first scene has their data.
     return scene_step(ses, ses.world.tick(), t, ego_velocity)
 
@@ -697,8 +850,10 @@ def scene_step(ses, world_frame, t, ego_velocity=None):
     scene = ses.scene.update(world_frame, t, ego_velocity)
     every = st.sample_every(ses.d)
     warning = ""
-    if ses.recorder is not None and ses.frame % every == 0:  # the data collector samples the same steps
-        ses.recorder.write(ses.scene.record_view(), ses.exports(), ses.last_action)
+    sample = ses.frame % every == 0  # the data collector samples the same steps
+    exports = ses.exports() if sample else None
+    if ses.recorder is not None and sample:
+        ses.recorder.write(ses.scene.record_view(), exports, ses.last_action)
         if ses.recorder.stopped:  # the disk is (nearly) full: the run goes on without its record
             warning, ses.recorder = ses.recorder.stopped, None
     new = [c for c in scene["collisions"] if c["new"]]
@@ -708,6 +863,11 @@ def scene_step(ses, world_frame, t, ego_velocity=None):
     elif new and policy == "stop" and not ses.end_reason:
         c = new[0]
         ses.end_reason = "碰撞：撞到 %s（id %s）" % (c["model"], c["id"])
+    kpi = getattr(ses, "kpi", None)
+    if kpi is not None:
+        kpi.step(t, new)
+        if sample:
+            kpi.sample(scene, exports)
     gv = gui_view(scene, ses.scene._ego_box)
     if policy == "off":
         gv["collisions"] = []  # not checked: nothing to show either
@@ -742,7 +902,8 @@ class CoSimSession:
     def __init__(self, world, vehicle, anchor, d):
         self.world, self.vehicle, self.anchor, self.d = world, vehicle, anchor, d
         self.env = self.sync = self.driver = None
-        self.recorder = None
+        self.recorder = self.record_dir = self.kpi = None
+        self.run_meta = {}       # for run.json: {"traffic_seed"} (the backend)
         self._original_settings = None
         self.frame = 0
         self.done = False
@@ -854,15 +1015,20 @@ class CoSimSession:
                 "reference_point": [round(float(x), 3) for x in self.sync.ref_local],
                 "t_step": t_step, "inner_steps": self.inner, "frame_dt": frame_dt,
                 "t_stop": float(self.env.config.get("t_stop") or 0.0), "mock": bool(d["carsim"]["mock"]),
-                "warnings": self.warnings, "t": t0, "collisions": tel0["collisions"], "warning": tel0.get("warning", "")}
+                "warnings": self.warnings, "t": t0, "collisions": tel0["collisions"], "warning": tel0.get("warning", ""),
+                "record_dir": self.record_dir}
 
-    def stop(self, release_vehicle=True):
-        """Best effort: one failing step (CarSim or CARLA gone) must not skip the rest."""
+    def stop(self, release_vehicle=True, end="stopped", reason=""):
+        """Best effort: one failing step (CarSim or CARLA gone) must not skip the rest.
+        end: "finished" / "stopped" / "error", reason: why (end_words() when
+        not given). The algorithm's finish(reason) comes first. Returns end_run()."""
         def step(fn):
             try:
                 fn()
             except Exception as e:
                 print("CoSimSession.stop: %s" % e, flush=True)
+        reason = reason or end_words(self, end)
+        errors = call_finish(self.driver, reason)
         if self.env is not None:
             step(self.env.close)
         if self.scene is not None:
@@ -875,6 +1041,7 @@ class CoSimSession:
         if self._original_settings is not None:
             orig, self._original_settings = self._original_settings, None
             step(lambda: self.world.apply_settings(orig))
+        return end_run(self, end, reason, errors)
 
     # -------------------------------------------------------------------- step
     def step(self):
@@ -974,7 +1141,8 @@ class CarlaDriveSession:
         self.done = False
         self.command_driver = None
         self._original_settings = None
-        self.scene = self.recorder = None
+        self.scene = self.recorder = self.record_dir = self.kpi = None
+        self.run_meta = {}       # for run.json: {"traffic_seed"} (the backend)
         self.end_reason = ""
         self.last_action = None  # no CarSim imports with CARLA dynamics
 
@@ -1021,7 +1189,7 @@ class CarlaDriveSession:
         self.done = bool(self.end_reason)  # step 0 already ended the run (collision stop)
         return {"external_api": False, "server_api": None, "reference_point": [0, 0, 0], "t_step": dt, "inner_steps": 1,
                 "frame_dt": dt, "dynamics": "CARLA", "t": 0.0, "collisions": tel0["collisions"],
-                "warning": tel0.get("warning", "")}
+                "warning": tel0.get("warning", ""), "record_dir": self.record_dir}
 
     def _wheel_angles(self, steer, speed_kmh):
         """[FL, FR] steer angle, deg, + = right (as get_wheel_steer_angle)."""
@@ -1041,20 +1209,28 @@ class CarlaDriveSession:
         # Turning right: the right wheel is the inner one.
         return [outer, inner] if steer > 0 else [-inner, -outer]
 
-    def stop(self, release_vehicle=True):
+    def stop(self, release_vehicle=True, end="stopped", reason=""):
+        """Best effort like CoSimSession.stop (CARLA may be gone): run.json is
+        completed anyway. end / reason as there; returns end_run()."""
+        def step(fn):
+            try:
+                fn()
+            except Exception as e:
+                print("CarlaDriveSession.stop: %s" % e, flush=True)
         try:
             if getattr(self, "mode", None) == "autopilot":  # start() may have failed before setting it
                 self.vehicle.set_autopilot(False, self.tm.get_port())
         except RuntimeError:
             pass
         if self.scene is not None:
-            self.scene.stop()
+            step(self.scene.stop)
         if self.recorder is not None:
-            self.recorder.close()
+            step(self.recorder.close)
             self.recorder = None
         if self._original_settings is not None:
-            self.world.apply_settings(self._original_settings)
-            self._original_settings = None
+            orig, self._original_settings = self._original_settings, None
+            step(lambda: self.world.apply_settings(orig))
+        return end_run(self, end, reason or end_words(self, end))
 
     def step(self):
         dt = self.d["sync"]["frame_dt"]

@@ -12,7 +12,7 @@ JSON layout (all keys optional, missing ones fall back to config.py):
   "sync":   {"frame_dt": 0.02, "duration": 0.0, "reference_point": "front_axle",
              "z_mode": "carsim", "wheel_spin_sign": -1.0,
              "steering_wheel_max_deg": 540.0, "use_external_api": "auto"},
-  "run":    {"driver": "custom", "log_path": "cosim_log.csv",
+  "run":    {"driver": "custom", "log_path": "runs",
              "controller": {"path": "controllers/example_controller.py", "entry": "Controller"}},
   "drive":  {"dynamics": "cosim", "carla_driver": "route", "target_speed_kmh": 40.0, ...},
   "rig":    {"preset": "front_camera", "sensors": [...]},
@@ -46,7 +46,9 @@ def default_dict():
                  "use_external_api": "auto"},
         # driver: custom = the user's control algorithm (controller.path,
         # relative to carsim_carla_bridge/) | demo. Both drive CarSim.
-        "run": {"driver": "custom", "log_path": "cosim_log.csv",
+        # log_path: the run record directory, every run a folder in it ("" = no
+        # record; an older config's "cosim_log.csv": its folder, CSV names cosim_log*).
+        "run": {"driver": "custom", "log_path": "runs",
                 "controller": {"path": "controllers/example_controller.py", "entry": "Controller"}},
         # dynamics: "cosim" = CarSim drives the car, "carla" = CARLA PhysX.
         # drive.cosim_driver (GUI) = custom | demo | route | manual; carla_driver = route | autopilot | manual

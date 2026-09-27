@@ -163,6 +163,7 @@ def main():
         cfg = c.call("default_config")
         cfg["drive"].update({"dynamics": "carla", "carla_driver": "autopilot", "tm_ignore_lights": True})
         cfg["sync"].update({"frame_dt": 0.1, "duration": 0.0})
+        cfg["run"]["log_path"] = ""  # no run record folder left behind
         cfg["carla"].update({"vehicle": "vehicle.tesla.model3", "spawn_index": 3})  # the ego the car was parked for
         cfg["rig"]["sensors"] = sensors
         cfg["collect"].update({"enabled": True, "out_dir": tmp, "session": "ds", "max_frames": 6, "max_gb": 0.2,

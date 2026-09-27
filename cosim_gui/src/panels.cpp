@@ -647,10 +647,15 @@ void App::DrawPanelDrive() {
   if (run_info_.contains("t_stop") && !run_info_.value("mock", true))
     ui::DimWrapped("上次运行：CarSim 结束时间 t = %.1f s，仿真步长 %g s（%d × t_step %g s）", run_info_.value("t_stop", 0.0),
                    run_info_.value("frame_dt", 0.0), run_info_.value("inner_steps", 0), run_info_.value("t_step", 0.0));
-  ui::Row("运行记录 CSV", "每个采样时刻的自车状态、CarSim 导出变量和控制算法的输出 u1 … un；旁边另写 _objects.csv（障碍物）和 _lane.csv（车道）。"
+  ui::Row("运行记录目录", "每次运行在这里新建一个文件夹（时间_算法文件名），不覆盖以前的记录："
+                          "log.csv（每个采样时刻的自车状态、CarSim 导出变量和控制算法的输出 u1 … un）、log_objects.csv（障碍物）、"
+                          "log_lane.csv（车道）、config.json（这次的配置）、算法文件的副本、run.json（地图、出生点、结束原因、运行指标）。"
                           "记录哪些量在“场景信息”页勾选，采样周期在“数据采集”页设置；空 = 不记录。"
-                          "每次运行覆盖上一次的文件；磁盘剩余不到 10 GB 时停止写记录");
+                          "旧配置里的 cosim_log.csv：文件夹建在它所在的目录，文件名沿用 cosim_log。磁盘剩余不到 10 GB 时停止写记录");
   EditString(cfg_["run"], "log_path");
+  if (run_info_.contains("record_dir") && run_info_["record_dir"].is_string())
+    ui::DimWrapped("最近一次运行的记录：%s（运行指标在“输出”页和 run.json 里）",
+                   run_info_["record_dir"].get<std::string>().c_str());
   ImGui::EndDisabled();
   ui::EndCard();
 }

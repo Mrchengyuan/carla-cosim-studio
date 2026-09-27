@@ -182,7 +182,7 @@ class App {
   std::string busy_task_;         // what the backend worker has been busy with ("busy" heartbeat)
   double busy_secs_ = 0, busy_seen_ = 0;
   bool busy_carla_gone_ = false;  // ... and CARLA does not listen any more
-  std::string busy_where_;        // task "control": the line the user's control() is at
+  std::string busy_where_;        // task "control" / "finish": the line the user's control() / finish() is at
   std::string backend_problem_;   // backend hung or died: viewport banner with a restart button
   double stop_since_ = -1;        // StopBackend asked the backend to exit at this time (< 0: not stopping)
   bool stop_asked_ = false, stop_termed_ = false;  // ... over the connection / SIGTERM sent

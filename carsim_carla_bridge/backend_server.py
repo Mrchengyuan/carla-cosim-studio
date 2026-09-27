@@ -68,6 +68,7 @@ class Backend:
         self.ego = None
         self.anchor = None
         self.session = None
+        self.ending = None         # the session in stop(), for the heartbeat: the algorithm's finish()
         self.cosim_state = "stopped"
         self.spectator_mode = "free"
         self.recording = None      # file of the CARLA recording we started (the recorder runs inside CARLA)
@@ -1150,6 +1151,9 @@ class Backend:
             autopilot = not cosim and d["drive"]["carla_driver"] == "autopilot"
             self.session = CoSimSession(w, self.ego, self.anchor, d) if cosim else \
                 CarlaDriveSession(w, self.ego, d, self._need_tm() if autopilot else None, self.anchor)
+            # For the run record (run.json): the seed of the traffic around the car, if there is any.
+            self.session.run_meta = {"traffic_seed": self.traffic_seed if self.traffic["vehicles"] or
+                                     self.traffic["walkers"] else None}
         except BaseException:
             # Never leave the world in sync mode with nobody ticking it.
             pre, self._pre_cosim_settings = self._pre_cosim_settings, None
@@ -1348,7 +1352,18 @@ class Backend:
         if isinstance(n, int) and n > 0:  # the user's control() ran
             self._log("算法耗时：control() 调用 %d 次，平均 %.2f ms，最长 %.2f ms（t = %.2f s）；仿真步长 %g ms" % (
                 n, ses.ctrl_ms_sum / n, ses.ctrl_ms_max, ses.ctrl_ms_max_t, ses.d["sync"]["frame_dt"] * 1000.0))
-        self._try(lambda: ses.stop(release_vehicle=True))
+        # The algorithm's finish(), the run record's run.json: they get how and why the run ended.
+        summary = {}
+        self.ending = ses  # a slow finish() is the algorithm's, not a hung CARLA (the heartbeat)
+        self._try(lambda: summary.update(ses.stop(release_vehicle=True, end=final, reason=detail) or {}))
+        self.ending = None
+        self._algo_output(ses, end=True)  # what finish() printed, and where it failed, before its error
+        for msg in summary.get("errors", []):  # e.g. an error in the algorithm's finish()
+            self._log(msg, "warn")
+        if summary.get("record_dir"):
+            self._log("运行记录：%s" % summary["record_dir"])
+        if summary.get("kpi_text"):
+            self._log("运行指标：%s" % summary["kpi_text"])
         # Back to what the user had before co-sim (usually async), so the
         # world does not stay frozen in sync mode with nobody ticking.
         pre, self._pre_cosim_settings = getattr(self, "_pre_cosim_settings", None), None
@@ -1515,9 +1530,11 @@ class Backend:
                 self._fast_timeout = True
                 self._try(lambda: self.client.set_timeout(0.5))
             ev = {"event": "busy", "task": task[0], "seconds": round(time.time() - task[1], 1), "carla_gone": gone}
-            ctl = control_busy(getattr(self.session, "driver", None))
-            if ctl is not None:  # the user's control() has not returned: not a CARLA problem
-                ev.update(task="control", seconds=round(time.time() - ctl[0], 1), where=ctl[1])
+            ses = self.session
+            ctl = control_busy(getattr(ses or self.ending, "driver", None))
+            if ctl is not None:  # the user's control() / finish() has not returned: not a CARLA problem
+                ev.update(task="control" if ses is not None else "finish",
+                          seconds=round(time.time() - ctl[0], 1), where=ctl[1])
             self.emit(ev)
         elif os.name == "nt" and self.world is not None and time.time() - last_look >= 5.0:
             # The worker's check every 2 s cannot run netstat (too slow between

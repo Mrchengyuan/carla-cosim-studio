@@ -508,8 +508,8 @@ def _csv_nums(values):
 class Recorder:
     """The selected scene keys and CarSim exports as CSV files, one row per
     sample (per object in the objects file). paths: {"main", "objects",
-    "lane"}; the lane file only when scalar lane keys are selected. The files
-    are rewritten from the start (the previous run's are overwritten)."""
+    "lane"}; the lane file only when scalar lane keys are selected. A run
+    writes them into a folder of its own (session.run_dir)."""
 
     def __init__(self, paths, settings, export_names, n_actions=0, min_free_gb=None):
         """settings: the "scene" settings; the keys come from its "record" part.
@@ -598,6 +598,100 @@ class Recorder:
             except OSError:
                 pass
         self.files = []
+
+
+class RunKpi:
+    """Key figures of a run in CarSim units (lengths m, times s, angles in
+    the export unit), from the whole scene at the run record's sample steps
+    (every key, whatever the record keeps) and the CarSim exports; contacts
+    at every step, like the collision lines in the output."""
+
+    def __init__(self, period, collisions=True, angle="deg"):
+        self.period = float(period)  # s between two samples
+        self.to_rad = math.pi / 180.0 if angle == "deg" else 1.0  # rel_yaw is in the export angle unit
+        self.samples = 0
+        self.t_start = self.t_end = None
+        self.lane_n = self.no_lane_n = 0
+        self.off_sq = 0.0
+        self.off_max = self.head_max = self.gap_min = self.ay_max = None
+        self.distance, self._xy = 0.0, None
+        self.collisions = 0 if collisions else None  # None: not checked (collision "off")
+        self.first_collision = None                  # (t, model)
+
+    def step(self, t, new):
+        """Every step: its time and the contacts that began in it."""
+        self.t_end = t
+        if new and self.collisions is not None:
+            if self.first_collision is None:
+                self.first_collision = (t, new[0]["model"])
+            self.collisions += len(new)
+
+    def sample(self, scene, exports):
+        """A sample step: the full scene (SceneProvider.latest) and the exports."""
+        self.samples += 1
+        if self.t_start is None:
+            self.t_start = scene["t"]
+        ego = scene["ego"]
+        if "X" in ego and "Y" in ego:
+            if self._xy is not None:
+                self.distance += math.hypot(ego["X"] - self._xy[0], ego["Y"] - self._xy[1])
+            self._xy = (ego["X"], ego["Y"])
+        if "lane" in scene:  # there when lane keys are ticked (for the algorithm or the record)
+            lane = scene["lane"]
+            if lane is None:  # not on a driving lane
+                self.no_lane_n += 1
+            else:
+                self.lane_n += 1
+                off, head = abs(lane["offset"]), abs(lane["heading_err"])
+                self.off_sq += off * off
+                self.off_max = off if self.off_max is None else max(self.off_max, off)
+                self.head_max = head if self.head_max is None else max(self.head_max, head)
+        half = ego.get("width", 0.0) / 2.0
+        for o in scene.get("objects") or ():
+            # Ahead in the ego's own path: in front of the reference point, its box
+            # (turned by rel_yaw, e.g. crossing) overlapping the ego's width.
+            ry = o["rel_yaw"] * self.to_rad
+            side = abs(o["length"] / 2.0 * math.sin(ry)) + abs(o["width"] / 2.0 * math.cos(ry))
+            if o["rel_x"] > 0.0 and abs(o["rel_y"]) - side < half:
+                self.gap_min = o["gap"] if self.gap_min is None else min(self.gap_min, o["gap"])
+        ay = exports.get("Ay")
+        if ay is not None:
+            self.ay_max = abs(ay) if self.ay_max is None else max(self.ay_max, abs(ay))
+
+    def result(self):
+        """The figures; None = nothing to measure (no lane data, nothing
+        ahead, collisions not checked). ay_max only with an Ay export."""
+        g = lambda v: None if v is None else float("%.6g" % v)
+        fc = self.first_collision or (None, None)
+        k = {"samples": self.samples, "sample_period": g(self.period),
+             "lane_offset_rms": g(math.sqrt(self.off_sq / self.lane_n)) if self.lane_n else None,
+             "lane_offset_max": g(self.off_max), "heading_err_max": g(self.head_max),
+             "time_off_lane": g(self.no_lane_n * self.period) if self.lane_n + self.no_lane_n else None,
+             "collisions": self.collisions, "first_collision_t": g(fc[0]), "first_collision_with": fc[1],
+             "min_gap_ahead": g(self.gap_min), "distance": g(self.distance)}
+        if self.ay_max is not None:
+            k["ay_max"] = g(self.ay_max)
+        return k
+
+
+def kpi_text(k, angle="deg"):
+    """RunKpi.result() in one line for the output window."""
+    parts = []
+    if k["lane_offset_rms"] is not None:
+        parts.append("车道偏移 RMS %.2f m、最大 %.2f m，航向偏差最大 %.3g %s" % (
+            k["lane_offset_rms"], k["lane_offset_max"], k["heading_err_max"], angle))
+    if k["time_off_lane"] is not None:
+        parts.append("不在车道上 %.1f s" % k["time_off_lane"])
+    else:
+        parts.append("没有车道数据（“场景信息”页车道一栏没有勾选）")
+    if k["collisions"] is not None:
+        parts.append("碰撞 %d 次%s" % (k["collisions"], "（第一次 t = %.2f s，%s）" % (
+            k["first_collision_t"], k["first_collision_with"]) if k["collisions"] else ""))
+    parts.append("前方最小间距 %.2f m" % k["min_gap_ahead"] if k["min_gap_ahead"] is not None else "前方没有目标")
+    parts.append("行驶距离 %.1f m" % k["distance"])
+    if "ay_max" in k:
+        parts.append("最大 |Ay| %.3g（导出单位）" % k["ay_max"])
+    return "；".join(parts)
 
 
 def gui_view(scene, ego_box=(0.0, 0.0), max_objects=60):

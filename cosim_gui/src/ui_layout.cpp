@@ -232,14 +232,16 @@ void App::FrameBody() {
   // with a way out, instead of a GUI that silently stops updating.
   if (!busy_task_.empty() && ImGui::GetTime() - busy_seen_ > 3.0) busy_task_.clear();  // finished since
   if (!busy_task_.empty()) {
-    const bool in_control = busy_task_ == "control";  // the user's control() has not returned
-    const bool frame_task = in_control || busy_task_ == "仿真步进" || busy_task_ == "空闲时推进世界";
+    const bool in_finish = busy_task_ == "finish";  // the algorithm's finish(reason) at the end of a run
+    const bool in_control = busy_task_ == "control" || in_finish;  // the user's code has not returned
+    const bool frame_task = busy_task_ == "control" || busy_task_ == "仿真步进" || busy_task_ == "空闲时推进世界";
     const double limit = frame_task ? 15 : (busy_task_ == "load_map" || busy_task_ == "reload_world") ? 300
                        : busy_task_ == "vehicle_specs" ? 900 : 90;
     if (busy_carla_gone_ && !in_control)  // not stuck: waiting for a server that has gone, it gives up soon
       backend_problem_ = Fmt("后端卡住了：CARLA 服务器已退出，正在结束“%s”（最多约半分钟）……", busy_task_.c_str());
     else if (busy_secs_ > limit && in_control)
-      backend_problem_ = Fmt("后端卡住了：控制算法 control() 已经 %.0f 秒没有返回%s。", busy_secs_, busy_where_.c_str());
+      backend_problem_ = Fmt("后端卡住了：控制算法 %s 已经 %.0f 秒没有返回%s。", in_finish ? "finish()" : "control()",
+                             busy_secs_, busy_where_.c_str());
     else if (busy_secs_ > limit)
       backend_problem_ = Fmt("后端卡住了：“%s”已经 %.0f 秒没有完成，多半是 CARLA 的客户端库卡死了。",
                              busy_task_.c_str(), busy_secs_);

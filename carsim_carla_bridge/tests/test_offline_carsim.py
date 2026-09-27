@@ -146,6 +146,9 @@ class FakeWorld:
         self.frame += 1
         return self.frame
 
+    def reset_all_traffic_lights(self):
+        pass
+
 
 class FakeSync:
     """CarlaVehicleSync without CARLA: keeps what it was handed."""
@@ -175,7 +178,7 @@ class SessionCase(unittest.TestCase):
     def setUp(self):
         FakeSync.handed = []
         for p in (mock.patch.object(ses, "CarlaVehicleSync", FakeSync),
-                  mock.patch.object(ses, "start_scene", lambda s, *a, **k: None),
+                  mock.patch.object(ses, "start_scene", lambda s, *a, **k: {"collisions": []}),
                   mock.patch.object(ses, "scene_step", lambda *a, **k: {})):
             p.start()
             self.addCleanup(p.stop)

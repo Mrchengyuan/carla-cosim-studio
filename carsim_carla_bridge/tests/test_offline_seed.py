@@ -233,8 +233,8 @@ class RunStartTests(unittest.TestCase):
                 pass
 
             def start(self):
-                return {"external_api": False, "reference_point": [0, 0, 0], "inner_steps": 1,
-                        "clock_warning": False}
+                return {"external_api": False, "reference_point": [0, 0, 0], "inner_steps": 1, "t_step": 0.02,
+                        "frame_dt": 0.02, "t_stop": 0.0, "mock": True, "warnings": []}
 
         try:
             with mock.patch.object(bs, "CoSimSession", Session), mock.patch.object(bs, "CarlaDriveSession", Session), \

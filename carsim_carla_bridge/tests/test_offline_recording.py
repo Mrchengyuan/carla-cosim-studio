@@ -300,7 +300,7 @@ class BackendWiringTests(unittest.TestCase):
             def start(self):
                 self.scene.frame = 4321   # the tick inside start_scene
                 return {"external_api": False, "server_api": None, "reference_point": [1.4, 0, 0], "t_step": 0.001,
-                        "inner_steps": 20, "clock_warning": False, "t": 0.0,
+                        "inner_steps": 20, "frame_dt": 0.02, "t_stop": 0.0, "mock": True, "warnings": [], "t": 0.0,
                         "collisions": [{"id": 5, "type": "vehicle", "model": "map.Car", "new": True}]}
 
             def ego_motion(self):
@@ -324,7 +324,8 @@ class BackendWiringTests(unittest.TestCase):
         backend.world = world
         ego = SimpleNamespace(type_id="vehicle.test", attributes={}, is_alive=True)
         backend.cmd_spawn_ego = lambda *a: setattr(backend, "ego", ego)
-        cfg = {"collect": {"enabled": True}, "rig": {"sensors": [dict(CAM)]}}
+        cfg = {"collect": {"enabled": True}, "rig": {"sensors": [dict(CAM)]},
+               "carsim": {"mock": True}, "run": {"driver": "demo"}}  # passes the pre-flight
         with mock.patch.object(backend_server.coll, "DataCollector", FakeCollector), \
                 mock.patch.object(backend_server.coll, "disk_info", lambda p: {"path": p, "free_gb": 1e3, "total_gb": 1e3}), \
                 mock.patch.object(backend_server.rigmod, "spec_of", lambda v: {}), \

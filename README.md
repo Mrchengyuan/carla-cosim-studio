@@ -46,16 +46,16 @@ git clone https://github.com/Mrchengyuan/python_carsim_env
 |---|---|
 | **[Ubuntu 使用指南](docs/Ubuntu使用指南.md)** | 从零安装、原版 / 改版 CARLA、Python 环境、编译界面、桌面一键启动、命令行、测试、常见问题 |
 | **[Windows 使用指南](docs/Windows使用指南.md)** | 从零安装、CARLA、Python、界面、一键启动、**接入 CarSim**、改版 CARLA、常见问题 |
-| **[远程使用指南](docs/远程使用指南.md)** | 笔记本只有集成显卡时：CARLA、后端和控制算法在云服务器上，笔记本只运行 CarSim 和界面，每次双击一个启动脚本 |
+| **[远程使用指南](docs/远程使用指南.md)** | 笔记本只有集成显卡时：CARLA、后端和控制算法在云服务器上，笔记本只运行 CarSim 和界面，每次双击启动器 `启动远程仿真.exe` |
 | **[界面操作手册](docs/界面操作手册.md)** | 每个页面、每个按钮的说明，数据采集输出格式，常用操作流程 |
 | [CarSim 导出变量清单](carsim_carla_bridge/docs/CarSim导出变量清单.md) | CarSim 里要导出哪些变量、单位、坐标约定 |
 | [Windows 编译指南](carsim_carla_bridge/docs/Windows编译指南.md) | 在 Windows 上编译改版 CARLA |
 
 ## 远程使用：笔记本 + 云服务器
 
-笔记本跑不动 CARLA 时，**CARLA、后端和你的控制算法在云服务器（GPU）上运行，笔记本只运行 CarSim 求解器和界面**，两边只靠笔记本发起的一条 SSH 连接（笔记本不需要公网 IP）。用户解压一次 Windows 启动包，之后每次双击 `启动远程仿真.bat`，界面打开时已经连着云服务器。控制算法不用改，算法看到的仍是 CarSim 坐标和单位；联合仿真仍然逐帧同步，网络只影响速度，不影响结果。
+笔记本跑不动 CARLA 时，**CARLA、后端和你的控制算法在云服务器（GPU）上运行，笔记本只运行 CarSim 求解器和界面**，两边只靠笔记本发起的一条 SSH 连接（笔记本不需要公网 IP）。用户解压一次 Windows 启动包，之后每次双击启动器 **`启动远程仿真.exe`**：它检查笔记本（Python、numpy、SSH、端口，有问题当场说明怎么处理，缺 numpy 一键安装），连上云服务器，启动 CarSim 服务，然后打开界面；网络断了自动重连，关闭界面自动断开。控制算法不用改，算法看到的仍是 CarSim 坐标和单位；联合仿真仍然逐帧同步，网络只影响速度，不影响结果。
 
-- 用户：[远程使用指南](docs/远程使用指南.md)（什么在哪里运行、一次性设置、这几个窗口、常见问题、结果在服务器的哪里）。
+- 用户：[远程使用指南](docs/远程使用指南.md)（什么在哪里运行、一次性设置、启动器、示例路径跟踪算法、常见问题、结果在服务器的哪里）。
 - 服务器：`scripts/remote_session.sh`（SSH 连接上来时运行：按需启动改版 CARLA，运行并看护后端）、`scripts/install_remote_key.sh`（只能建立这条连接的受限钥匙）、`scripts/build_remote_package.sh`（打 Windows 启动包），见指南的“给服务器管理员”一节。
 
 ## 原版 CARLA 与改版 CARLA
@@ -173,10 +173,10 @@ git clone https://github.com/Mrchengyuan/python_carsim_env
 
 | 目录 | 内容 |
 |---|---|
-| `cosim_gui/` | 图形界面源码，依赖（ImGui、ImPlot、GLFW、json、stb_image、Font Awesome）已放在 `third_party/`，编译不需要联网 |
+| `cosim_gui/` | 图形界面源码，还有远程启动器（`launcher*.cpp`，启动包里叫 `启动远程仿真.exe`）；依赖（ImGui、ImPlot、GLFW、json、stb_image、Font Awesome）已放在 `third_party/`，编译不需要联网 |
 | `carsim_carla_bridge/` | Python 后端、CarSim 桥接、驾驶模式、数据采集、测试和文档 |
 | `carla_patches/` | CARLA 0.9.16 补丁（改版 CARLA 就是官方源码打上它们编译出来的）：外部动力学接口（含 CARLA 自身错误的修复）；Python 包等待服务器时释放全局锁；Linux 编译用的 libpng 地址修复 |
-| `scripts/` | Ubuntu：`build_ue4.sh`、`build_carla.sh`、`carla_server.sh`、`carla_mod_server.sh`、`start_studio.sh`、`stop_carla.sh`、`install_desktop_icons.sh`，以及它们共用的 `env.sh`（路径、端口）和 `carla_stop_lib.sh`（关闭 CARLA）；远程使用的服务器端：`remote_session.sh`、`install_remote_key.sh`、`build_remote_package.sh`；`scripts/windows/`：`start_studio.bat`、`stop_carla.bat`、`install_shortcuts.bat`、`env.bat`，远程启动包里的 `启动远程仿真.bat` |
+| `scripts/` | Ubuntu：`build_ue4.sh`、`build_carla.sh`、`carla_server.sh`、`carla_mod_server.sh`、`start_studio.sh`、`stop_carla.sh`、`install_desktop_icons.sh`，以及它们共用的 `env.sh`（路径、端口）和 `carla_stop_lib.sh`（关闭 CARLA）；远程使用的服务器端：`remote_session.sh`、`install_remote_key.sh`、`build_remote_package.sh`；`scripts/windows/`：`start_studio.bat`、`stop_carla.bat`、`install_shortcuts.bat`、`env.bat` |
 | `docs/` | 使用文档（Ubuntu / Windows 使用指南、界面操作手册、场景与数据接口说明）；`docs/images/` 是截图 |
 
 ## 快速开始
@@ -238,7 +238,7 @@ class Controller:
 - `exports`：全部 CarSim 导出变量，键是导出变量名；`t`：CarSim 时间；`dt`：控制周期（= 仿真步长）。
 - `finish(reason)`：可选，运行结束（到时、碰撞停止、停止、出错）时调用一次，`reason` 与输出窗口里的结束原因相同；入口是函数时写模块级 `finish(reason)`。出错只提示，不影响收尾。
 - 界面里的相对路径以 `carsim_carla_bridge` 目录为准（命令行里以当前目录为准）；每次点“运行”都会重新加载这个文件（连同它从同一目录和子目录 import 的文件），改完代码直接再运行，不用重启界面。
-- 示例：`controllers/example_controller.py`（定速 + 蛇形）、`controllers/scene_controller.py`（沿车道行驶，前方有车或障碍物就跟车 / 停车）、`controllers/simple_path_follower.py`（python_carsim_env 里的 SimplePathFollower）。
+- 示例：`controllers/example_controller.py`（定速 + 蛇形）、`controllers/path_follower.py`（路径跟踪：纯跟踪沿 CARLA 的车道中心线，弯前降速，路口不跟错车道，见[远程使用指南第 5 节](docs/远程使用指南.md#5-示例控制算法路径跟踪controllerspath_followerpy)）、`controllers/scene_controller.py`（沿车道行驶，前方有车或障碍物就跟车 / 停车）、`controllers/simple_path_follower.py`（python_carsim_env 里的 SimplePathFollower）。
 
 **用 CARLA 场景里的信息**：把 `control` 写成 4 个参数，每帧就会多收到一个 `scene`（算法本来就在 Python 后端里运行，场景信息直接从 CARLA 读出来交给它，不经过界面；界面只是把同一份数据显示出来）。只写 3 个参数的算法照旧运行。
 ```python
@@ -293,6 +293,8 @@ python run_cosim.py --mock --duration 20                                        
 | `tests/test_offline_recording.py` | 不需要 CARLA：运行记录和采集按运行步数从 t = 0 采样、控制输出 u1 … un（第一行为空）、第一次 `control()` 的场景有帧号和传感器数据、开始时已接触只算一次碰撞、`frames/` 里的 IMU 按 CarSim 坐标、`labels/` 含地图里停放的汽车（不含没人骑的自行车 / 摩托车）、`ego/` 速度取 CarSim 的值、第 0 步已结束运行（开始时碰撞且设为停止、采集帧数上限）时不再多走一步 | 12/12 |
 | `tests/test_offline_runs.py` | 不需要 CARLA：每次运行一个记录文件夹（`时间_算法文件名`，同一秒加 `_2`，旧配置的 `cosim_log.csv` 用它的目录和文件名），里面有 CSV、`config.json`、算法文件副本、`run.json`（开始时写、结束时补全）；第二次运行不动第一次的文件、没勾车道时没有旧的 `_lane.csv`；运行指标（车道偏移、航向偏差、不在车道上的时间、每帧的碰撞、前方最小间距（横穿的车也算前方）、行驶距离、\|Ay\|，与“记录”勾选无关）；磁盘不足时停写 CSV 但仍写 `run.json`；`finish(reason)`（类入口用实例的、函数入口用模块的）只调用一次、在记录关闭之前、出错只提示、慢时提示条指向它；CARLA 物理时 CARLA 断开也补全 `run.json`；后端和命令行传入结束原因并输出文件夹和指标 | 26/26 |
 | `tests/test_runs_carla.py` | 在 CARLA 上（模拟 CarSim，1 s）：记录文件夹的内容、`run.json` 的地图 / 出生点 / 结束原因 / 指标与 `log.csv` 一致、`finish(reason)` 收到到时的原因、输出窗口给出文件夹和指标、第二次运行是新文件夹（临时文件测完删除） | 12/12（原版 CARLA 两种包、改版 CARLA） |
+| `tests/test_offline_path_follower.py` | 不需要 CARLA：路径跟踪算法 `controllers/path_follower.py`：转向符号（偏左往右打、左弯往左打）、两种单位结果相同、传动比由 CarSim 导出变量估计、弯前降速、太快时制动、没有车道信息时低速回正；闭环（模拟 CarSim）：0.8 m 初始偏差 + 40 m 半径弯道、路口 11 m 右转和 8 m 掉头弯（前后轴都靠近中心线）、另用**带轮胎侧偏和转向滞后的动力学模型**（滞后 0.35 s、60 km/h 仍不摆动）；路口车道读数跳到转弯车道 / 来回跳 / 短暂没有时沿记住的路径直行，没有自车位姿时会跟错（证明检查有效） | 21/21 |
+| `tests/test_path_follower_carla.py` | 在 CARLA 上（模拟 CarSim，默认设置和场景信息）：路径跟踪算法从分布在全图的出生点各跑 40 s：按时结束、算法不报错、无碰撞、不离开车道、路口以外车道中心偏差均方根 < 0.25 m、最大 < 0.6 m、行驶距离、航向没有突变 | Town10 原版 12 个出生点、改版 3 个全部通过（均方根 0.06~0.15 m，最大 0.54 m） |
 | `tests/test_recording_carla.py` | 同上在 CARLA 上：第一次 `control()` 有整数帧号和相机图像、两次运行采样时刻相同、u 列为上一步的控制输出、5 帧小采集（测完自动删除）的 `frames/`、`frames.csv`、`ego/`、`labels/` | 14/14（原版 CARLA 两种包、改版 CARLA） |
 | `tests/test_offline_config.py` | 不需要 CARLA：界面保存的配置用命令行运行时，用文件里的驾驶方式和 CARLA 地址（命令行参数仍优先）；CARLA 物理的配置在连接 CARLA 之前就被拒绝（退出码 2）；默认配置里没有不起作用的 `carla.map` / `carla.weather`。另用系统的 C++ 编译器编译运行界面的配置代码 `cosim_gui/tests/config_file_test.cpp`：载入时以默认配置为底、修正手改的类型（保留“CARLA 接口”和参考点）、保存时写入驾驶方式和 CARLA 地址、先写临时文件再替换（没有编译器时跳过） | 4/4（其中 C++ 23/23） |
 | `tests/test_config_carla.py` | 在 CARLA 上：界面保存的配置用 `run_cosim.py --config` 运行，连文件里的 CARLA、用你的控制算法（模拟 CarSim）、结束后世界恢复原样；CARLA 物理的配置被拒绝、不生成车辆 | 4/4（原版 CARLA 两种包、改版 CARLA） |
@@ -313,11 +315,12 @@ python run_cosim.py --mock --duration 20                                        
 | `tests/test_offline_docs.py` | 不需要 CARLA：文档和代码一致：相对链接都指向存在的文件；训练代码示例按界面的配置建 `CarlaVehicleSync`（`to_bridge_cfg`）、设同步模式且帧长 = 积分步数 × t_step（示例本身用假的 CARLA 执行一遍）；命令行 `--sim` 示例都写了 `--duration`；底部面板的页签；采样周期 0、激光雷达每圈的激光束数、限速、场景页签、运行记录单位的说明；`test_carla_restart.py` 按 `CARLA_PORT` / `CARLA_MOD_PORT` 连 | 15/15 |
 | `tests/test_docs_carla.py` | 在 CARLA 上：按文档的训练代码示例同步车辆（模拟 CarSim，导出变量顺序和单位与 `config.py` 不同）时，车在 CARLA 里的位置和朝向与 CarSim 一致，不传 `settings` 时就不一致；联合仿真的车经过限速牌时 `speed_limit` 是否更新（只报告）；测完恢复世界设置 | 4/4（原版 CARLA 两种包、改版 CARLA） |
 | `tests/test_offline_tests.py` | 不需要 CARLA：`test_modified_carla.py` 有检查失败时退出码非 0（用假的 carla 模块）、`start_studio.sh` 只复用端口上认得出的 CARLA、停止脚本的匹配经过符号链接也对得上服务器命令行（tmux、pkill 等都是替身，不启动也不停止任何程序） | 6/6 |
-| `tests/test_offline_ops.py` | 不需要 CARLA：远程使用的服务器脚本 `remote_session.sh`（tmux、ss、后端都是替身）：进度行、CARLA 已在运行时不再启动、端口空闲时照 `start_studio.sh mod` 在 tmux 里启动改版 CARLA、端口被别的程序占用时报错、后端的 `--port 57120 --carsim-port 57121`、退出码 3（界面“重启后端”）和崩溃后重新启动（退避）、SSH 连接结束（stdin 关闭或 SIGHUP）时停止后端而 CARLA 留着、新连接替换旧连接；`install_remote_key.sh`（临时的钥匙和 authorized_keys）：受限的那一行、再运行不重复、不动别的行、文件权限；`build_remote_package.sh`：启动包的文件、界面设置、CRLF、UTF-8 文件名、不写进仓库；`.bat` 的静态检查（括号配对、`( )` 里的路径加引号、标签、ssh 参数与服务器端口一致、只按进程号关窗口） | 14/14 |
+| `tests/test_offline_ops.py` | 不需要 CARLA：远程使用的服务器脚本 `remote_session.sh`（tmux、ss、后端都是替身）：进度行、CARLA 已在运行时不再启动、端口空闲时照 `start_studio.sh mod` 在 tmux 里启动改版 CARLA、端口被别的程序占用时报错、后端的 `--port 57120 --carsim-port 57121`、退出码 3（界面“重启后端”）和崩溃后重新启动（退避）、SSH 连接结束（stdin 关闭或 SIGHUP）时停止后端而 CARLA 留着、新连接替换旧连接；`install_remote_key.sh`（临时的钥匙和 authorized_keys）：受限的那一行、再运行不重复、不动别的行、文件权限；`build_remote_package.sh`：启动包的文件（启动器、`remote_launcher.json` 里的服务器地址、`--host` 等换服务器）、界面设置、UTF-8 文件名、不写进仓库；`.bat` 的静态检查（括号配对、`( )` 里的路径加引号）；启动器的 ssh 参数与服务器端口、钥匙的 permitopen 一致，启动器认识服务器脚本和 CarSim 服务的状态行 | 13/13 |
 | `tests/test_tests_carla.py` | 对正在运行的 CARLA（用本安装的脚本启动；不连接、不启动也不停止它）：`start_studio.sh` 按进程名认出端口上的 CARLA、停止脚本的匹配对得上服务器的命令行。原版直接运行，改版加 `--mod`（不是 `--port`） | 3/3（原版和改版 CARLA） |
 | `tests/test_offline_remote.py` | 不需要 CARLA：远程模式（`carsim.remote`：CarSim 在 Windows 电脑上的 CarSim 服务里运行），用真实套接字和真实的 `carsim_service.py`（`--mock`，或 python_carsim_env 接假的 CarSim 求解器）：hello / open / reset / step / close 的结果与本机模拟 CarSim 逐位相同（算法拿到的导出变量、交给 CARLA 的位姿）；服务的报错原样给界面（不再包一层）；没连上服务时在动 CARLA 之前说明怎么办（界面和命令行）；运行中服务断开或超时不回应时，运行按出错结束、放开主车；非有限数值以 null 传输、回来是 NaN，原有的 NaN 检查照常停止运行；新的连接替换旧的，协议不一致或不是服务的连接被拒绝；服务重试时不刷屏、断开后自动重连、Ctrl+C 退出；后端只在给了 `--carsim-port` 时监听服务（默认不监听），在输出里说明服务连上 / 断开，`world_info` 有 `carsim_service`；空闲时每 5 s ping 服务、10 s 不回应算断开，运行中不 ping；远程时服务器上不检查 Windows 上的路径，由服务在重新生成主车之前检查 .sim（相对路径说明按 CarSim 服务的工作目录）；`carsim_local.py`、`carsim_service.py` 不需要 carla 和 numpy，符合 Python 3.8 语法；`run.json` 记下 Windows 上的 .sim、被新连上的服务取代的旧服务自己退出（不来回抢） | 31/31 |
 | `tests/test_remote_carla.py` | 在 CARLA 上：同一次运行用后端里的模拟 CarSim 和经过本机 `carsim_service.py --mock`（远程模式）各跑一遍，算法拿到的导出变量逐位相同、场景里自车 Yaw = 导出变量 Yaw、最后的 Xo / Yo 相同；运行中服务断开时运行出错结束、CARLA 里不留这次运行的传感器、仿真设置恢复；没有服务时拒绝运行、不重新生成主车（后端端口 57141、服务端口 57142，不采集数据） | 待运行 |
 | 界面 `--tour` | 自动操作全部页面并截图；用**真实鼠标点击**测试运行 / 暂停 / 单步 / 继续 / 停止、视口按钮、多视图布局与视图内容切换、页签和工程树、“场景信息”页“给算法 / 记录”两列勾选、底部“场景”标签与筛选、底部“车辆状态”标签、“输出”页“算法”过滤显示控制算法 print 的内容、数据浏览（打开 / 逐帧 / 播放）与导出、CarSim 页“浏览…”选 .sim / python_carsim_env（系统对话框换成测试路径）和自动找到 python_carsim_env | 79/79（1600×1000；远程模式设置下 82/82，经过真实 SSH 会话、CarSim 服务在另一台电脑；此前 47 步在 1280×800、1366×768、1600×1000、1920×1400 窗口下都通过） |
+| `cosim_gui/tests/launcher_scenarios.py` | 远程启动器（Linux 版，真实鼠标点击 + 截图，SSH 真实登录本机的受限钥匙、服务器脚本真实启动改版 CARLA 和后端）：检查全通过；没有 Python / 没有 numpy（按钮真的装上）/ 端口被别的程序占 / 被旧连接占（按钮结束它）/ 缺文件 / 没有 ssh / 钥匙不对 / 服务器指纹不对 / 连接被拒绝，各自的提示；启动 → 就绪 → 停止 → 再次启动 → 关闭时确认；运行中 SSH 被切断后自动重连（CarSim 服务也重连；ssh 报 Connection reset 时也重连）；启动器被 kill -9 后它开的程序全部结束、服务器的会话结束；浅色主题、小窗口；界面自己的 `--tour` 经启动器完整跑一遍（联合仿真用启动器的 CarSim 服务） | 16/16；Windows 版在 Wine 里完整流程通过（Windows 版 OpenSSH、Python、界面） |
 
 ## CARLA 0.9.16 自身的已知问题
 

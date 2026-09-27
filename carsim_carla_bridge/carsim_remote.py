@@ -19,8 +19,8 @@ import time
 
 from carsim_local import SERVICE_PROTOCOL, JsonLines, RemoteCarSimError
 
-NO_SERVICE = ("Windows 上的 CarSim 服务没有连上云端：请在 Windows 上双击启动脚本（启动远程仿真.bat），"
-              "看到“已连上云端”后再点运行")
+NO_SERVICE = ("Windows 上的 CarSim 服务没有连上云端：请在 Windows 上用启动器（启动远程仿真.exe）启动，"
+              "看到 CarSim 服务“已连上云端”后再点运行")
 LOST = "与 Windows 上的 CarSim 服务的连接断开了（%s）"
 # How long the backend waits for an answer, s: loading CarSim and starting its run can be slow.
 TIMEOUTS = {"check": 120.0, "open": 120.0, "reset": 120.0, "step": 30.0, "close": 10.0, "ping": 10.0}

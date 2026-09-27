@@ -17,7 +17,7 @@
 # Log: ~/.cache/carla_cosim_studio/remote_backend.log (the one before: .prev).
 source "$(dirname "${BASH_SOURCE[0]}")/env.sh"
 source "$(dirname "${BASH_SOURCE[0]}")/carla_stop_lib.sh"
-GUI_PORT=57120      # the same ports as permitopen in the key's line and in 启动远程仿真.bat
+GUI_PORT=57120      # the same ports as permitopen in the key's line and in the launcher (launcher.cpp)
 CARSIM_PORT=57121
 PORT=$CARLA_MOD_PORT
 BRIDGE="$COSIM_ROOT/carsim_carla_bridge"

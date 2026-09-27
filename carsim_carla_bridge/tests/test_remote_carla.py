@@ -29,8 +29,8 @@ import carla  # noqa: E402
 
 PORT = 57141
 CARSIM_PORT = 57142
-NO_SERVICE = ("Windows 上的 CarSim 服务没有连上云端：请在 Windows 上双击启动脚本（启动远程仿真.bat），"
-              "看到“已连上云端”后再点运行")
+NO_SERVICE = ("Windows 上的 CarSim 服务没有连上云端：请在 Windows 上用启动器（启动远程仿真.exe）启动，"
+              "看到 CarSim 服务“已连上云端”后再点运行")
 LOST = "与 Windows 上的 CarSim 服务的连接断开了（"
 
 # Records what the algorithm gets; accelerates, then turns left.

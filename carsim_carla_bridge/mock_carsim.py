@@ -5,7 +5,9 @@ same export variables, in CarSim conventions (ISO axes) and in the units set
 on the CarSim page (carsim.units; default deg, km/h, deg/s, rpm, mm), so the
 bridge can be exercised end to end. The dynamics are a kinematic bicycle
 with Ackermann steering and quasi-static roll/pitch - enough to check signs,
-not a vehicle model.
+not a vehicle model. Like CarSim, it reports the front axle (CarSim's default
+reference point): Xo / Yo / Vy are the front axle's, which in a turn swings
+out of the rear axle's path.
 """
 
 import math
@@ -59,8 +61,9 @@ class MockCarSimEnv:
                 a = 0.0
             self.v = max(0.0, self.v + a * dt)
             r = self.v * math.tan(delta) / self.WHEELBASE
-            self.x += self.v * math.cos(self.psi) * dt
-            self.y += self.v * math.sin(self.psi) * dt
+            # Front axle: the rear axle's velocity (v along the body) plus yaw rate x wheelbase.
+            self.x += self.v * (math.cos(self.psi) - math.tan(delta) * math.sin(self.psi)) * dt
+            self.y += self.v * (math.sin(self.psi) + math.tan(delta) * math.cos(self.psi)) * dt
             self.psi += r * dt
             self.ax, self.ay = a, self.v * r
             self.prev_roll, self.prev_pitch = self.roll, self.pitch
@@ -88,7 +91,7 @@ class MockCarSimEnv:
         vals = {
             "Xo": self.x, "Yo": self.y, "Zo": 0.0,
             "Yaw": math.degrees(self.psi), "Pitch": self.pitch, "Roll": self.roll,
-            "Vx": self.v * 3.6, "Vy": 0.0,
+            "Vx": self.v * 3.6, "Vy": self.v * math.tan(math.radians(self.steer_sw / self.STEER_RATIO)) * 3.6,
             "AVx": 0.0, "AVy": 0.0, "AVz": math.degrees(yaw_rate),
             "Steer_SW": self.steer_sw,
             "Steer_L1": math.degrees(self.delta_l), "Steer_R1": math.degrees(self.delta_r),

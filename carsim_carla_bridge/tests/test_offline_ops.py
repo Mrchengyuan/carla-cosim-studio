@@ -1,6 +1,7 @@
 """Checks for the remote mode's server scripts and Windows package that need no
 CARLA server: scripts/remote_session.sh (the SSH forced command), the key
-installer, the package builder and the launcher 启动远程仿真.bat (statically).
+installer, the package builder, the Windows .bat scripts and the launcher's
+connection (statically; cosim_gui/tests/launcher_scenarios.py runs the launcher).
 Nothing real is started or stopped: tmux, ss, pkill, pgrep and the backend's
 Python are stubs; keys and authorized_keys files are temporary ones.
 
@@ -25,7 +26,8 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.abspath(os.path.join(HERE, "..", ".."))
 SCRIPTS = os.path.join(ROOT, "scripts")
 BRIDGE = os.path.join(ROOT, "carsim_carla_bridge")
-BAT = os.path.join(SCRIPTS, "windows", "启动远程仿真.bat")
+WINDOWS = os.path.join(SCRIPTS, "windows")
+LAUNCHER = os.path.join(ROOT, "cosim_gui", "src", "launcher.cpp")
 READY_LINES = ["CARLA 已就绪", "后端已就绪", "就绪"]
 
 
@@ -352,14 +354,17 @@ class PackageTests(unittest.TestCase):
             f.write("-----BEGIN OPENSSH PRIVATE KEY-----\nnot a real key %s\n-----END OPENSSH PRIVATE KEY-----\n"
                     % os.getpid())
         self.exe = os.path.join(self.tmp, "carla_cosim_studio.exe")
-        with open(self.exe, "wb") as f:
-            f.write(b"MZ" + b"\0" * 64)
+        self.launcher = os.path.join(self.tmp, "carla_cosim_launcher.exe")
+        for path, fill in ((self.exe, b"\0"), (self.launcher, b"\1")):
+            with open(path, "wb") as f:
+                f.write(b"MZ" + fill * 64)
         self.env = dict(os.environ, REMOTE_KNOWN_HOSTS="# i.easy-ai.cloud:32122 SSH-2.0\n" + self.KNOWN + "\n")
         self.env.pop("COSIM_ROOT", None)
 
     def build(self, out, *extra):
         return subprocess.run(["bash", os.path.join(SCRIPTS, "build_remote_package.sh"), "--exe", self.exe,
-                               "--key", self.key, "--out", out] + list(extra), env=self.env,
+                               "--launcher", self.launcher, "--key", self.key, "--out", out] + list(extra),
+                              env=self.env,
                               stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=120)
 
     def repo_state(self):
@@ -384,8 +389,9 @@ class PackageTests(unittest.TestCase):
         for f in ("carsim_service.py", "carsim_local.py"):  # the backend part adds them
             if f not in service:
                 self.assertIn(("warning: %s/%s is missing" % (BRIDGE, f)).encode(), p.stdout)
-        expected = {top + n for n in ["启动远程仿真.bat", "carla_cosim_studio.exe", "fonts/fa-solid-900.ttf",
-                                      "cosim_studio_prefs.json", "ssh/remote_key", "ssh/known_hosts", "使用说明.txt"]
+        expected = {top + n for n in ["启动远程仿真.exe", "carla_cosim_studio.exe", "fonts/fa-solid-900.ttf",
+                                      "remote_launcher.json", "cosim_studio_prefs.json", "ssh/remote_key",
+                                      "ssh/known_hosts", "使用说明.txt"]
                     + ["service/" + f for f in service]}
         z = zipfile.ZipFile(out)
         self.addCleanup(z.close)
@@ -400,11 +406,12 @@ class PackageTests(unittest.TestCase):
             with open(os.path.join(self.tmp, "out", name), "rb") as f:
                 self.assertEqual(f.read(), z.read(name), name)
 
-        bat = z.read(top + "启动远程仿真.bat")
-        with open(BAT, "rb") as f:
-            self.assertEqual(bat, f.read().replace(b"\r\n", b"\n").replace(b"\n", b"\r\n"))
-        self.assertEqual(bat.count(b"\n"), bat.count(b"\r\n"))
-        self.assertTrue(bat.startswith(b"@echo off\r\nchcp 65001 >nul\r\n"))
+        for name, src in (("启动远程仿真.exe", self.launcher), ("carla_cosim_studio.exe", self.exe)):
+            with open(src, "rb") as f:
+                self.assertEqual(z.read(top + name), f.read(), name)
+        # The server, fixed (its host key is in ssh/known_hosts); the launcher adds the Python and the theme.
+        self.assertEqual(json.loads(z.read(top + "remote_launcher.json")),
+                         {"host": "i.easy-ai.cloud", "port": 32122, "user": "easyai", "python": "", "dark_theme": True})
         with open(self.key, "rb") as f:
             self.assertEqual(z.read(top + "ssh/remote_key"), f.read())
         self.assertEqual(z.read(top + "ssh/known_hosts").decode(), self.KNOWN + "\n")
@@ -415,7 +422,8 @@ class PackageTests(unittest.TestCase):
         notes = z.read(top + "使用说明.txt")
         self.assertTrue(notes.startswith(b"\xef\xbb\xbf"))  # Notepad
         self.assertEqual(notes.count(b"\n"), notes.count(b"\r\n"))
-        self.assertIn("启动远程仿真.bat", notes.decode("utf-8-sig"))
+        self.assertIn("启动远程仿真.exe", notes.decode("utf-8-sig"))
+        self.assertNotIn(".bat", notes.decode("utf-8-sig"))
 
         prefs = json.loads(z.read(top + "cosim_studio_prefs.json"))
         self.assertEqual({k: prefs[k] for k in ("remote_backend", "auto_start_backend", "backend_port",
@@ -455,6 +463,16 @@ class PackageTests(unittest.TestCase):
         p = self.build(out)
         self.assertNotEqual(p.returncode, 0)
         self.assertIn(b"not for [i.easy-ai.cloud]:32122", p.stdout)
+        self.env["REMOTE_KNOWN_HOSTS"] = "[other.host]:2222 ssh-ed25519 AAAA"
+        p = self.build(out, "--host", "other.host", "--ssh-port", "2222", "--user", "me")
+        self.assertEqual(p.returncode, 0, p.stdout.decode())
+        with zipfile.ZipFile(out) as z:
+            self.assertEqual(json.loads(z.read("CARLA_CoSim_Studio_Remote/remote_launcher.json"))["host"], "other.host")
+            self.assertEqual(json.loads(z.read("CARLA_CoSim_Studio_Remote/remote_launcher.json"))["port"], 2222)
+        shutil.rmtree(os.path.dirname(out))
+        for bad in (("--ssh-port", "22x"), ("--host", "a b"), ("--user", "a\"b")):
+            p = self.build(out, *bad)
+            self.assertNotEqual(p.returncode, 0, bad)
         self.env["REMOTE_KNOWN_HOSTS"] = ""
         self.assertNotEqual(self.build(out).returncode, 0)
         self.assertFalse(os.path.exists(os.path.dirname(out)) and os.listdir(os.path.dirname(out)))
@@ -524,24 +542,12 @@ def bat_problems(path, paths):
     return problems
 
 
-class LauncherBatTests(unittest.TestCase):
-    def test_encoding_like_the_other_scripts(self):
-        with open(BAT, "rb") as f:
-            data = f.read()
-        self.assertFalse(data.startswith(b"\xef\xbb\xbf"))  # no BOM: "@echo off" must be the first command
-        self.assertEqual(data.count(b"\n"), data.count(b"\r\n"))
-        data.decode("utf-8")
-        lines = data.decode().split("\r\n")
-        self.assertEqual(lines[:2], ["@echo off", "chcp 65001 >nul"])
-        # Nothing but ASCII before chcp switches cmd to UTF-8.
-        self.assertTrue(all(ord(c) < 128 for c in lines[0] + lines[1]))
-
+class BatTests(unittest.TestCase):
     def test_no_block_pitfalls(self):
-        folder = os.path.dirname(BAT)
-        bats = sorted(os.path.join(folder, f) for f in os.listdir(folder) if f.endswith(".bat"))
-        self.assertIn(BAT, bats)
+        bats = sorted(os.path.join(WINDOWS, f) for f in os.listdir(WINDOWS) if f.endswith(".bat"))
+        self.assertGreaterEqual(len(bats), 4)
         paths = bat_path_vars(bats)  # env.bat sets what the others use
-        self.assertTrue({"KEY", "EXE", "SSH", "HERE", "CROOT", "STUDIO_EXE"} <= paths, paths)
+        self.assertTrue({"CROOT", "STUDIO_EXE"} <= paths, paths)
         for path in bats:
             with self.subTest(bat=os.path.basename(path)):
                 self.assertEqual(bat_problems(path, paths), [])
@@ -556,36 +562,36 @@ class LauncherBatTests(unittest.TestCase):
         self.assertEqual(bat_problems(bad, bat_path_vars([bad])),
                          ["3: %EXE% unquoted inside ( )", "( without ) at the end"])
 
-    def test_labels_and_the_connection(self):
-        text = read(BAT)
-        labels = set(re.findall(r"^:(\w+)", text, re.M))
-        used = set(re.findall(r"\b(?:goto|call) :?(\w+)", text, re.I)) - {"eof"}
-        self.assertEqual(used - labels, set())
-        for arg in (":ssh_window", ":service_window"):
-            self.assertIn('if "%%~1"=="%s" goto %s' % (arg, arg[1:]), text)
-            self.assertIn("call :start_window %s " % arg, text)
-        ssh = next(line for line in text.splitlines() if line.startswith('"%SSH%"'))
-        for opt in ("-i remote_key", "-p %REMOTE_PORT%", "-o UserKnownHostsFile=known_hosts",
-                    "-o StrictHostKeyChecking=yes", "-o ServerAliveInterval=15", "-o ExitOnForwardFailure=yes",
-                    " -T ", "-L 57120:127.0.0.1:57120 -L 57121:127.0.0.1:57121", "%REMOTE_USER%@%REMOTE_HOST%"):
+
+
+class LauncherConnectionTests(unittest.TestCase):
+    def test_the_ssh_command(self):
+        src = read(LAUNCHER)
+        start = src.index("void Launcher::StartSsh()")
+        ssh = src[start:src.index("\n}\n", start)]
+        for opt in ('"-F", "none"', '"-i", "remote_key"', '"UserKnownHostsFile=known_hosts"',
+                    '"StrictHostKeyChecking=yes"', '"BatchMode=yes"', '"IdentitiesOnly=yes"',
+                    '"ServerAliveInterval=15"', '"ExitOnForwardFailure=yes"', '"-T"',
+                    '":127.0.0.1:57120"', '":127.0.0.1:57121"', 'user_ + "@" + host_'):
             self.assertIn(opt, ssh)
-        self.assertNotIn(" -n ", ssh)  # stdin open: the server ends the session when it closes
-        for setting in ('set "REMOTE_HOST=i.easy-ai.cloud"', 'set "REMOTE_PORT=32122"', 'set "REMOTE_USER=easyai"'):
-            self.assertIn(setting, text)
-        # The ports agree with the server side and the key's permitopen.
+        self.assertNotIn('"-n"', ssh)  # stdin open: the server ends the session when it closes
+        self.assertIn("ssh_->Start(argv, ssh_cwd_", ssh)  # relative key / known_hosts: their folder
+        # The ports agree with the server side and the key's permitopen, and the GUI's default.
         session = read(os.path.join(SCRIPTS, "remote_session.sh"))
         self.assertIn("GUI_PORT=57120", session)
         self.assertIn("CARSIM_PORT=57121", session)
         key = read(os.path.join(SCRIPTS, "install_remote_key.sh"))
         self.assertIn(r'permitopen=\"127.0.0.1:57120\",permitopen=\"127.0.0.1:57121\"', key)
-        self.assertIn("'127.0.0.1',57120", text)  # the tunnel is waited for on the GUI's port
-        # Only the windows it started are closed, by process id; never by program name.
-        self.assertNotRegex(text, r"(?i)taskkill[^\r\n]*/IM")
-        self.assertIn("taskkill.exe /PID $p /T /F", text)
-        self.assertRegex(text, r"(?m)^title 云端连接$")
-        self.assertRegex(text, r"(?m)^title CarSim 服务$")
-        self.assertIn('start "" /wait "%EXE%"', text)
-        self.assertEqual(text.count("call :stop_windows"), 4)  # GUI closed, and each failure after ssh started
+        self.assertIn("local_gui_port_ = 57120, local_carsim_port_ = 57121", read(LAUNCHER.replace(".cpp", ".h")))
+        # The server script's lines the launcher follows.
+        for line in ("已连上云端服务器", "CARLA 已就绪", "后端已就绪", "就绪", "[错误]"):
+            self.assertIn(line, session)
+            self.assertIn('"%s"' % line, src)
+        # The CarSim service's state lines the launcher follows.
+        service = read(os.path.join(BRIDGE, "carsim_service.py"))
+        for line in ("已连上云端", "运行开始", "运行结束", "正在连接云端", "连接断开", "另一个 CarSim 服务"):
+            self.assertIn(line, service)
+            self.assertIn('"%s' % line, src)
 
 
 if __name__ == "__main__":

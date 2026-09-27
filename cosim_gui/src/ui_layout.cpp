@@ -868,7 +868,7 @@ void App::DrawViewport(float w, float h) {
     const char* icon = ICON_FA_VIDEO_SLASH;
     std::string msg, sub;
     int action = 0;
-    if (!be_.Connected() && Remote()) { msg = "正在连接云端后端 ..."; sub = "经启动脚本建立的 SSH 隧道，断开后自动重连"; icon = ICON_FA_SPINNER; }
+    if (!be_.Connected() && Remote()) { msg = "正在连接云端后端 ..."; sub = "经启动器建立的 SSH 隧道，断开后自动重连"; icon = ICON_FA_SPINNER; }
     else if (!be_.Connected() && !plat::IsAlive(backend_proc_)) { msg = "后端没有运行"; sub = "界面靠 Python 后端和 CARLA 通信"; action = 4; }
     else if (!carla_connected_) { msg = "未连接 CARLA"; sub = "启动 CARLA 服务器后点“连接”"; action = 1; }
     else if (!ego) { msg = "还没有主车"; sub = "在“车辆与视角”里选择车型和出生点"; action = 2; }

@@ -248,7 +248,7 @@ void App::DrawPanelConnect() {
   // Remote: the backend runs on the server; nothing to start or stop here.
   const bool remote = Remote();
   if (remote) {
-    ui::DimWrapped("远程模式：后端、CARLA 和控制算法在云端服务器上运行，界面经启动脚本建立的 SSH 隧道连接下面的本机端口，断开后自动重连。");
+    ui::DimWrapped("远程模式：后端、CARLA 和控制算法在云端服务器上运行，界面经启动器（启动远程仿真.exe）建立的 SSH 隧道连接下面的本机端口，断开后自动重连。");
   } else {
     std::string py = prefs_.value("python", std::string());
     ui::Row("Python 解释器", "装有 carla 包的 Python（Windows 上一般是 python 或虚拟环境里的 python.exe）");
@@ -1000,7 +1000,7 @@ void App::DrawPanelCoSim() {
     if (up)
       ImGui::TextWrapped(ICON_FA_CIRCLE_CHECK "  Windows 上的 CarSim 服务：已连接（%s）", svc.value("host", std::string()).c_str());
     else
-      ImGui::TextWrapped(ICON_FA_CIRCLE_XMARK "  Windows 上的 CarSim 服务：未连接 — 请双击启动脚本");
+      ImGui::TextWrapped(ICON_FA_CIRCLE_XMARK "  Windows 上的 CarSim 服务：未连接 — 请看启动器里“CarSim 服务”一步的状态");
     ImGui::PopStyleColor();
     ui::RecordTarget("cosim:service");
   }

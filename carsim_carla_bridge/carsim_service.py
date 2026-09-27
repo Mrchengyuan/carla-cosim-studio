@@ -33,12 +33,16 @@ Only the standard library and carsim_local / mock_carsim next to this file
 """
 
 import argparse
+import os
 import platform
 import socket
 import sys
 import time
 
-from carsim_local import SERVICE_PROTOCOL, JsonLines, check_carsim, make_env, reset_env
+# Next to this file, whatever the Python: an "embeddable" Python (its ._pth
+# file) leaves the script's own folder off sys.path.
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from carsim_local import SERVICE_PROTOCOL, JsonLines, check_carsim, make_env, reset_env  # noqa: E402
 
 RETRY = 2.0          # s between connection attempts
 HELLO_TIMEOUT = 10.0  # for the backend's answer to the hello

@@ -946,15 +946,13 @@ void App::DrawPanelCoSim() {
   // the server's backend; the two paths below are this computer's (checked here).
   const bool service = Remote() && !mock;
   if (service) {
-    const json svc = world_.value("carsim_service", json::object());  // (an older backend has none)
+    const json& svc = carsim_service_;
     const bool up = svc.is_object() && svc.value("connected", false);
-    ImGui::PushStyleColor(ImGuiCol_Text, up ? p.success : carla_connected_ ? p.danger : p.text_dim);
+    ImGui::PushStyleColor(ImGuiCol_Text, up ? p.success : p.danger);
     if (up)
       ImGui::TextWrapped(ICON_FA_CIRCLE_CHECK "  Windows 上的 CarSim 服务：已连接（%s）", svc.value("host", std::string()).c_str());
-    else if (carla_connected_)
-      ImGui::TextWrapped(ICON_FA_CIRCLE_XMARK "  Windows 上的 CarSim 服务：未连接 — 请双击启动脚本");
     else
-      ImGui::TextWrapped(ICON_FA_CIRCLE_INFO "  Windows 上的 CarSim 服务：连接 CARLA 后显示是否已连接");
+      ImGui::TextWrapped(ICON_FA_CIRCLE_XMARK "  Windows 上的 CarSim 服务：未连接 — 请双击启动脚本");
     ImGui::PopStyleColor();
     ui::RecordTarget("cosim:service");
   }

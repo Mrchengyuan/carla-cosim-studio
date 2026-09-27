@@ -96,13 +96,9 @@ void App::DatasetRequestFrame() {
         return;
       }
       ViewPane& p = ds_panes_[i];
-      if (appui::Base64(r.value("rgb", std::string()), p.px)) {
-        p.w = r.value("w", 0);
-        p.h = r.value("h", 0);
-        if (static_cast<int>(p.px.size()) >= p.w * p.h * 3) {
-          p.dirty = true;
-          ++p.frames;
-        }
+      if (appui::FramePixels(r, p.px, p.w, p.h)) {
+        p.dirty = true;
+        ++p.frames;
       }
       if (i == 0 || ds_left_.empty()) {
         ds_objects_ = r.value("objects", json::array());

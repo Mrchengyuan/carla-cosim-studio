@@ -43,7 +43,7 @@ import rig as rigmod
 import settings as st
 from carsim_local import json_safe as _json_safe
 from session import AlgoOutput, CarlaDriveSession, CoSimSession, check_run_config, check_run_files, control_busy
-from views import ViewStreamer
+from views import ViewStreamer, encode_jpeg
 
 WEATHER_PRESETS = [n for n in dir(carla.WeatherParameters)
                    if n[0].isupper() and isinstance(getattr(carla.WeatherParameters, n), carla.WeatherParameters)]
@@ -59,11 +59,11 @@ PROBE_ROLE = "cosim_probe"  # cars vehicle_specs spawns to measure a vehicle mod
 # space, estimates): served by their own thread, so a dataset playback or
 # deleting a large dataset never holds up a run's frames on the worker.
 IO_CMDS = {"dataset_list", "dataset_info", "dataset_frame", "dataset_export", "dataset_delete",
-           "disk_info", "rig_estimate", "path_status"}
+           "disk_info", "rig_estimate", "path_status", "carsim_service"}
 # What "hello" reports; the GUI (kBackendProtocol in cosim_gui/src/app.cpp) warns
 # when it was built for another one. Raise both together whenever a command,
 # event or config field the GUI relies on changes.
-PROTOCOL = 1
+PROTOCOL = 2
 
 
 class Backend:
@@ -123,6 +123,7 @@ class Backend:
 
     def _carsim_service_changed(self, s):
         """Remote mode: the CarSim service on the Windows computer connected or went away."""
+        self.emit(dict(s, event="carsim_service"))  # the GUI's status line, without CARLA
         if s["connected"]:
             self._log("Windows 上的 CarSim 服务已连上（%s）" % s["host"])
         else:
@@ -407,6 +408,10 @@ class Backend:
     # --------------------------------------------------------------- server
     def cmd_ping(self):
         return "pong"
+
+    def cmd_carsim_service(self):
+        """Remote mode: is the CarSim service on the Windows computer connected (CARLA or not)."""
+        return carsim_remote.SERVICE.status()
 
     def cmd_hello(self, jpeg=False):
         # A GUI at the other end of an SSH tunnel (its remote_backend setting)
@@ -953,8 +958,11 @@ class Backend:
     def cmd_dataset_frame(self, root, frame, sensor, max_w=960, boxes=True):
         img, info = dsmod.render_frame(self._session(root), int(frame), sensor, int(max_w), bool(boxes))
         import numpy as np
-        info.update({"w": int(img.shape[1]), "h": int(img.shape[0]), "sensor": sensor, "frame": int(frame),
-                     "rgb": base64.b64encode(np.ascontiguousarray(img).tobytes()).decode("ascii")})
+        info.update({"w": int(img.shape[1]), "h": int(img.shape[0]), "sensor": sensor, "frame": int(frame)})
+        if self.views.jpeg:  # a GUI at the other end of an SSH tunnel
+            info["jpeg"] = encode_jpeg(img)
+        else:
+            info["rgb"] = base64.b64encode(np.ascontiguousarray(img).tobytes()).decode("ascii")
         return info
 
     def cmd_dataset_export(self, root, format="kitti", out="", camera=None, lidar=None, min_lidar_pts=1):

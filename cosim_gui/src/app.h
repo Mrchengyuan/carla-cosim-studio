@@ -182,6 +182,7 @@ class App {
   bool auto_connect_ = false;  // --auto-connect: connect to CARLA once the backend is up
   bool recover_connect_ = false;  // after RestartBackend: reconnect and clear what the old one left
   bool backend_rejected_ = false;  // the backend on our port serves another GUI window: stop reconnecting
+  json carsim_service_ = json::object();  // remote: the CarSim service on this computer (backend's view)
   bool hello_ok_ = false;          // the backend answered this connection's hello (remote: an SSH tunnel
                                    // accepts a connection even while no backend listens behind it)
   json server_paths_ = json::object();  // remote: "path_status" answers, path -> {asked, pending, status}
@@ -339,6 +340,8 @@ bool ComboStr(const char* label, std::string& value, const std::vector<std::stri
               const std::vector<std::string>* shown = nullptr);
 std::string Fmt(const char* fmt, ...);
 bool Base64(const std::string& in, std::vector<unsigned char>& out);
+// A frame's pixels (RGB, w x h) from its raw "rgb" or its "jpeg" (remote GUI).
+bool FramePixels(const nlohmann::json& ev, std::vector<unsigned char>& px, int& w, int& h);
 // Element i of a JSON array as a number; `def` when missing, null (the backend
 // sends NaN / inf as null) or not a number. Never throws.
 inline double NumAt(const json& j, size_t i, double def = 0.0) {

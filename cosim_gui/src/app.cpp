@@ -146,13 +146,14 @@ std::string RunErrorNote(const std::string& why) { return "运行出错已停止
 
 // PROTOCOL of backend_server.py this GUI was built for (its "hello"): raise both
 // together whenever a command, event or config field the GUI relies on changes.
-constexpr int kBackendProtocol = 1;
+constexpr int kBackendProtocol = 2;
 
 const char* const kStoppingBackend = "正在停止后端（清理 CARLA 中的主车、传感器和交通）...";
 
 }  // namespace
 
 bool appui::Base64(const std::string& in, std::vector<unsigned char>& out) { return Base64Decode(in, out); }
+bool appui::FramePixels(const json& ev, std::vector<unsigned char>& px, int& w, int& h) { return ::FramePixels(ev, px, w, h); }
 
 struct TourStep {
   int panel;
@@ -429,6 +430,9 @@ void App::ConnectBackend(bool quiet) {
     if (ok && remote) {
       Log("已连接后端");
       LoadBackendDefaults();
+      be_.Request("carsim_service", json::object(), [this](bool ok2, const json& s, const std::string&) {
+        if (ok2) carsim_service_ = s;
+      });
     }
     // A lost connection fails it too; only an old backend does not know the command.
     if (!ok && err.find("未知命令") == std::string::npos) return;
@@ -1055,7 +1059,10 @@ void App::OnEvent(const json& ev) {
     }
     else
       Log("导出失败：" + ev.value("error", std::string()), "error");
+  } else if (type == "carsim_service") {
+    carsim_service_ = ev;
   } else if (type == "disconnected") {
+    carsim_service_ = json::object();
     starting_ = false;
     // Nothing the backend owned is valid any more: never stay "running" or busy.
     carla_connected_ = false;

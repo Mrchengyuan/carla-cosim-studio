@@ -229,11 +229,6 @@ void App::FrameBody() {
     recover_connect_ = false;
     ConnectCarla(true);
   }
-  // Remote: the CarSim service on this computer connects to the server by itself;
-  // keep its status on the CarSim page current (world_info).
-  if (Remote() && panel_ == kPanelCoSim && carla_connected_ && !Running() && busy_.empty() && be_.PendingCount() == 0 &&
-      frame_ % 120 == 0)
-    RefreshWorld();
   // A backend that hangs (a CARLA call that never returns) or died: say so,
   // with a way out, instead of a GUI that silently stops updating.
   if (!busy_task_.empty() && ImGui::GetTime() - busy_seen_ > 3.0) busy_task_.clear();  // finished since

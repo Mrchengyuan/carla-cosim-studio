@@ -1596,13 +1596,19 @@ class Backend:
             try:
                 # Not while paused: a paused run keeps the world where it is
                 # (and its collector would pile up sensor data meanwhile).
-                if self.idle_tick and self.cosim_state != "paused" and self.world.get_settings().synchronous_mode:
+                sync = self.world.get_settings().synchronous_mode
+                if self.idle_tick and self.cosim_state != "paused" and sync:
                     self.task = ("空闲时推进世界", time.time())
                     try:
                         self.world.tick()
                     finally:
                         self.task = None
                     time.sleep(self.frame_dt)
+                elif self.traffic["walkers"] and self.cosim_state != "paused" and not sync:
+                    # CARLA moves pedestrians in the client that spawned them, on its
+                    # world.tick() / wait_for_tick(): with an asynchronous world
+                    # nothing else here calls them, and the pedestrians stand still.
+                    self.world.wait_for_tick(2.0)
                 self._update_spectator()
             except RuntimeError as e:
                 if "time-out" in str(e):

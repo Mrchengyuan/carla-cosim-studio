@@ -55,7 +55,8 @@ CIRCLE = '''
 import json, os
 def control(exports, t, dt, scene):
     with open(os.environ["SCENE_TEST_LOG"] + ".circle", "a") as f:
-        f.write(json.dumps({"yaw": scene["ego"]["Yaw"], "Yaw": exports["Yaw"], "lane": scene.get("lane") is not None}) + "\\n")
+        f.write(json.dumps({"yaw": scene["ego"]["Yaw"], "Yaw": exports["Yaw"], "lane": scene.get("lane") is not None,
+                            "t": t, "scene_t": scene["t"], "frame": scene["frame"]}) + "\\n")
     return [0.25, 0.0, 300.0]
 '''
 
@@ -292,8 +293,10 @@ def main():
         circ = [json.loads(line) for line in open(log + ".circle")]
         dev = max(abs(x["yaw"] - x["Yaw"]) for x in circ)
         turn = max(abs(x["Yaw"]) for x in circ)
+        off = [x for x in circ if abs(x["yaw"] - x["Yaw"]) >= 0.5]  # which frames, if any (seen once, not reproduced)
         check("ego Yaw continuous like CarSim's", st["state"] == "finished" and turn > 360 and dev < 0.5,
-              "turned %.0f deg, max |ego Yaw - Yaw| %.3f" % (turn, dev))
+              "turned %.0f deg, max |ego Yaw - Yaw| %.3f%s"
+              % (turn, dev, "; %d frames off, first %s" % (len(off), off[:3]) if off else ""))
         check("off the road: lane is None", any(not x["lane"] for x in circ) and any(x["lane"] for x in circ),
               "%d of %d frames without a lane" % (sum(not x["lane"] for x in circ), len(circ)))
 

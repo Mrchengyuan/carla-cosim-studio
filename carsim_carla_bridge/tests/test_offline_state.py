@@ -509,5 +509,34 @@ class ConnectionTests(unittest.TestCase):
         self.assertEqual(p.returncode, 0)
 
 
+class IdlePedestrianTests(unittest.TestCase):
+    """CARLA 0.9.16 advances pedestrian navigation inside the client that spawned
+    them, on world.tick() / wait_for_tick(): an idle asynchronous backend must keep
+    calling wait_for_tick() or its pedestrians stand still."""
+
+    def backend(self, synchronous, walkers, state="stopped", idle_tick=False):
+        b = Backend()
+        calls = []
+        b.world = SimpleNamespace(
+            get_settings=lambda: SimpleNamespace(synchronous_mode=synchronous),
+            wait_for_tick=lambda timeout=None: calls.append("wait"),
+            tick=lambda: calls.append("tick"))
+        b.traffic["walkers"] = ["walker"] * walkers
+        b.cosim_state, b.idle_tick, b.frame_dt = state, idle_tick, 0.0
+        for name in ("_check_carla", "_check_ego", "_check_traffic", "_update_spectator"):
+            setattr(b, name, lambda *a, **k: None)
+        b._worker_iteration()
+        return calls
+
+    def test_async_idle_with_pedestrians_waits_for_ticks(self):
+        self.assertEqual(self.backend(False, 3), ["wait"])
+
+    def test_nothing_to_move_or_not_idle(self):
+        self.assertEqual(self.backend(False, 0), [])                 # no pedestrians
+        self.assertEqual(self.backend(False, 3, state="paused"), [])  # a paused run keeps the world still
+        self.assertEqual(self.backend(True, 3), [])                   # synchronous, idle tick off: frozen by choice
+        self.assertEqual(self.backend(True, 3, idle_tick=True), ["tick"])  # the idle tick moves them
+
+
 if __name__ == "__main__":
     unittest.main()

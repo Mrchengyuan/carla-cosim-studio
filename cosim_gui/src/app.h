@@ -301,6 +301,7 @@ class App {
   std::string click_target_;
   int click_phase_ = 0;
   int tour_mark_ = 0;               // value remembered by a tour step (e.g. the frame before a single step)
+  json tour_kept_;                  // what the tour's config steps change, put back after them
 
   friend struct UiAccess;
 };

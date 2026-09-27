@@ -53,6 +53,8 @@ bool ComboStr(const char* label, std::string& value, const std::vector<std::stri
   bool changed = false;
   size_t cur = static_cast<size_t>(std::find(items.begin(), items.end(), value) - items.begin());
   const char* preview = cur < items.size() ? (shown ? (*shown)[cur].c_str() : items[cur].c_str()) : value.c_str();
+  // Tour click targets: "combo:<label without ##>" and, while open, "combo:<label>:<item>".
+  const std::string target = std::string("combo:") + (std::string(label).rfind("##", 0) == 0 ? label + 2 : label);
   if (ImGui::BeginCombo(label, preview)) {
     for (size_t i = 0; i < items.size(); ++i) {
       const bool sel = (i == cur);
@@ -60,9 +62,12 @@ bool ComboStr(const char* label, std::string& value, const std::vector<std::stri
         value = items[i];
         changed = true;
       }
+      ui::RecordTarget(target + ":" + items[i]);
       if (sel) ImGui::SetItemDefaultFocus();
     }
     ImGui::EndCombo();
+  } else {
+    ui::RecordTarget(target);  // (while open, the last item is the popup)
   }
   return changed;
 }
@@ -950,6 +955,8 @@ void App::BuildTour() {
   fs::create_directories(fs::u8path(tour_dir_));
   auto idle = [this] { return busy_.empty() && be_.PendingCount() == 0; };
   const std::string ds = (fs::u8path(tour_dir_) / "tour_dataset").u8string();
+  const fs::path dir = fs::absolute(fs::u8path(tour_dir_));  // the backend resolves relative paths in its own folder
+  const std::string cfg_file = (dir / "tour_config.json").u8string(), bad_ctrl = (dir / "tour_bad_controller.py").u8string();
   tour_ = new std::vector<TourStep>{
       {kPanelConnect, [this] { ConnectBackend(); }, [this] { return be_.Connected(); }, ""},
       {kPanelConnect, [this] { ConnectCarla(); }, [this, idle] { return carla_connected_ && idle(); }, "01_connect"},
@@ -976,6 +983,15 @@ void App::BuildTour() {
       {kPanelView, [this] { click_target_ = "layout:1"; },
        [this, idle] { return idle() && view_layout_ == 1 && panes_[3].frames > 3; }, "05c_multiview_1p3"},
       {kPanelView, [this] { click_target_ = "layout:0"; }, [this, idle] { return idle() && view_layout_ == 0; }, ""},
+      // A rig camera picked on this page: its mount goes out in CarSim's vehicle frame (RigMount).
+      {kPanelView, [this] { click_target_ = "combo:rigcam"; }, [] { return ui::TargetShown("combo:rigcam:cam_front_left"); }, ""},
+      {kPanelView, [this] { click_target_ = "combo:rigcam:cam_front_left"; }, [this, idle] {
+         return idle() && view_rig_sensor_ == "cam_front_left" && view_rig_mount_.is_object() &&
+                view_rig_mount_.value("frame", std::string()) == "carsim" && view_rig_mount_.contains("ref") &&
+                views_pending_ == 0 && view_frames_ > 3;
+       }, "05d_rig_camera"},
+      {kPanelView, [this] { click_target_ = "view:wheel"; },
+       [this, idle] { return idle() && view_rig_sensor_.empty() && view_mode_ == "wheel" && views_pending_ == 0 && view_frames_ > 3; }, ""},
       {kPanelTraffic, [this] { traffic_vehicles_ = 12; traffic_walkers_ = 8; SpawnTraffic(); }, idle, "06_traffic"},
       {kPanelDrive, [this] {
          cfg_["drive"]["dynamics"] = "cosim";
@@ -1007,6 +1023,45 @@ void App::BuildTour() {
          cfg_["sync"]["duration"] = 0.0;  // stopped below with the toolbar button
          cfg_["run"]["log_path"] = "";
        }, idle, "08_cosim_config"},
+      // "默认" asks first: 取消 keeps the config, 恢复默认 resets it (vehicle and spawn point kept); then put it back.
+      {kPanelCoSim, [this] { tour_kept_["cfg"] = cfg_; click_target_ = "cfg:default"; },
+       [this] { return ui::TargetShown("reset:cancel") && cfg_ == tour_kept_["cfg"]; }, "08b_reset_ask"},
+      {kPanelCoSim, [this] { click_target_ = "reset:cancel"; },
+       [this, idle] { return idle() && click_target_.empty() && !ui::TargetShown("reset:cancel") && cfg_ == tour_kept_["cfg"]; }, ""},
+      {kPanelCoSim, [this] { click_target_ = "cfg:default"; }, [] { return ui::TargetShown("reset:ok"); }, ""},
+      {kPanelCoSim, [this] { click_target_ = "reset:ok"; }, [this, idle] {
+         return idle() && !ui::TargetShown("reset:ok") && !cfg_["carsim"].value("mock", true) &&
+                cfg_["run"]["controller"] == cfg_defaults_["run"]["controller"] &&
+                cfg_["carla"]["spawn_index"] == tour_kept_["cfg"]["carla"]["spawn_index"];
+       }, "08c_reset_done"},
+      {kPanelCoSim, [this] { cfg_ = tour_kept_["cfg"]; }, [this] { return cfg_ == tour_kept_["cfg"] && ui::TargetShown("保存*"); }, ""},
+      // Unsaved changes: "保存*" saves (into the tour folder) and loses its "*", a change brings it back and
+      // 文件 → 退出 asks; 保存并退出 that cannot save keeps the dialog open, 取消 closes it.
+      {kPanelCoSim, [this, cfg_file] {
+         tour_kept_["path"] = cfg_path_;
+         tour_kept_["last_config"] = prefs_.value("last_config", std::string());
+         cfg_path_ = cfg_file;
+         click_target_ = "保存*";
+       }, [this, cfg_file] {
+         return !ConfigDirty() && ui::TargetShown("保存") && !ui::TargetShown("保存*") && fs::exists(fs::u8path(cfg_file));
+       }, ""},
+      {kPanelCoSim, [this] { click_target_ = "cosim:mock"; },
+       [this] { return !cfg_["carsim"].value("mock", true) && ConfigDirty() && ui::TargetShown("保存*"); }, "08d_unsaved"},
+      {kPanelCoSim, [this] { click_target_ = "menu:文件"; }, [] { return ui::TargetShown("menu:退出"); }, ""},
+      {kPanelCoSim, [this] { if (ConfigDirty()) click_target_ = "menu:退出"; },  // (with nothing to save it quits)
+       [this] { return !quit_ && !ui::TargetShown("menu:退出") && ui::TargetShown("quit:cancel"); }, "08e_quit_ask"},
+      {kPanelCoSim, [this, dir] { cfg_path_ = (dir / "missing" / "tour_config.json").u8string(); click_target_ = "quit:save"; },
+       [this] { return !quit_ && ConfigDirty() && ui::TargetShown("quit:save_failed") && ui::TargetShown("quit:cancel"); },
+       "08f_quit_save_failed"},
+      {kPanelCoSim, [this] { click_target_ = "quit:cancel"; }, [this] {
+         return !quit_ && click_target_.empty() && !ui::TargetShown("quit:cancel") && ConfigDirty() && ui::TargetShown("保存*");
+       }, ""},
+      {kPanelCoSim, [this] {
+         cfg_path_ = tour_kept_["path"].get<std::string>();
+         prefs_["last_config"] = tour_kept_["last_config"];
+         SavePrefs();
+         click_target_ = "cosim:mock";
+       }, [this] { return cfg_["carsim"].value("mock", false) && !ConfigDirty() && ui::TargetShown("保存"); }, ""},
       {kPanelCollect, [this, ds] {
          cfg_["collect"]["enabled"] = false;
          cfg_["collect"]["out_dir"] = ds;
@@ -1028,12 +1083,34 @@ void App::BuildTour() {
       {kPanelScene, [this] { click_target_ = "scene:moving_only"; },
        [this] { return scene_moving_only_ && last_tel_.value("t", 0.0) > 6.5; }, "10c_scene_moving_only"},
       {kPanelDrive, [] {}, [this] { return run_state_ == "running" && last_tel_.value("t", 0.0) > 7.0; }, "11_running_drive"},
+      // A run keeps the config it started with: clicks on its settings change nothing, "默认" opens no dialog.
+      {kPanelDrive, [this] { click_target_ = "run:duration+"; }, [this] {
+         return Running() && click_target_.empty() && ui::TargetShown("run:duration+") && cfg_["sync"].value("duration", -1.0) == 0.0;
+       }, ""},
+      {kPanelCoSim, [this] { click_target_ = "cosim:mock"; }, [this] {
+         return Running() && click_target_.empty() && ui::TargetShown("cosim:mock") && cfg_["carsim"].value("mock", false);
+       }, "11a_running_locked"},
+      {kPanelCoSim, [this] { click_target_ = "cfg:default"; }, [this] {
+         return Running() && click_target_.empty() && ui::TargetShown("cfg:default") && !ui::TargetShown("reset:cancel");
+       }, ""},
       {kPanelDrive, [this] { click_target_ = "暂停"; }, [this] { return run_state_ == "paused"; }, ""},
       {kPanelDrive, [this] { tour_mark_ = last_tel_.value("frame", 0); click_target_ = "单步"; },
        [this] { return run_state_ == "paused" && last_tel_.value("frame", 0) == tour_mark_ + 1; }, ""},
       {kPanelDrive, [this] { click_target_ = "继续"; }, [this] { return run_state_ == "running"; }, ""},
       {kPanelDrive, [this] { click_target_ = "停止"; },
        [this] { return run_state_ == "stopped" && last_tel_.empty(); }, "11b_stopped"},
+      // A start that fails (the algorithm raises NameError on import): the banner says why, the output tab opens.
+      {kPanelDrive, [this, bad_ctrl] {
+         std::ofstream(fs::u8path(bad_ctrl)) << "x = undefined_name\n";
+         cfg_["run"]["controller"]["path"] = bad_ctrl;
+         log_open_ = false;
+       }, idle, ""},
+      {kPanelDrive, [this] { click_target_ = "运行"; }, [this, idle] {
+         return idle() && !Running() && run_note_.rfind("运行没有启动：", 0) == 0 && run_note_.find("NameError") != std::string::npos &&
+                ui::TargetShown("log:filter0");
+       }, "11c_start_failed"},
+      {kPanelDrive, [this] { cfg_["run"]["controller"]["path"] = "controllers/scene_controller.py"; click_target_ = "dock:scene"; },
+       [this] { return ui::TargetShown("scene:moving_only") && !ui::TargetShown("log:filter0"); }, ""},
       {kPanelDrive, [this] { click_target_ = "view:wheel"; },
        [this] { return view_on_ && view_mode_ == "wheel" && busy_.empty() && views_pending_ == 0 && view_frames_ > 3; }, ""},
       {kPanelDrive, [this] { click_target_ = "view:close"; }, [this] { return !view_on_; }, ""},

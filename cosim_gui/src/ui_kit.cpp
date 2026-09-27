@@ -386,8 +386,12 @@ void KpiTile(const char* label, const char* value, const char* unit, float width
 }
 
 namespace {
-std::map<std::string, ImVec2>& Targets() {
-  static std::map<std::string, ImVec2> t;
+struct Target {
+  ImVec2 center;
+  int frame;  // ImGui frame it was last recorded in
+};
+std::map<std::string, Target>& Targets() {
+  static std::map<std::string, Target> t;
   return t;
 }
 }  // namespace
@@ -398,9 +402,10 @@ std::string g_tour_target;
 
 void SetTourTarget(const std::string& name) { g_tour_target = name; }
 
-void RecordTarget(const std::string& name) {
-  const ImVec2 a = ImGui::GetItemRectMin(), b = ImGui::GetItemRectMax();
-  Targets()[name] = ImVec2((a.x + b.x) * 0.5f, (a.y + b.y) * 0.5f);
+void RecordTarget(const std::string& name) { RecordTarget(name, ImGui::GetItemRectMin(), ImGui::GetItemRectMax()); }
+
+void RecordTarget(const std::string& name, const ImVec2& a, const ImVec2& b) {
+  Targets()[name] = {ImVec2((a.x + b.x) * 0.5f, (a.y + b.y) * 0.5f), ImGui::GetFrameCount()};
   if (name == g_tour_target) {
     // Like a user scrolling to it: a target outside the visible part of its
     // window (small screens) would be clicked "through" something else.
@@ -417,8 +422,13 @@ void RecordTarget(const std::string& name) {
 bool FindTarget(const std::string& name, ImVec2* center) {
   auto it = Targets().find(name);
   if (it == Targets().end()) return false;
-  *center = it->second;
+  *center = it->second.center;
   return true;
+}
+
+bool TargetShown(const std::string& name) {
+  auto it = Targets().find(name);
+  return it != Targets().end() && it->second.frame >= ImGui::GetFrameCount() - 1;
 }
 
 bool FoldHeader(const char* icon, const char* title, bool default_open, bool force_open) {

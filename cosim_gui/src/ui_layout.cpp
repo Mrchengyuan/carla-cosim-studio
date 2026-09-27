@@ -343,7 +343,10 @@ void App::DrawMenuBar() {
     if (ImGui::MenuItem(ICON_FA_FOLDER_OPEN "  配置文件 ...")) { panel_ = kPanelCoSim; monitor_open_ = true; }
     ImGui::Separator();
     if (ImGui::MenuItem(ICON_FA_POWER_OFF "  退出")) AskQuit();
+    ui::RecordTarget("menu:退出");
     ImGui::EndMenu();
+  } else {
+    ui::RecordTarget("menu:文件");  // (while open, the menu is the current window)
   }
   if (ImGui::BeginMenu("仿真")) {
     const bool can_run = !Running() && carla_connected_ && busy_.empty();
@@ -425,7 +428,7 @@ void App::DrawAbout() {
 }
 
 void App::AskQuit() {
-  if (ConfigDirty() && tour_dir_.empty()) quit_ask_ = true;
+  if (ConfigDirty()) quit_ask_ = true;
   else quit_ = true;
 }
 
@@ -454,7 +457,10 @@ void App::DrawConfirmDialogs() {
     const std::string cfg = cfg_path_.empty() ? std::string("cosim_config.json") : cfg_path_;
     ImGui::TextUnformatted("配置有未保存的更改，退出前要保存吗？");
     ImGui::TextColored(p.text_dim, "保存到 %s", UserPath(cfg).c_str());
-    if (save_failed) ImGui::TextColored(p.danger, ICON_FA_TRIANGLE_EXCLAMATION "  保存失败，原因见底部“输出”");
+    if (save_failed) {
+      ImGui::TextColored(p.danger, ICON_FA_TRIANGLE_EXCLAMATION "  保存失败，原因见底部“输出”");
+      ui::RecordTarget("quit:save_failed");
+    }
     if (ui::Button(ICON_FA_FLOPPY_DISK, "保存并退出", ui::Kind::Primary, bsize)) {
       SaveConfig(cfg);
       save_failed = ConfigDirty();
@@ -463,6 +469,7 @@ void App::DrawConfirmDialogs() {
         ImGui::CloseCurrentPopup();
       }
     }
+    ui::RecordTarget("quit:save");
     ImGui::SameLine();
     if (ui::Button("", "不保存", ui::Kind::Danger, bsize)) {
       quit_ = true;
@@ -470,6 +477,7 @@ void App::DrawConfirmDialogs() {
     }
     ImGui::SameLine();
     if (ui::Button("", "取消", ui::Kind::Secondary, bsize)) ImGui::CloseCurrentPopup();
+    ui::RecordTarget("quit:cancel");
     ImGui::EndPopup();
   }
   ImGui::SetNextWindowPos(c, ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
@@ -488,9 +496,11 @@ void App::DrawConfirmDialogs() {
       });
       ImGui::CloseCurrentPopup();
     }
+    ui::RecordTarget("reset:ok");
     ImGui::EndDisabled();
     ImGui::SameLine();
     if (ui::Button("", "取消", ui::Kind::Secondary, bsize)) ImGui::CloseCurrentPopup();
+    ui::RecordTarget("reset:cancel");
     ImGui::EndPopup();
   }
   ImGui::PopStyleVar(2);
@@ -1583,6 +1593,7 @@ void App::DrawLogList(int warns, int errors) {
     if (i) ImGui::SameLine(0, 2);
     ImGui::PushStyleColor(ImGuiCol_Button, log_filter_ == i ? ui::WithAlpha(p.accent, 0.3f) : ImVec4(0, 0, 0, 0));
     if (ImGui::SmallButton(Fmt("%s %d##lf%d", names[i], counts[i], i).c_str())) log_filter_ = i;
+    ui::RecordTarget(Fmt("log:filter%d", i));
     ImGui::PopStyleColor();
   }
   ImGui::SameLine(0, fs);

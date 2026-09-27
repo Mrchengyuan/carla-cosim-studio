@@ -610,6 +610,8 @@ void App::DrawPanelDrive() {
   EditDouble(cfg_["sync"], "frame_dt", 0.005, "%.3f", 0.001, 0.1);
   ui::Row("运行时长 s", "0 = 直到点“停止”，或 CarSim 到达 .sim 的结束时间（默认）。设了时长，到时会自动结束并停车", fs * 8);
   EditDouble(cfg_["sync"], "duration", 1.0, "%.1f", 0.0, 1e6);
+  ui::RecordTarget("run:duration+", ImVec2(ImGui::GetItemRectMax().x - ImGui::GetFrameHeight(), ImGui::GetItemRectMin().y),
+                   ImGui::GetItemRectMax());  // its "+" button
   if (run_info_.contains("t_stop") && !run_info_.value("mock", true))
     ui::DimWrapped("上次运行：CarSim 结束时间 t = %.1f s，仿真步长 %g s（%d × t_step %g s）", run_info_.value("t_stop", 0.0),
                    run_info_.value("frame_dt", 0.0), run_info_.value("inner_steps", 0), run_info_.value("t_step", 0.0));
@@ -856,6 +858,7 @@ void App::DrawPanelCoSim() {
   bool mock = cs.value("mock", false);
   ui::Row("模拟 CarSim", "不需要 CarSim 许可证，用一个简单车辆模型代替，用来测试整条链路");
   if (ImGui::Checkbox("##mock", &mock)) cs["mock"] = mock;
+  ui::RecordTarget("cosim:mock");
   ImGui::BeginDisabled(mock);
   ui::Row(".sim 文件");
   EditString(cs, "sim_path");
@@ -995,6 +998,7 @@ void App::DrawPanelCoSim() {
   ImGui::SameLine();
   ImGui::BeginDisabled(Running());
   if (ui::Button(ICON_FA_ROTATE_LEFT, "默认")) reset_ask_ = true;  // resets every page: asks first
+  ui::RecordTarget("cfg:default");
   ImGui::EndDisabled();
   ui::DimWrapped("同一个 JSON 也能给命令行和强化学习训练用：python run_cosim.py --config <文件>");
   ui::EndCard();

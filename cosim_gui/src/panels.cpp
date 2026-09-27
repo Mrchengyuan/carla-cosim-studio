@@ -34,6 +34,9 @@ bool EditString(json& obj, const char* key) {
   return false;
 }
 
+// The check or cross line under a path field (ok: the file is there).
+void PathMark(bool ok, const std::string& resolved, const char* need = nullptr);
+
 // Under a path field the run needs: the path the backend will use (relative
 // paths are taken from its folder, see App::UserPath) with a check or a cross,
 // so a typo or an empty field shows before “运行”. need: the file that must be
@@ -53,6 +56,10 @@ void PathStatus(const std::string& resolved, const char* need = nullptr) {
     }
     ok = it->second.first;
   }
+  PathMark(ok, resolved, need);
+}
+
+void PathMark(bool ok, const std::string& resolved, const char* need) {
   const ui::Palette& p = ui::Colors();
   ImGui::SetCursorPosX(ui::LabelWidth());
   ImGui::TextColored(ok ? p.success : p.danger, "%s", ok ? ICON_FA_CIRCLE_CHECK : ICON_FA_CIRCLE_XMARK);
@@ -111,6 +118,35 @@ void KeyCap(const char* k, bool down) {
 
 }  // namespace
 
+// PathStatus for a file the backend reads (the control algorithm). With the
+// backend on a server (remote) it is checked there: "path_status", at most once
+// a second, relative paths from the bridge directory on the server.
+void App::BackendPathStatus(const std::string& path) {
+  if (!Remote()) {
+    PathStatus(UserPath(path));
+    return;
+  }
+  if (server_paths_.size() > 64) server_paths_ = json::object();
+  json& e = server_paths_[path];
+  const double now = ImGui::GetTime();
+  if (!path.empty() && be_.Connected() && !e.value("pending", false) && now - e.value("asked", -10.0) > 1.0) {
+    e["pending"] = true;
+    e["asked"] = now;
+    be_.Request("path_status", {{"paths", json::array({path})}}, [this, path](bool ok, const json& r, const std::string&) {
+      json& st = server_paths_[path];
+      st["pending"] = false;
+      if (ok && r.is_object() && r.contains(path) && r[path].is_object()) st["status"] = r[path];
+    });
+  }
+  if (!path.empty() && !e.contains("status")) {  // not answered yet: no mark
+    ImGui::SetCursorPosX(ui::LabelWidth());
+    ImGui::TextDisabled("%s", path.c_str());
+    return;
+  }
+  const json st = e.value("status", json::object());
+  PathMark(st.value("is_file", false), path.empty() ? path : st.value("resolved", path));
+}
+
 // --------------------------------------------------------------------------
 void App::DrawViewImage(float max_w, float max_h) {
   if (!view_tex_ || view_w_ <= 0 || view_h_ <= 0) {
@@ -161,28 +197,38 @@ void App::DrawPanelConnect() {
   ui::EndCard();
 
   ui::BeginCard(ICON_FA_TERMINAL, "Python 后端");
-  std::string py = prefs_.value("python", std::string());
-  ui::Row("Python 解释器", "装有 carla 包的 Python（Windows 上一般是 python 或虚拟环境里的 python.exe）");
-  if (InputStr("##py", py)) prefs_["python"] = py;
-  std::string dir = prefs_.value("backend_dir", std::string());
-  ui::Row("桥接目录", "carsim_carla_bridge 目录，里面有 backend_server.py");
-  if (InputStr("##dir", dir)) prefs_["backend_dir"] = dir;
+  // Remote: the backend runs on the server; nothing to start or stop here.
+  const bool remote = Remote();
+  if (remote) {
+    ui::DimWrapped("远程模式：后端、CARLA 和控制算法在云端服务器上运行，界面经启动脚本建立的 SSH 隧道连接下面的本机端口，断开后自动重连。");
+  } else {
+    std::string py = prefs_.value("python", std::string());
+    ui::Row("Python 解释器", "装有 carla 包的 Python（Windows 上一般是 python 或虚拟环境里的 python.exe）");
+    if (InputStr("##py", py)) prefs_["python"] = py;
+    std::string dir = prefs_.value("backend_dir", std::string());
+    ui::Row("桥接目录", "carsim_carla_bridge 目录，里面有 backend_server.py");
+    if (InputStr("##dir", dir)) prefs_["backend_dir"] = dir;
+  }
   int port = prefs_.value("backend_port", 57100);
   ui::Row("后端端口", nullptr, ImGui::GetFontSize() * 8);
   if (ImGui::InputInt("##bport", &port)) prefs_["backend_port"] = port;
-  bool autostart = prefs_.value("auto_start_backend", true);
-  ui::Row("自动启动");
-  if (ImGui::Checkbox("##auto", &autostart)) prefs_["auto_start_backend"] = autostart;
+  if (!remote) {
+    bool autostart = prefs_.value("auto_start_backend", true);
+    ui::Row("自动启动");
+    if (ImGui::Checkbox("##auto", &autostart)) prefs_["auto_start_backend"] = autostart;
+  }
   ImGui::SetCursorPosX(ImGui::GetCursorPosX() + ui::LabelWidth());
-  const bool alive = plat::IsAlive(backend_proc_);
-  ImGui::BeginDisabled(alive);
-  if (ui::Button(ICON_FA_PLAY, "启动后端")) StartBackend();
-  ImGui::EndDisabled();
-  ImGui::SameLine();
-  ImGui::BeginDisabled(!alive && !be_.Connected());
-  if (ui::Button(ICON_FA_STOP, "停止后端")) StopBackend();
-  ImGui::EndDisabled();
-  ImGui::SameLine();
+  if (!remote) {
+    const bool alive = plat::IsAlive(backend_proc_);
+    ImGui::BeginDisabled(alive);
+    if (ui::Button(ICON_FA_PLAY, "启动后端")) StartBackend();
+    ImGui::EndDisabled();
+    ImGui::SameLine();
+    ImGui::BeginDisabled(!alive && !be_.Connected());
+    if (ui::Button(ICON_FA_STOP, "停止后端")) StopBackend();
+    ImGui::EndDisabled();
+    ImGui::SameLine();
+  }
   if (ui::Button(ICON_FA_FLOPPY_DISK, "保存设置")) SavePrefs();
   ui::EndCard();
 }
@@ -559,7 +605,7 @@ void App::DrawPanelDrive() {
       ImGui::BeginDisabled(Running());  // a run keeps the algorithm it started with
       ui::Row("算法文件 .py", "相对路径以 carsim_carla_bridge 目录为准。每次点“运行”都会重新加载，改完代码直接再点运行", fs * 30);
       EditString(ctl, "path");
-      PathStatus(UserPath(ctl.value("path", std::string())));
+      BackendPathStatus(ctl.value("path", std::string()));
       ui::Row("入口", "文件里的类名（带 control 方法）或函数名", fs * 8);
       EditString(ctl, "entry");
       ImGui::EndDisabled();
@@ -896,12 +942,35 @@ void App::DrawPanelCoSim() {
   ui::Row("模拟 CarSim", "不需要 CarSim 许可证，用一个简单车辆模型代替，用来测试整条链路");
   if (ImGui::Checkbox("##mock", &mock)) cs["mock"] = mock;
   ui::RecordTarget("cosim:mock");
+  // Remote: real CarSim runs in the CarSim service on this computer, connected to
+  // the server's backend; the two paths below are this computer's (checked here).
+  const bool service = Remote() && !mock;
+  if (service) {
+    const json svc = world_.value("carsim_service", json::object());  // (an older backend has none)
+    const bool up = svc.is_object() && svc.value("connected", false);
+    ImGui::PushStyleColor(ImGuiCol_Text, up ? p.success : carla_connected_ ? p.danger : p.text_dim);
+    if (up)
+      ImGui::TextWrapped(ICON_FA_CIRCLE_CHECK "  Windows 上的 CarSim 服务：已连接（%s）", svc.value("host", std::string()).c_str());
+    else if (carla_connected_)
+      ImGui::TextWrapped(ICON_FA_CIRCLE_XMARK "  Windows 上的 CarSim 服务：未连接 — 请双击启动脚本");
+    else
+      ImGui::TextWrapped(ICON_FA_CIRCLE_INFO "  Windows 上的 CarSim 服务：连接 CARLA 后显示是否已连接");
+    ImGui::PopStyleColor();
+    ui::RecordTarget("cosim:service");
+  }
+  auto here = [&] {
+    if (!service) return;
+    ImGui::SetCursorPosX(ui::LabelWidth());
+    ImGui::TextColored(p.text_dim, "（这台 Windows 电脑上的路径）");
+  };
   ImGui::BeginDisabled(mock);
   ui::Row(".sim 文件");
   EditString(cs, "sim_path");
+  here();
   if (!mock) PathStatus(UserPath(cs.value("sim_path", std::string())));
   ui::Row("python_carsim_env 目录");
   EditString(cs, "repo_path");
+  here();
   if (!mock) PathStatus(UserPath(cs.value("repo_path", std::string())), "carsim_env.py");
   ImGui::EndDisabled();
   ui::EndCard();

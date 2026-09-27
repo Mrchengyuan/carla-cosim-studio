@@ -43,13 +43,14 @@ add_executable(carla_cosim_studio
   src/rig_editor.cpp
   src/dataset_browser.cpp
   src/backend_client.cpp
-  src/platform.cpp)
+  src/platform.cpp
+  src/jpeg_decode.cpp)
 target_compile_definitions(carla_cosim_studio PRIVATE COSIM_FONT_DIR="${TP}/fonts")
 # Ship the icon font next to the executable so the build folder is portable.
 add_custom_command(TARGET carla_cosim_studio POST_BUILD
   COMMAND ${CMAKE_COMMAND} -E make_directory $<TARGET_FILE_DIR:carla_cosim_studio>/fonts
   COMMAND ${CMAKE_COMMAND} -E copy_if_different ${TP}/fonts/fa-solid-900.ttf $<TARGET_FILE_DIR:carla_cosim_studio>/fonts/)
-target_include_directories(carla_cosim_studio PRIVATE src ${TP}/json)
+target_include_directories(carla_cosim_studio PRIVATE src ${TP}/json ${TP}/stb)
 target_link_libraries(carla_cosim_studio PRIVATE imgui Threads::Threads)
 if(WIN32)
   target_link_libraries(carla_cosim_studio PRIVATE ws2_32)

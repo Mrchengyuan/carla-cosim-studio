@@ -44,7 +44,7 @@
 
 ## 编译
 
-依赖库（Dear ImGui 1.91.8、GLFW 3.4、nlohmann/json 3.11.3）已经放在 `third_party/` 里，**编译不需要联网**。
+依赖库（Dear ImGui 1.91.8、GLFW 3.4、nlohmann/json 3.11.3、stb_image 2.30（只用它解码远程模式的 JPEG 画面））已经放在 `third_party/` 里，**编译不需要联网**。
 
 ### Windows（VS 2022）
 ```bat

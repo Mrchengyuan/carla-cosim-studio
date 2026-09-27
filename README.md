@@ -165,7 +165,7 @@ git clone https://github.com/Mrchengyuan/python_carsim_env
 
 | 目录 | 内容 |
 |---|---|
-| `cosim_gui/` | 图形界面源码，依赖（ImGui、ImPlot、GLFW、json、Font Awesome）已放在 `third_party/`，编译不需要联网 |
+| `cosim_gui/` | 图形界面源码，依赖（ImGui、ImPlot、GLFW、json、stb_image、Font Awesome）已放在 `third_party/`，编译不需要联网 |
 | `carsim_carla_bridge/` | Python 后端、CarSim 桥接、驾驶模式、数据采集、测试和文档 |
 | `carla_patches/` | CARLA 0.9.16 补丁（改版 CARLA 就是官方源码打上它们编译出来的）：外部动力学接口（含 CARLA 自身错误的修复）；Python 包等待服务器时释放全局锁；Linux 编译用的 libpng 地址修复 |
 | `scripts/` | Ubuntu：`build_ue4.sh`、`build_carla.sh`、`carla_server.sh`、`carla_mod_server.sh`、`start_studio.sh`、`stop_carla.sh`、`install_desktop_icons.sh`，以及它们共用的 `env.sh`（路径、端口）和 `carla_stop_lib.sh`（关闭 CARLA）；`scripts/windows/`：`start_studio.bat`、`stop_carla.bat`、`install_shortcuts.bat`、`env.bat` |
@@ -296,6 +296,7 @@ python run_cosim.py --mock --duration 20                                        
 | `tests/test_algoerr_carla.py` | 经过界面后端在 CARLA 上：启动失败说明原因（界面横幅）、没勾选的场景键指向“场景信息”页、`control()` 里 `sys.exit()`、辅助文件出错给出两处行号、与已载入模块同名的文件（config.py）被拒绝、子目录里的辅助文件重新载入、`control()` 慢时 busy 心跳指向用户代码行而不是 CARLA 卡住 | 10/10（原版 CARLA 两种包、改版 CARLA） |
 | `tests/test_offline_guimisc.py` | 不需要 CARLA：界面与后端协议版本一致（`hello`）、卡住的后端由套接字线程打印全部线程调用栈（Windows 没有 SIGUSR1）、`world_info` 报告自动驾驶试开、界面的平台代码（连接超时、结束后端进程、退出原因；另用 MinGW 编译 Windows 版） | 7/7（其中 C++ 14/14） |
 | `tests/test_guimisc_carla.py` | 在 CARLA 上经过界面后端：版本一致、运行后自动驾驶试开已取消、运行中打印调用栈不用等工作线程、停止后端时清理主车 | 10/10（原版 CARLA 两种包、改版 CARLA） |
+| `tests/test_offline_remote_gui.py` | 不需要 CARLA：远程模式里界面要后端做的事：界面的 `hello` 要 JPEG 时实时画面按 JPEG（Pillow，质量 80）发送（解码回来尺寸相同、像素几乎相同、字节少得多），其他界面照旧收原始 RGB；`path_status` 在后端所在的电脑上检查路径（相对路径和运行时一样以桥接目录为准），在数据线程处理；`restart_backend` 由套接字线程回答，把各线程调用栈写进日志后以退出码 3 结束后端（真实的后端进程，工作线程忙时也一样）。另用系统的 C++ 编译器编译运行界面的 JPEG 解码 `cosim_gui/tests/jpeg_decode_test.cpp`（stb_image：解码后端的画面，坏帧被拒绝；没有编译器时跳过） | 6/6（其中 C++ 7/7） |
 | `tests/test_offline_algoout.py` | 不需要 CARLA：控制算法加载时、`control()` 和 `finish()` 里 print / stderr / logging / 警告的内容交给界面（级别 algo），同时照样写进 backend.log；后端其他线程的输出不算算法的；每秒最多 20 行，多出的给出“（省略 N 行）”，没人取时也不无限增长；没换行的输出在调用结束时显示、超长的行截断；出错时列出算法自己文件里的调用栈（外层在前，含引起它的异常，库和后端的帧不列，递归太深时省略中间），`sys.exit`、加载时出错、语法错误也有，后端自己报的错没有；`control()` 耗时不含准备 scene 的时间，遥测给出本帧 / 最长，运行结束给出次数、平均、最长；测试用驾驶方式没有耗时；运行出错、启动失败时先显示算法的输出和调用栈再报错 | 23/23 |
 | `tests/test_algoout_carla.py` | 经过界面后端在 CARLA 上（模拟 CarSim）：算法加载时和每帧 print 的内容以 algo 级别到界面、一次输出太多时每秒只给 20 行并说明省略了多少、backend.log 里有全部；遥测里的 `ctrl_ms` / `ctrl_ms_max`、运行结束的“算法耗时”；辅助文件里出错时先给出自己文件的调用栈再报错；启动失败时也先给出 print 的内容和出错位置；测试用驾驶方式没有算法耗时 | 12/12（原版 CARLA 两种包、改版 CARLA） |
 | `tests/test_all_vehicles.py` | 41 种车型（含自行车、摩托车、6 轮卡车、巴士）逐一当主车做联合仿真，CARLA 服务器不能崩 | 41/41（原版 CARLA 两种包、改版 CARLA） |
@@ -356,4 +357,4 @@ CARLA 0.9.16（2025 年 9 月）是 CARLA 目前最新的正式版本；0.10.0�
 
 ## 致谢
 
-[python_carsim_env](https://github.com/dyZhou2001/python_carsim_env)（CarSim 接口，原作者 [dyZhou2001](https://github.com/dyZhou2001)）· [CARLA](https://github.com/carla-simulator/carla) · [Dear ImGui](https://github.com/ocornut/imgui) · [ImPlot](https://github.com/epezent/implot) · [GLFW](https://github.com/glfw/glfw) · [nlohmann/json](https://github.com/nlohmann/json) · [Font Awesome](https://fontawesome.com)
+[python_carsim_env](https://github.com/dyZhou2001/python_carsim_env)（CarSim 接口，原作者 [dyZhou2001](https://github.com/dyZhou2001)）· [CARLA](https://github.com/carla-simulator/carla) · [Dear ImGui](https://github.com/ocornut/imgui) · [ImPlot](https://github.com/epezent/implot) · [GLFW](https://github.com/glfw/glfw) · [nlohmann/json](https://github.com/nlohmann/json) · [stb_image](https://github.com/nothings/stb) · [Font Awesome](https://fontawesome.com)

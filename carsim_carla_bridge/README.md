@@ -40,7 +40,7 @@ python run_cosim.py --mock --duration 20 --record out/      # 不需要 CarSim�
 python run_cosim.py --sim C:\CarSim\simfile.sim --carsim-repo ..\python_carsim_env
 python run_cosim.py --sim C:\CarSim\simfile.sim --controller controllers\my_controller.py # 你的控制算法（写法见 controllers\example_controller.py）
 ```
-常用参数：`--frame-dt 0.02`（CARLA 帧周期，最好是 CarSim `t_step` 的整数倍）、
+常用参数：`--frame-dt 0.02`（CARLA 帧周期，最好是 CarSim `t_step` 的整数倍，不是时自动对齐）、
 `--spawn-index`（把 CarSim 原点放在哪个 spawn point）、`--vehicle`（CARLA 车型）。
 `--no-external-api` 强制使用原版 CARLA 的退化模式。
 

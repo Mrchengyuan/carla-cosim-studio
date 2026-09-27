@@ -55,6 +55,10 @@ def anchor_frame(world_map, a):
     return AnchorFrame((a.location.x, a.location.y, z), a.rotation.yaw, a.rotation.pitch, a.rotation.roll)
 
 
+# Exports the pose needs; the others (speeds, wheel spin, jounce ...) are optional.
+REQUIRED_EXPORTS = ("Xo", "Yo", "Zo", "Yaw", "Pitch", "Roll", "Steer_L1", "Steer_R1")
+
+
 class CarSimExports:
     """Name-based access to the CarSim export vector, in SI + degrees."""
 
@@ -66,8 +70,7 @@ class CarSimExports:
         self._rate = 1.0 if units["rate"] == "deg/s" else math.degrees(1.0)
         self._spin = RPM_TO_DEGS if units["wheel_spin"] == "rpm" else math.degrees(1.0)
         self._jounce = 1e-3 if units.get("jounce", "mm") == "mm" else 1.0
-        missing = [n for n in ("Xo", "Yo", "Zo", "Yaw", "Pitch", "Roll", "Steer_L1", "Steer_R1")
-                   if n not in self.index]
+        missing = [n for n in REQUIRED_EXPORTS if n not in self.index]
         if missing:
             raise ValueError("EXPORT_NAMES is missing required CarSim variables: %s" % missing)
 

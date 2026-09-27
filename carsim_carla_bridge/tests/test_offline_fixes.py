@@ -135,7 +135,7 @@ class BackendStartupTests(unittest.TestCase):
 
         backend._restore_ego = restore
         with self.assertRaisesRegex(RuntimeError, "sensor failed"):
-            backend.cmd_cosim_start()
+            backend.cmd_cosim_start({"carsim": {"mock": True}, "run": {"driver": "demo"}})  # passes the file checks
         self.assertIs(backend.ego, old)
         self.assertEqual(restored[0][0], ("vehicle.test", "old transform", "old anchor"))
         self.assertEqual(restored[0][2], [{"type": "rgb"}])

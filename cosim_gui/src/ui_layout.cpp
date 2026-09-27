@@ -435,7 +435,12 @@ void App::DrawToolbar() {
   // Right: simulation clock, like an instrument panel.
   const bool have = !last_tel_.empty() && Running();
   ImFont* mono = ui::GetFonts().mono ? ui::GetFonts().mono : ImGui::GetFont();
-  const float box_w = fs * 29.5f;
+  // Mock CarSim is a toy model: say so where the run is watched, not only on its page.
+  const bool mock = cfg_.contains("carsim") && cfg_["carsim"].value("mock", false) && cfg_.contains("drive") &&
+                    cfg_["drive"].value("dynamics", std::string("cosim")) == "cosim";
+  const char* kMock = "模拟 CarSim";
+  const float mock_tw = ImGui::GetFont()->CalcTextSizeA(fs * 0.82f, 1e9f, 0, kMock).x;
+  const float box_w = fs * 29.5f + (mock ? mock_tw + fs * 1.6f : 0.0f);
   const float right = ImGui::GetWindowContentRegionMax().x;
   ImGui::SameLine(std::max(ImGui::GetCursorPosX() + fs, right - box_w));
   const ImVec2 bp = ImGui::GetCursorScreenPos();
@@ -466,10 +471,21 @@ void App::DrawToolbar() {
     x += w;
   };
   const int nf = last_tel_.value("n_frames", 0);
-  const double dur = nf > 0 ? nf * cfg_["sync"].value("frame_dt", 0.02) : 0.0;
+  // Duration set: its end; otherwise real CarSim ends at the .sim's t_stop.
+  const double dur = nf > 0 ? nf * run_info_.value("frame_dt", cfg_["sync"].value("frame_dt", 0.02))
+                     : run_info_.value("mock", true) ? 0.0 : run_info_.value("t_stop", 0.0);
   field("时间", have ? Fmt("%.2f", last_tel_.value("t", 0.0)) : std::string("-"), "s", fs * 8.0f);
   field("车速", have ? Fmt("%.1f", last_tel_.value("speed_kmh", 0.0)) : std::string("-"), "km/h", fs * 9.0f);
   field("实时", have ? Fmt("%.2f", last_tel_.value("rt_factor", 0.0)) : std::string("-"), "x", fs * 6.8f);
+  if (mock) {
+    const float ls = fs * 0.82f;
+    const ImVec2 a(x - fs * 0.1f, cy - ls * 0.5f - fs * 0.22f), b(a.x + mock_tw + fs, cy + ls * 0.5f + fs * 0.22f);
+    dl->AddRectFilled(a, b, ImGui::GetColorU32(ui::WithAlpha(p.warning, 0.15f)), 3.0f);
+    dl->AddRect(a, b, ImGui::GetColorU32(ui::WithAlpha(p.warning, 0.55f)), 3.0f);
+    dl->AddText(ImGui::GetFont(), ls, ImVec2(a.x + fs * 0.5f, cy - ls * 0.5f), ImGui::GetColorU32(p.warning), kMock);
+    if (ImGui::IsMouseHoveringRect(a, b))
+      ImGui::SetTooltip("用的是内置的简单车辆模型，不是 CarSim。在“CarSim 动力学”页取消“模拟 CarSim”即用真实 CarSim");
+  }
   if (have && dur > 0) {
     const float frac = static_cast<float>(std::min(1.0, last_tel_.value("t", 0.0) / dur));
     dl->AddRectFilled(ImVec2(bp.x + 1, bp.y + bh - 3), ImVec2(bp.x + 1 + (bw - 2) * frac, bp.y + bh - 1),
@@ -497,6 +513,7 @@ void App::DrawNav() {
       case kPanelVehicle: return cfg_.contains("carla") ? ShortName(cfg_["carla"].value("vehicle", std::string())) : "";
       case kPanelRig: return Fmt("%d", static_cast<int>(RigSensors().size()));
       case kPanelDrive: return cosim ? "CarSim" : "CARLA";
+      case kPanelCoSim: return cosim && cfg_.contains("carsim") && cfg_["carsim"].value("mock", false) ? "模拟" : "";
       case kPanelScene: {
         const std::string c = cfg_.contains("scene") ? cfg_["scene"].value("collision", std::string("log")) : "";
         return c == "stop" ? "撞停" : c == "log" ? "记录" : c == "off" ? "" : "";
@@ -554,7 +571,7 @@ void App::DrawNav() {
           const float bx = std::max(nx, pos.x + w - bw - fs * 0.7f);
           if (bx + bw < pos.x + w - 2) {
             const ImVec4 bc = it.panel == kPanelConnect ? (carla_connected_ ? p.success : p.danger)
-                            : it.panel == kPanelRecorder ? p.danger : p.text_dim;
+                            : it.panel == kPanelRecorder ? p.danger : it.panel == kPanelCoSim ? p.warning : p.text_dim;
             dl->AddText(ImGui::GetFont(), bs, ImVec2(bx, pos.y + (row_h - bs) * 0.5f), ImGui::GetColorU32(bc), b.c_str());
           }
         }

@@ -2,7 +2,8 @@
 
 Each CARLA frame (fixed_delta_seconds = frame_dt):
   1. controller computes [throttle, brake, steering_wheel_deg]
-  2. CarSim integrates frame_dt / t_step solver steps (control_step)
+  2. CarSim integrates frame_dt / t_step solver steps (control_step; frame_dt
+     is aligned to a whole number of t_step)
   3. bridge pushes the resulting state to the CARLA vehicle
   4. world.tick() renders the frame / runs the sensors
 CARLA runs in synchronous mode, so both simulators share one clock.
@@ -81,12 +82,15 @@ def main():
         world.apply_settings(s)
         for _ in range(30):
             world.tick()
+        req_dt = d["sync"]["frame_dt"]
         info = session.start()
         print("external-dynamics API:", "yes (modified CARLA)" if info["external_api"] else "no (stock fallback)")
         print("CarSim reference point in vehicle frame [m]:", info["reference_point"])
-        if info["clock_warning"]:
-            print("warning: frame_dt is not a multiple of CarSim t_step; clocks will drift")
+        if abs(info.get("frame_dt", req_dt) - req_dt) > 1e-9:
+            print("frame_dt %g s -> %g s (a whole number of CarSim t_step)" % (req_dt, info["frame_dt"]))
         print("CarSim t_step=%g s, %d solver steps per CARLA frame" % (info["t_step"], info["inner_steps"]))
+        for w in info.get("warnings", []):
+            print("warning:", w)
         tel = None
         while not session.done:
             tel = session.step()

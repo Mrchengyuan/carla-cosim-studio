@@ -4,6 +4,7 @@ Shared by run_cosim.py (CLI loop) and backend_server.py (GUI backend), so
 both run exactly the same code path.
 """
 
+import ctypes
 import importlib.util
 import inspect
 import math
@@ -16,7 +17,7 @@ import carla
 
 import rig as rigmod
 import settings as st
-from bridge import CarlaVehicleSync, front_axle_local
+from bridge import REQUIRED_EXPORTS, CarlaVehicleSync, front_axle_local
 from drivers import ManualDriver, RouteFollower
 from scene import Recorder, SceneProvider, gui_view
 
@@ -29,15 +30,19 @@ def demo_driver(t):
     return [0.0 if brake else throttle, brake, steer_sw]
 
 
-def make_env(d):
-    c = d["carsim"]
-    if c["mock"]:
-        from mock_carsim import MockCarSimEnv
-        dur = d["sync"]["duration"]
-        return MockCarSimEnv(c["export_names"], t_stop=dur + 1.0 if dur > 0 else 1e9)
-    if not c["sim_path"]:
-        raise ValueError("CarSim .sim file not set (carsim.sim_path)")
-    repo = os.path.abspath(c["repo_path"])
+# Longest CARLA frame: PhysX substeps cover at most 10 x 0.01 s per frame.
+MAX_FRAME_DT = 0.1
+# What python_carsim_env's get_api reads from the solver (a missing one is a
+# bare AttributeError there).
+_VS_API = ("vs_run", "vs_initialize", "vs_read_configuration", "vs_integrate_io", "vs_copy_export_vars",
+           "vs_terminate_run", "vs_error_occurred", "vs_set_opt_error_dialog", "vs_get_error_message", "vs_road_l")
+
+
+def _carsim_module(repo_path):
+    """carsim_env (and its vs_solver) from the configured python_carsim_env folder."""
+    repo = os.path.abspath(repo_path)
+    if not os.path.isfile(os.path.join(repo, "carsim_env.py")):
+        raise ValueError("python_carsim_env 目录不对：%s 里没有 carsim_env.py（“CarSim 动力学”页）" % repo)
     if repo in sys.path:
         sys.path.remove(repo)
     sys.path.insert(0, repo)
@@ -46,8 +51,140 @@ def make_env(d):
     if old is not None and os.path.dirname(os.path.abspath(getattr(old, "__file__", ""))) != repo:
         for m in ("carsim_env", "vs_solver"):
             sys.modules.pop(m, None)
-    from carsim_env import CarSimEnv
-    return CarSimEnv(c["sim_path"])
+    import carsim_env
+    return carsim_env
+
+
+def check_carsim(d):
+    """The .sim, python_carsim_env and the solver the .sim names, checked in
+    plain words: python_carsim_env reports these as a bare TypeError,
+    AttributeError or ModuleNotFoundError. Returns (.sim path, carsim_env)."""
+    c = d["carsim"]
+    if not c["sim_path"]:
+        raise ValueError("没有设置 CarSim .sim 文件（“CarSim 动力学”页；没有 CarSim 时可勾选“模拟 CarSim”）")
+    sim = os.path.abspath(c["sim_path"])
+    if not os.path.isfile(sim):
+        raise ValueError(("CarSim .sim 文件填的是目录：%s" if os.path.isdir(sim) else "CarSim .sim 文件不存在：%s") % sim)
+    with open(sim, "rb") as f:
+        lines = [ln.strip() for ln in f.read(1 << 20).decode("latin-1").splitlines()]
+    lib_key = "SOFILE" if sys.platform == "linux" else "DLLFILE"  # as vs_solver.get_dll_path
+
+    def value(key):
+        return next((ln[len(key):].strip() for ln in lines if ln.startswith(key)), None)
+    if value("VEHICLE_CODE") is None or (value("PROGDIR") is None and value(lib_key) is None):
+        raise ValueError("%s 不是 CarSim 生成的 .sim 文件（里面没有 VEHICLE_CODE / PROGDIR）；"
+                         "请选 CarSim 生成的 simfile.sim，不是 .par / .cpar 等其他文件" % sim)
+    carsim_env = _carsim_module(c["repo_path"])
+    try:
+        dll = importlib.import_module("vs_solver").vs_solver().get_dll_path(sim)
+    except Exception as e:
+        raise ValueError("读不了 .sim 文件 %s：%s: %s" % (sim, type(e).__name__, e))
+    if not dll or not os.path.isfile(dll):
+        rel = [v for v in (value("PROGDIR"), value(lib_key)) if v and not os.path.isabs(v)]
+        raise ValueError("找不到 CarSim 求解器：%s（由 .sim 里的 PROGDIR / %s 得出%s）" % (
+            dll, lib_key, "；其中的相对路径 %s 是按后端的工作目录 %s 解析的，请在 .sim 里写绝对路径"
+            % (" ".join(rel), os.getcwd()) if rel else ""))
+    try:
+        lib = ctypes.CDLL(dll)
+    except OSError as e:
+        # python_carsim_env retries with ctypes.WinDLL, which Linux does not
+        # have: the loader's own reason would be lost.
+        raise RuntimeError("无法加载 CarSim 求解器 %s：%s（Python 是 %d 位，求解器要同样位数，例如 carsim_64.dll；"
+                           "求解器依赖的 CarSim 安装文件也要在）" % (dll, e, 8 * ctypes.sizeof(ctypes.c_void_p)))
+    missing = [n for n in _VS_API if not hasattr(lib, n)]
+    if missing:
+        raise RuntimeError("CarSim 求解器 %s 缺少 python_carsim_env 要用的函数：%s（选错了 DLL，或求解器版本不对）"
+                           % (dll, "、".join(missing)))
+    return sim, carsim_env
+
+
+def check_run_config(d):
+    """Refuse a run config in plain words before anything in the world changes."""
+    s = d["sync"]
+    try:
+        s["frame_dt"] = float(s["frame_dt"])
+    except (TypeError, ValueError):
+        raise ValueError("仿真步长不是数字：%r" % (s["frame_dt"],))
+    if not 0 < s["frame_dt"] <= MAX_FRAME_DT:
+        raise ValueError("仿真步长 %g s 超出范围：要大于 0、不超过 %g s（CARLA 的物理每帧最多算 %g s）"
+                         % (s["frame_dt"], MAX_FRAME_DT, MAX_FRAME_DT))
+    dyn = d["drive"]["dynamics"]
+    if dyn == "carla":
+        if d["drive"]["carla_driver"] not in ("route", "autopilot", "manual"):
+            raise ValueError("未知的驾驶方式 %r（CARLA 物理下可选 route、autopilot、manual）" % d["drive"]["carla_driver"])
+        return
+    if dyn != "cosim":
+        raise ValueError("未知的动力学 %r（可选 cosim = CarSim 联合仿真、carla = CARLA 物理）" % dyn)
+    if d["run"]["driver"] not in ("custom", "demo", "route", "manual"):
+        raise ValueError("未知的驾驶方式 %r（CarSim 联合仿真下可选 custom、demo、route、manual）" % d["run"]["driver"])
+    missing = [n for n in REQUIRED_EXPORTS if n not in d["carsim"]["export_names"]]
+    if missing:
+        raise ValueError("导出变量里缺少必需的 %s（“CarSim 动力学”页）" % "、".join(missing))
+
+
+def check_run_files(d):
+    """The files a CarSim run needs, checked before the world changes (a
+    start that fails later has already respawned the ego)."""
+    if d["drive"]["dynamics"] != "cosim":
+        return
+    if d["run"]["driver"] == "custom":
+        path = os.path.abspath(d["run"]["controller"]["path"])
+        if not os.path.isfile(path):
+            raise ValueError("控制算法文件不存在：%s" % path)
+    if not d["carsim"]["mock"]:
+        check_carsim(d)
+
+
+def make_env(d):
+    c = d["carsim"]
+    if c["mock"]:
+        from mock_carsim import MockCarSimEnv
+        dur = d["sync"]["duration"]
+        return MockCarSimEnv(c["export_names"], t_stop=dur + 1.0 if dur > 0 else 1e9)
+    sim, carsim_env = check_carsim(d)
+    try:
+        return carsim_env.CarSimEnv(sim)
+    except Exception as e:
+        raise RuntimeError("加载 CarSim 失败：%s: %s" % (type(e).__name__, e)) from e
+
+
+def _vs_error(env):
+    """The CarSim solver's own error message; '' without one (and for the mock)."""
+    dll = getattr(getattr(env, "solver", None), "dll_handle", None)
+    try:
+        if dll is None or not dll.vs_error_occurred():
+            return ""
+        raw = dll.vs_get_error_message()
+        return raw.decode("mbcs" if os.name == "nt" else "utf-8", errors="replace").strip() if raw else ""
+    except Exception:
+        return ""
+
+
+def _reset_failed(env, err=None):
+    """Why CarSim could not start the run: the solver's own message, else what python_carsim_env saw."""
+    cfg = env.config if isinstance(getattr(env, "config", None), dict) else {}
+    why = _vs_error(env)
+    if not why and cfg and not (cfg.get("n_import", 0) > 0 and cfg.get("n_export", 0) > 0):
+        why = "没有读出导入 / 导出变量（导入 %s 个、导出 %s 个）" % (cfg.get("n_import"), cfg.get("n_export"))
+    elif not why:
+        why = "%s: %s" % (type(err).__name__, err)
+    sim = str(getattr(env, "sim_path", ""))
+    return ("CarSim 没能开始这次运行：%s。常见原因：CarSim 许可证不可用；.sim 引用的数据文件路径不对；"
+            ".sim 里没有设导入 / 导出变量%s" % (
+                why, "；路径 %s 里有中文等非 ASCII 字符，CarSim 求解器可能读不到" % sim if not sim.isascii() else ""))
+
+
+def reset_env(env):
+    """env.reset() with CarSim's own reason when the .sim cannot run:
+    python_carsim_env never asks the solver and only says that the import /
+    export counts are invalid."""
+    try:
+        obs = env.reset()
+    except Exception as e:
+        raise RuntimeError(_reset_failed(env, e)) from e
+    if _vs_error(env):
+        raise RuntimeError(_reset_failed(env))
+    return obs
 
 
 def make_driver(d, ex, n_imports=None, scene=None):
@@ -225,6 +362,25 @@ def scene_step(ses, world_frame, t, ego_velocity=None):
     return {"scene": gv, "collisions": new}
 
 
+class WallClock:
+    """Wall time of a run without its pauses, for the real-time factor."""
+
+    def __init__(self):
+        self._t0, self._paused_at = time.perf_counter(), None
+
+    def pause(self):
+        if self._paused_at is None:
+            self._paused_at = time.perf_counter()
+
+    def resume(self):
+        if self._paused_at is not None:
+            self._t0 += time.perf_counter() - self._paused_at
+            self._paused_at = None
+
+    def elapsed(self):
+        return (time.perf_counter() if self._paused_at is None else self._paused_at) - self._t0
+
+
 class CoSimSession:
     """Lock-step CarSim + CARLA run for one already-spawned vehicle."""
 
@@ -241,7 +397,30 @@ class CoSimSession:
     # --------------------------------------------------------------- lifecycle
     def start(self):
         d, w = self.d, self.world
+        # CarSim first: its t_step sets the frame period everything below uses.
+        self.env = make_env(d)
+        self.obs = reset_env(self.env)
+        # The .sim defines how many exports / imports there are, in which order.
+        n_exp, n_imp = self.env.config.get("n_export"), self.env.config.get("n_import")
+        names = d["carsim"]["export_names"]
+        if n_exp and len(names) != int(n_exp):
+            raise RuntimeError("导出变量个数不一致：界面里列了 %d 个，.sim 里有 %d 个。顺序和个数必须与 .sim 的导出变量一致"
+                               "（“CarSim 动力学”页），否则位姿会用错变量" % (len(names), int(n_exp)))
+        if d["run"]["driver"] != "custom" and n_imp and int(n_imp) != 3:
+            raise RuntimeError("测试用驾驶方式只给 3 个导入变量（油门、制动、方向盘角），.sim 里有 %d 个；"
+                               "请用你自己的控制算法按 .sim 的导入顺序返回" % int(n_imp))
+        self._check_exports(self.obs, at_start=True)
+        t_step = float(self.env.config["t_step"])
+        if not t_step > 0:
+            raise RuntimeError("CarSim 给出的 t_step = %r，无法运行" % t_step)
         frame_dt = d["sync"]["frame_dt"]
+        self.inner = max(1, int(round(frame_dt / t_step)))
+        if self.inner > 1 and self.inner * t_step > MAX_FRAME_DT + 1e-9:
+            self.inner -= 1
+        if abs(self.inner * t_step - frame_dt) > 1e-9:
+            # CarSim advances whole t_steps: CARLA's frame, the controller's dt
+            # and the frame count all use that period, so the clocks agree.
+            frame_dt = d["sync"]["frame_dt"] = round(self.inner * t_step, 12)
         self._original_settings = w.get_settings()
         s = w.get_settings()
         s.synchronous_mode = True
@@ -273,34 +452,32 @@ class CoSimSession:
         else:
             self.driver = make_driver(d, self.sync.ex, lambda: self.env.config.get("n_import"),
                                       lambda: self.scene.view())
-        self.env = make_env(d)
         if d["run"]["record_dir"]:
             self.camera = spawn_chase_camera(w, self.vehicle, d["run"]["record_dir"])
 
-        self.obs = self.env.reset()
-        # The .sim defines how many exports / imports there are, in which order.
-        n_exp, n_imp = self.env.config.get("n_export"), self.env.config.get("n_import")
-        names = d["carsim"]["export_names"]
-        if n_exp and len(names) != int(n_exp):
-            raise RuntimeError("导出变量个数不一致：界面里列了 %d 个，.sim 里有 %d 个。顺序和个数必须与 .sim 的导出变量一致"
-                               "（“CarSim 动力学”页），否则位姿会用错变量" % (len(names), int(n_exp)))
-        if d["run"]["driver"] != "custom" and n_imp and int(n_imp) != 3:
-            raise RuntimeError("测试用驾驶方式只给 3 个导入变量（油门、制动、方向盘角），.sim 里有 %d 个；"
-                               "请用你自己的控制算法按 .sim 的导入顺序返回" % int(n_imp))
-        # Put the car where CarSim starts (reference point on the spawn point)
-        # before the first control() call, so its scene shows the real start.
+        # CarSim's origin is the spawn point: a .sim that starts elsewhere (e.g.
+        # at a road station) puts the car that far from the spawn point.
+        ex = self.sync.ex
+        x0, y0, yaw0 = ex.raw(self.obs, "Xo"), ex.raw(self.obs, "Yo"), ex.angle(self.obs, "Yaw")
+        self.warnings = []
+        if math.hypot(x0, y0) > 5.0 or abs((yaw0 + 180.0) % 360.0 - 180.0) > 10.0:
+            self.warnings.append("CarSim 的初始位置不在原点（Xo = %.1f m，Yo = %.1f m，Yaw = %.1f°）：CarSim 原点放在出生点上，"
+                                 "车会从离出生点 %.1f m 的地方出发。想从出生点出发，把 .sim 里的初始位置和航向设为 0，"
+                                 "或换一个出生点" % (x0, y0, yaw0, math.hypot(x0, y0)))
+        # Put the car at CarSim's t0 pose (relative to its origin, the spawn
+        # point) before the first control() call, so its scene shows the real start.
         state0 = self.sync.sync(self.obs, self.env.t_current, frame_dt)
         w.tick()
         start_scene(self, self.anchor, self.sync.ref_local, self.env.t_current, state0.velocity)
-        t_step = self.env.config["t_step"]
-        self.inner = max(1, int(round(frame_dt / t_step)))
-        self.clock_warning = abs(self.inner * t_step - frame_dt) > 1e-9
         # duration <= 0: run until stopped (or until CarSim reaches t_stop).
         self.n_frames = max(1, int(round(d["sync"]["duration"] / frame_dt))) if d["sync"]["duration"] > 0 else 0
-        self._wall0 = time.perf_counter()
+        self._t0 = self.env.t_current  # t_start of the .sim, not always 0
+        self.clock = WallClock()
         return {"external_api": self.sync.external_api, "server_api": self.sync.server_api,
                 "reference_point": [round(float(x), 3) for x in self.sync.ref_local],
-                "t_step": t_step, "inner_steps": self.inner, "clock_warning": self.clock_warning}
+                "t_step": t_step, "inner_steps": self.inner, "frame_dt": frame_dt,
+                "t_stop": float(self.env.config.get("t_stop") or 0.0), "mock": bool(d["carsim"]["mock"]),
+                "warnings": self.warnings}
 
     def stop(self, release_vehicle=True):
         """Best effort: one failing step (CarSim or CARLA gone) must not skip the rest."""
@@ -334,12 +511,16 @@ class CoSimSession:
         if not all(math.isfinite(a) for a in action):
             raise RuntimeError("控制算法输出了无效数值（NaN / 无穷大）：%s" % list(action))
         self.obs, _, done, info = env.control_step(action, self.inner)
-        if info.get("error"):
-            raise RuntimeError("CarSim error: %s" % info["error"])
-        bad = [n for n, i in self.sync.ex.index.items() if i < len(self.obs) and not math.isfinite(float(self.obs[i]))]
-        if bad:
-            # Never hand NaN / inf to CARLA as a pose; stop with a clear reason.
-            raise RuntimeError("CarSim 输出了无效数值（NaN / 无穷大），仿真已停止：%s" % ", ".join(bad[:6]))
+        # A non-zero return without a model stop is an error, with or without a message.
+        if info.get("error") or (info.get("return_code") and "end_reason" not in info):
+            raise RuntimeError("CarSim 报错（t = %.2f s）：%s" % (env.t_current, info.get("error") or "求解器没有给出错误信息"))
+        self._check_exports(self.obs)
+        if done and info.get("end_reason") and not self.end_reason:
+            # CarSim also returns "stop" at TSTOP: only earlier is a stop of the model's own.
+            t_stop, t_step = float(env.config.get("t_stop") or 0.0), float(env.config["t_step"])
+            if not t_stop > 0 or env.t_current < t_stop - 1.5 * t_step:
+                self.end_reason = "CarSim 模型请求停止（.sim 里的事件 / 停止条件），t = %.2f s，.sim 结束时间 %.2f s" % (
+                    env.t_current, t_stop)
         state = self.sync.sync(self.obs, env.t_current, frame_dt)
         world_frame = self.world.tick()
         self.frame += 1
@@ -350,13 +531,13 @@ class CoSimSession:
 
         snap = self.vehicle.get_transform()
         self.done = bool(done) or (self.n_frames > 0 and self.frame >= self.n_frames) or bool(self.end_reason)
-        wall = time.perf_counter() - self._wall0
+        wall = self.clock.elapsed()
         v = state.velocity
         return {**scene_tel,
             "t": env.t_current,
             "frame": self.frame,
             "n_frames": self.n_frames,
-            "rt_factor": env.t_current / wall if wall > 0 else 0.0,
+            "rt_factor": (env.t_current - self._t0) / wall if wall > 0 else 0.0,
             "speed_kmh": math.sqrt(v.x ** 2 + v.y ** 2 + v.z ** 2) * 3.6,
             "location": [snap.location.x, snap.location.y, snap.location.z],
             "rotation": [snap.rotation.pitch, snap.rotation.yaw, snap.rotation.roll],
@@ -368,6 +549,15 @@ class CoSimSession:
             "dynamics": "CarSim",
             "done": self.done,
         }
+
+    def _check_exports(self, obs, at_start=False):
+        """Never hand NaN / inf to CARLA as a pose; stop with a clear reason."""
+        bad = [n for n, v in zip(self.d["carsim"]["export_names"], obs) if not math.isfinite(float(v))]
+        if bad and at_start:
+            raise RuntimeError("CarSim 的初始状态里有无效数值（NaN / 无穷大）：%s。检查 .sim 的初始条件，"
+                               "以及导出变量的顺序是否与 .sim 一致" % ", ".join(bad[:6]))
+        if bad:
+            raise RuntimeError("CarSim 输出了无效数值（NaN / 无穷大），仿真已停止：%s" % ", ".join(bad[:6]))
 
     def export_names(self):
         return list(self.d["carsim"]["export_names"])
@@ -430,9 +620,9 @@ class CarlaDriveSession:
             self.command_driver = ManualDriver()
         self.n_frames = max(1, int(round(d["sync"]["duration"] / dt))) if d["sync"]["duration"] > 0 else 0
         start_scene(self, self.anchor)
-        self._wall0 = time.perf_counter()
+        self.clock = WallClock()
         return {"external_api": False, "server_api": None, "reference_point": [0, 0, 0], "t_step": dt, "inner_steps": 1,
-                "clock_warning": False, "dynamics": "CARLA"}
+                "frame_dt": dt, "dynamics": "CARLA"}
 
     def _wheel_angles(self, steer, speed_kmh):
         """[FL, FR] steer angle, deg, + = right (as get_wheel_steer_angle)."""
@@ -481,7 +671,7 @@ class CarlaDriveSession:
         c = self.vehicle.get_control()
         steer = self._wheel_angles(c.steer, speed * 3.6)
         self.done = (self.n_frames > 0 and self.frame >= self.n_frames) or bool(self.end_reason)
-        wall = time.perf_counter() - self._wall0
+        wall = self.clock.elapsed()
         try:
             red = self.vehicle.is_at_traffic_light() and \
                 self.vehicle.get_traffic_light_state() == carla.TrafficLightState.Red

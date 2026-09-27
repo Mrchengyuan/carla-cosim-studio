@@ -76,6 +76,7 @@ class Backend:
         self._probe = None         # the car vehicle_specs is measuring right now
         self.views = ViewStreamer(lambda msg: self.emit(msg))  # live views of the GUI viewport
         self.collector = None
+        self._stopping_collector = None  # still writing its last frames (see _stop_cosim_if_running)
         self._pending_walkers = []  # walker controllers to start after the run's next frame
         self._unsent_tel = None    # last telemetry frame not sent to the GUI yet
         self._ego_missing = (0, set())  # (ego id, world frames whose snapshot lacks it)
@@ -84,7 +85,6 @@ class Backend:
         self.carla_addr = None     # (host, port) of the CARLA server we are connected to
         self._alive_check = 0.0    # when we last checked that CARLA still listens
         self._gone_hint = False    # the heartbeat saw no CARLA listening (Windows): check at once
-        self._listener_lock = threading.Lock()  # the worker and the heartbeat both look at the port
         self._ds = None            # dataset.Session being browsed
         self.exporter = dsmod.Exporter(lambda msg: self.emit(msg))
         self.emit = lambda msg: None
@@ -110,7 +110,7 @@ class Backend:
         except RuntimeError:
             return False
 
-    def _carla_listening(self, now=False):
+    def _carla_listening(self, now=False, record=True):
         """Does the CARLA server still listen? Never by connecting to it:
         CARLA 0.9.16 crashes ("close: Bad file descriptor") after a few hundred
         connections that close right away. Local Linux: the kernel's socket
@@ -119,7 +119,8 @@ class Backend:
         another host: a call that timed out is taken as the answer (None: can't tell).
         The listening socket (Linux: inode, Windows: process id) seen right after
         connecting is remembered: another one on the port later is not our
-        CARLA (it was restarted, or another program took the port)."""
+        CARLA (it was restarted, or another program took the port). Only the
+        worker records it (record=False: the heartbeat thread)."""
         host, port = self.carla_addr
         if host not in ("localhost", "127.0.0.1", "::1"):
             return None if not now else False
@@ -135,8 +136,8 @@ class Backend:
                                 owners.add(cols[9])  # socket inode
                 except (OSError, IndexError):
                     pass
-            return self._same_listener(owners)
-        if os.name == "nt" and now:
+            return self._same_listener(owners, record)
+        if os.name == "nt" and now and getattr(self, "_proc_sees_carla", True):
             try:
                 out = subprocess.run(["netstat", "-ano", "-p", "TCP"], capture_output=True, text=True, timeout=10).stdout
             except (OSError, subprocess.SubprocessError):
@@ -148,28 +149,33 @@ class Backend:
                 cols = line.split()
                 if len(cols) >= 3 and cols[1].endswith(":%d" % port) and cols[2] in ("0.0.0.0:0", "[::]:0", "*:*"):
                     owners.add(cols[-1])  # process id
-            return self._same_listener(owners)
+            return self._same_listener(owners, record)
         return None
 
-    def _same_listener(self, owners):
+    def _same_listener(self, owners, record=True):
         """Listening on our port, by the listener seen when we connected?"""
         if not owners:
             return False
-        with self._listener_lock:
-            known = getattr(self, "_carla_listener", None)
-            if known is None:  # right after connecting: that is our CARLA
-                self._carla_listener = set(owners)
-                return True
+        known = getattr(self, "_carla_listener", None)
+        if known is None:  # right after connecting: that is our CARLA
+            if not record:  # the heartbeat, while the worker connects: can't tell
+                return None
+            self._carla_listener = set(owners)
+            return True
         return bool(owners & known)
 
-    def _carla_listening_now(self):
+    def _carla_listening_now(self, record=True):
         """_carla_listening with the slow look too (netstat on Windows), for
-        the heartbeat thread and before a reconnect; None for another host,
-        where only a call that timed out tells."""
-        addr = self.carla_addr
+        the heartbeat thread (record=False) and before a reconnect; None for
+        another host, where only a call that timed out tells."""
+        addr, known = self.carla_addr, getattr(self, "_carla_listener", None)
         if addr is None:
             return None
-        return self._carla_listening(now=os.name == "nt" and addr[0] in ("localhost", "127.0.0.1", "::1"))
+        listening = self._carla_listening(now=os.name == "nt" and addr[0] in ("localhost", "127.0.0.1", "::1"),
+                                          record=record)
+        if not record and (self.carla_addr != addr or getattr(self, "_carla_listener", None) is not known):
+            return None  # the worker connected meanwhile: that look was about the old CARLA
+        return listening
 
     def _check_carla(self, now=False):
         """Every 2 s (or right after a CARLA call timed out, or when the
@@ -407,9 +413,9 @@ class Backend:
         except Exception:
             self.client = None
             raise
-        # Docker / WSL2 setups can hide a live CARLA from /proc/net/tcp: then
-        # only time-outs tell that it is gone. (Before self.world is set: from
-        # then on the heartbeat thread looks at the port too.)
+        # Docker / WSL2 setups can hide a live CARLA from /proc/net/tcp (or
+        # netstat): then only time-outs tell that it is gone. (Before self.world
+        # is set: from then on the heartbeat thread looks at the port too.)
         self._proc_sees_carla = True
         self._carla_listener = None  # the next look at the port records this CARLA's socket
         self._proc_sees_carla = self._carla_listening(now=os.name == "nt") is not False
@@ -928,7 +934,9 @@ class Backend:
         root = os.path.abspath(root)
         if not (os.path.isfile(os.path.join(root, "calib.json")) and os.path.isfile(os.path.join(root, "meta.json"))):
             raise RuntimeError("不是采集生成的数据集目录，拒绝删除：%s" % root)
-        if self.collector is not None and os.path.abspath(getattr(self.collector, "root", "")) == root:
+        # (A collector stopping on the worker still writes its last frames.)
+        if any(c is not None and os.path.abspath(getattr(c, "root", "")) == root
+               for c in (self.collector, self._stopping_collector)):
             raise RuntimeError("这个数据集正在采集中")
         if self.exporter.busy() and self.exporter.root == root:
             raise RuntimeError("这个数据集正在导出，等导出结束再删除")
@@ -1025,6 +1033,7 @@ class Backend:
             doomed = [c for c in self.world.get_actors().filter("controller.ai.walker")
                       if c.parent is not None and c.parent.id == a.id] + doomed
         ids = {x.id for x in doomed}
+        tracked = any(x.id in ids for k in self.traffic for x in self.traffic[k])
         for k in self.traffic:  # traffic ids are destroyed again later (clear_traffic)
             self.traffic[k] = [x for x in self.traffic[k] if x.id not in ids]
         self._pending_walkers = [(c, s) for c, s in self._pending_walkers if c.id not in ids]
@@ -1033,7 +1042,10 @@ class Backend:
             self._try(x.destroy)
         if a.type_id.startswith("controller."):
             self._try(a.stop)
-        return a.destroy()
+        done = a.destroy()
+        if tracked:  # part of the traffic: what is left of it, as spawn_traffic tells (the GUI shows the count)
+            return {"vehicles": len(self.traffic["vehicles"]), "walkers": len(self.traffic["walkers"])}
+        return done
 
     # ---------------------------------------------------------------- cosim
     def cmd_default_config(self):
@@ -1304,7 +1316,11 @@ class Backend:
         gone), and afterwards there is no session and the state is `final`."""
         col, self.collector = self.collector, None
         if col is not None:
+            # Until its last frames are on disk, dataset_delete (another thread)
+            # must not take the directory away.
+            self._stopping_collector = col
             self._try(col.stop)
+            self._stopping_collector = None
         ses, self.session = self.session, None
         self._unsent_tel = None
         if ses is None:
@@ -1471,7 +1487,7 @@ class Backend:
         if task is not None and time.time() - task[1] >= 2.0:
             # A CARLA call that waits because CARLA is gone: say so now, and
             # let the calls after it give up quickly.
-            gone = self.world is not None and self._carla_listening_now() is False
+            gone = self.world is not None and self._carla_listening_now(record=False) is False
             if gone:
                 self._fast_timeout = True
                 self._try(lambda: self.client.set_timeout(0.5))
@@ -1484,7 +1500,7 @@ class Backend:
             # The worker's check every 2 s cannot run netstat (too slow between
             # a run's frames): look here, and have the worker check at once.
             last_look = time.time()
-            if self._carla_listening_now() is False:
+            if self._carla_listening_now(record=False) is False:
                 self._gone_hint = True
         return last_look
 
@@ -1612,6 +1628,9 @@ def serve_clients(srv, backend, exit_with_client=False):
     in_use = threading.Lock()
     leaving = threading.Event()  # the GUI has gone and this backend exits with it
     parked = []
+    # Back in Python every 0.5 s: on Windows a blocking accept() holds off the
+    # Ctrl+C handler until the next client connects.
+    srv.settimeout(0.5)
 
     def serve_client(conn):
         lock = threading.Lock()
@@ -1666,7 +1685,11 @@ def serve_clients(srv, backend, exit_with_client=False):
             in_use.release()
 
     while True:
-        conn, _ = srv.accept()
+        try:
+            conn, _ = srv.accept()
+        except socket.timeout:
+            continue
+        conn.settimeout(None)
         if not in_use.acquire(blocking=False):
             if leaving.is_set() or getattr(backend, "exiting", False) or getattr(backend, "_cleaned", False):
                 # On the way out (the GUI closed and opened again right away):

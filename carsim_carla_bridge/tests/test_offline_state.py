@@ -96,18 +96,19 @@ class DestroyActorTests(unittest.TestCase):
         self.assertEqual(self.log, [])
 
     def test_traffic_car_leaves_the_bookkeeping(self):
-        self.assertTrue(self.b.cmd_destroy_actor(3))
+        # The traffic left, for the count on the 交通流 page.
+        self.assertEqual(self.b.cmd_destroy_actor(3), {"vehicles": 0, "walkers": 1})
         self.assertEqual(self.log, [("destroy", 3)])
         self.assertEqual(self.b.traffic["vehicles"], [])  # never destroyed again by id later
 
     def test_pedestrian_goes_with_its_controller(self):
-        self.b.cmd_destroy_actor(4)
+        self.assertEqual(self.b.cmd_destroy_actor(4), {"vehicles": 1, "walkers": 0})
         self.assertEqual(self.log, [("stop", 5), ("destroy", 5), ("destroy", 4)])
         self.assertEqual(self.b.traffic, {"vehicles": [self.car], "walkers": [], "controllers": []})
         self.assertEqual(self.b._pending_walkers, [])
 
     def test_other_actors_are_deleted(self):
-        self.assertTrue(self.b.cmd_destroy_actor(6))
+        self.assertIs(self.b.cmd_destroy_actor(6), True)  # not traffic: no count for the GUI
         self.assertEqual(self.log, [("destroy", 6)])
 
 
@@ -137,7 +138,7 @@ class ReconnectTests(unittest.TestCase):
         b.carla_addr = ("localhost", 2000)
         b.cmd_world_info = lambda: {"map": "Town10HD_Opt", "cosim_state": b.cosim_state}
         b._teardown = lambda: calls.append("teardown")
-        b._carla_listening = lambda now=False: True  # the new CARLA
+        b._carla_listening = lambda now=False, record=True: True  # the new CARLA
         return b
 
     def test_dead_carla_is_let_go_without_cleanup_calls(self):
@@ -195,7 +196,7 @@ class CarlaGoneTests(unittest.TestCase):
     def test_windows_idle_heartbeat_looks_with_netstat_and_the_worker_checks_at_once(self):
         b = self.backend()
         looks, lost = [], []
-        b._carla_listening = lambda now=False: looks.append(now) or False
+        b._carla_listening = lambda now=False, record=True: looks.append(now) or False
         b._forget_carla = lost.append
         with mock.patch.object(bs.os, "name", "nt"):
             last = b.heartbeat_step(0.0)
@@ -214,7 +215,7 @@ class CarlaGoneTests(unittest.TestCase):
         b.emit = events.append
         b.client = SimpleNamespace(set_timeout=timeouts.append)
         b.task = ("load_map", time.time() - 3.0)
-        b._carla_listening = lambda now=False: False if now else None  # only netstat can tell
+        b._carla_listening = lambda now=False, record=True: False if now else None  # only netstat can tell
         with mock.patch.object(bs.os, "name", "nt"):
             b.heartbeat_step()
         self.assertTrue(events[0]["carla_gone"])
@@ -224,6 +225,47 @@ class CarlaGoneTests(unittest.TestCase):
     def test_another_host_is_never_taken_for_gone_by_the_heartbeat(self):
         b = self.backend("10.0.0.2")
         with mock.patch.object(bs.os, "name", "nt"):
+            b.heartbeat_step(0.0)
+        self.assertFalse(b._gone_hint)
+
+    def test_windows_carla_hidden_from_netstat_is_not_taken_for_gone(self):
+        # e.g. WSL2 mirrored networking: connected fine, but netstat lists no listener.
+        b = self.backend()
+        runs = []
+
+        def netstat(*a, **k):
+            runs.append(a)
+            return SimpleNamespace(stdout="  TCP    0.0.0.0:135    0.0.0.0:0    LISTENING    900\n")
+        with mock.patch.object(bs.os, "name", "nt"), mock.patch.object(bs.os.path, "exists", lambda p: False), \
+                mock.patch.object(bs.subprocess, "run", netstat):
+            b._proc_sees_carla = True  # as cmd_connect does before its look
+            b._proc_sees_carla = b._carla_listening(now=True) is not False
+            self.assertFalse(b._proc_sees_carla)
+            b.heartbeat_step(0.0)
+            b.task = ("load_map", time.time() - 3.0)
+            b.heartbeat_step()
+        self.assertEqual(len(runs), 1)  # only the look while connecting
+        self.assertFalse(b._gone_hint)
+        self.assertFalse(getattr(b, "_fast_timeout", False))
+
+    def test_heartbeat_look_at_the_old_carla_during_a_reconnect_is_dropped(self):
+        b = self.backend()
+        b._carla_listener = {"111"}
+        switch = [("localhost", 3000), None]
+
+        def netstat(*a, **k):
+            if b.carla_addr[1] == 2000:  # the worker connects to another CARLA while netstat runs
+                b.carla_addr, b._carla_listener = switch
+            return SimpleNamespace(stdout="  TCP    0.0.0.0:2000    0.0.0.0:0    LISTENING    111\n"
+                                          "  TCP    0.0.0.0:3000    0.0.0.0:0    LISTENING    222\n")
+        with mock.patch.object(bs.os, "name", "nt"), mock.patch.object(bs.os.path, "exists", lambda p: False), \
+                mock.patch.object(bs.subprocess, "run", netstat):
+            self.assertIsNone(b._carla_listening_now(record=False))
+            self.assertIsNone(b._carla_listener)  # not the old CARLA's process kept as the new one's
+            self.assertIs(b._carla_listening(now=True), True)  # the worker's look after connecting
+            self.assertEqual(b._carla_listener, {"222"})
+            # Idle, and the worker has recorded the new CARLA before the old port's owners are compared.
+            b.carla_addr, b._carla_listener, switch[1] = ("localhost", 2000), {"111"}, {"222"}
             b.heartbeat_step(0.0)
         self.assertFalse(b._gone_hint)
 
@@ -412,6 +454,30 @@ class ConnectionTests(unittest.TestCase):
         self.assertEqual([(r["id"], r["ok"]) for r in got], [(2, True), (3, True), (4, False)])
         self.assertEqual(b.requests.qsize(), 1)  # the CARLA command stays with the worker
         self.assertTrue(replies.empty())
+
+    def test_dataset_still_being_written_is_not_deleted(self):
+        b = Backend()
+        with tempfile.TemporaryDirectory() as d:
+            for f in ("calib.json", "meta.json"):
+                open(os.path.join(d, f), "w").close()
+            answers = []
+
+            class Collector:
+                root = d
+
+                def stop(self):  # the writer puts its last frames on disk
+                    try:
+                        b.cmd_dataset_delete(d)
+                    except RuntimeError as e:
+                        answers.append(str(e))
+            b.collector = Collector()
+            b._stop_cosim_if_running("finished")
+            self.assertEqual(answers, ["这个数据集正在采集中"])
+            self.assertTrue(os.path.isdir(d))
+            self.assertIsNone(b.collector)
+            self.assertEqual(b.cmd_dataset_delete(d)["deleted"], d)  # once it is on disk
+            self.assertFalse(os.path.isdir(d))
+            os.makedirs(d)  # for TemporaryDirectory's own cleanup
 
     @unittest.skipUnless(os.name == "posix", "SIGINT from a terminal: POSIX")
     def test_ctrl_c_takes_the_bounded_exit(self):

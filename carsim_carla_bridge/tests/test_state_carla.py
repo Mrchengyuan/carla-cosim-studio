@@ -76,14 +76,16 @@ def main():
         walker = w.get_actors().filter("walker.pedestrian.*")[0]
         ctrls = [a.id for a in w.get_actors().filter("controller.ai.walker") if a.parent and a.parent.id == walker.id]
         car = [a for a in w.get_actors().filter("vehicle.*") if a.attributes.get("role_name") == "autopilot"][0]
-        c.call("destroy_actor", id=walker.id)
-        c.call("destroy_actor", id=car.id)
+        r_walker = c.call("destroy_actor", id=walker.id)  # the traffic left, for the GUI's count
+        r_car = c.call("destroy_actor", id=car.id)
         w.wait_for_tick(10)
         left = {a.id for a in w.get_actors()}
         n1 = c.call("spawn_traffic", vehicles=0, walkers=0, seed=4)
         check("deleting a pedestrian takes its controller; the traffic counts drop by what was deleted",
               walker.id not in left and ctrls and not set(ctrls) & left
-              and n1 == {"vehicles": n0["vehicles"] - 1, "walkers": n0["walkers"] - 1}, (n0, n1, ctrls))
+              and n1 == {"vehicles": n0["vehicles"] - 1, "walkers": n0["walkers"] - 1}
+              and r_walker == {"vehicles": n0["vehicles"], "walkers": n0["walkers"] - 1} and r_car == n1,
+              (n0, n1, r_walker, r_car, ctrls))
         c.call("clear_traffic")
 
         # ---- pedestrians spawned while a run is paused walk once it stops ------

@@ -413,12 +413,21 @@ void App::RefreshDisk() {
 }
 
 void App::LoadMap(const std::string& name) {
-  Call("load_map", {{"name", name}}, [this](const json& r) {
+  busy_ = "正在加载地图 " + name + " ...";
+  be_.Request("load_map", {{"name", name}}, [this](bool ok, const json& r, const std::string& err) {
+    busy_.clear();
+    if (!ok) {
+      Log(err, "error");
+      // The backend removed the ego and the traffic before loading, and may
+      // have followed CARLA to the map it is on now.
+      if (carla_connected_) RefreshAfterMapChange();
+      return;
+    }
     SetWorld(r);
     map_choice_ = r.value("map", std::string());
     Log("地图已切换为 " + r.value("map", std::string()));
     RefreshAfterMapChange();
-  }, "正在加载地图 " + name + " ...");
+  });
 }
 
 void App::ApplyWeatherPreset(const std::string& preset) {

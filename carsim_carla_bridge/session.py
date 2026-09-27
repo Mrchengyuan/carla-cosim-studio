@@ -26,7 +26,7 @@ from bridge import REQUIRED_EXPORTS, CarlaVehicleSync, ExportCheck, front_axle_l
 # CarSim on this computer, shared with the CarSim service (remote mode). Called
 # through this module's names: the tests replace them here.
 from carsim_local import (_VS_API, RemoteCarSimError, _carsim_module, _reset_failed, _vs_error,  # noqa: F401
-                          check_carsim, mock_env, open_carsim, reset_env)
+                          check_carsim, find_repo, mock_env, open_carsim, reset_env)
 from collector import DISK_RESERVE_GB
 from drivers import ManualDriver, RouteFollower
 from scene import (ALWAYS_OBJECT_KEYS, EGO_KEYS, LANE_KEYS, OBJECT_KEYS, Recorder, RunKpi, SceneProvider, gui_view,
@@ -467,8 +467,10 @@ def load_controller(d, ex, n_imports=None, scene=None, output=None):
     if _last_folder not in (None, folder) and _last_folder not in _START_PATH and _last_folder in sys.path:
         sys.path.remove(_last_folder)
     _last_folder = folder
-    repo = os.path.abspath(d["carsim"]["repo_path"])
-    if repo not in sys.path:
+    # (Remote: python_carsim_env is on the Windows computer, not here.)
+    cs = d["carsim"]
+    repo = None if cs.get("remote") else find_repo(cs.get("repo_path"), cs.get("sim_path"))
+    if repo and repo not in sys.path:
         sys.path.insert(0, repo)
     if folder in sys.path:
         sys.path.remove(folder)

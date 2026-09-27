@@ -1,3 +1,8 @@
+#ifdef _WIN32
+#ifndef _WIN32_WINNT
+#define _WIN32_WINNT 0x0601  // IFileOpenDialog (Vista on); the CMake build sets the same
+#endif
+#endif
 #include "platform.h"
 
 #include <filesystem>
@@ -7,7 +12,10 @@
 #include <ws2tcpip.h>
 #include <windows.h>
 #include <shellapi.h>
+#include <commdlg.h>
+#include <shobjidl.h>
 #else
+#include <cstdio>
 #include <arpa/inet.h>
 #include <fcntl.h>
 #include <netdb.h>
@@ -313,6 +321,119 @@ std::string ExecutableDir() {
 bool FileExists(const std::string& path) {
   std::error_code ec;
   return std::filesystem::exists(std::filesystem::u8path(path), ec);
+}
+
+static std::string g_test_pick;
+void SetTestPick(const std::string& path) { g_test_pick = path; }
+
+#ifdef _WIN32
+static std::string Narrow(const wchar_t* w) {
+  int n = WideCharToMultiByte(CP_UTF8, 0, w, -1, nullptr, 0, nullptr, nullptr);
+  std::string s(static_cast<size_t>(n > 0 ? n - 1 : 0), '\0');
+  if (n > 1) WideCharToMultiByte(CP_UTF8, 0, w, -1, &s[0], n, nullptr, nullptr);
+  return s;
+}
+#else
+// zenity's answer (one line); false when cancelled or zenity is missing.
+static bool Zenity(const std::string& args, std::string& out, std::string& err) {
+  FILE* f = popen(("zenity " + args + " 2>/dev/null").c_str(), "r");
+  if (!f) {
+    err = "打不开选择对话框（zenity）";
+    return false;
+  }
+  char buf[4096];
+  std::string s;
+  while (fgets(buf, sizeof buf, f)) s += buf;
+  const int st = pclose(f);
+  if (WIFEXITED(st) && WEXITSTATUS(st) == 127) {
+    err = "没有找到 zenity（sudo apt install zenity），请直接填写路径";
+    return false;
+  }
+  while (!s.empty() && (s.back() == '\n' || s.back() == '\r')) s.pop_back();
+  if (!WIFEXITED(st) || WEXITSTATUS(st) != 0 || s.empty()) return false;  // cancelled
+  out = s;
+  return true;
+}
+#endif
+
+bool PickFile(const std::string& title, const std::string& ext, std::string& out, std::string& err) {
+  if (!g_test_pick.empty()) {
+    out = g_test_pick;
+    return true;
+  }
+#ifdef _WIN32
+  std::wstring filter;
+  if (!ext.empty()) {
+    const std::wstring e = Widen(ext);
+    filter += L"*." + e;
+    filter.push_back(L'\0');
+    filter += L"*." + e;
+    filter.push_back(L'\0');
+  }
+  filter += L"*.*";
+  filter.push_back(L'\0');
+  filter += L"*.*";
+  filter.push_back(L'\0');
+  filter.push_back(L'\0');
+  wchar_t buf[4096] = L"";
+  const std::wstring wtitle = Widen(title);
+  OPENFILENAMEW ofn{};
+  ofn.lStructSize = sizeof(ofn);
+  ofn.lpstrFilter = filter.c_str();
+  ofn.lpstrFile = buf;
+  ofn.nMaxFile = static_cast<DWORD>(sizeof(buf) / sizeof(buf[0]));
+  ofn.lpstrTitle = wtitle.c_str();
+  // NOCHANGEDIR: the program's own relative paths (fonts, prefs) keep working.
+  ofn.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR | OFN_EXPLORER;
+  if (!GetOpenFileNameW(&ofn)) {
+    if (CommDlgExtendedError()) err = "打不开 Windows 的选择文件对话框";
+    return false;
+  }
+  out = Narrow(buf);
+  return true;
+#else
+  return Zenity("--file-selection --title=\"" + title + "\"" +
+                    (ext.empty() ? std::string() : " --file-filter=\"*." + ext + "\" --file-filter=\"*\""),
+                out, err);
+#endif
+}
+
+bool PickFolder(const std::string& title, std::string& out, std::string& err) {
+  if (!g_test_pick.empty()) {
+    out = g_test_pick;
+    return true;
+  }
+#ifdef _WIN32
+  const HRESULT init = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
+  bool ok = false;
+  IFileOpenDialog* dlg = nullptr;
+  if (SUCCEEDED(CoCreateInstance(CLSID_FileOpenDialog, nullptr, CLSCTX_INPROC_SERVER, IID_IFileOpenDialog,
+                                 reinterpret_cast<void**>(&dlg)))) {
+    DWORD opts = 0;
+    dlg->GetOptions(&opts);
+    dlg->SetOptions(opts | FOS_PICKFOLDERS | FOS_FORCEFILESYSTEM | FOS_NOCHANGEDIR);
+    dlg->SetTitle(Widen(title).c_str());
+    if (SUCCEEDED(dlg->Show(nullptr))) {
+      IShellItem* item = nullptr;
+      if (SUCCEEDED(dlg->GetResult(&item))) {
+        PWSTR p = nullptr;
+        if (SUCCEEDED(item->GetDisplayName(SIGDN_FILESYSPATH, &p))) {
+          out = Narrow(p);
+          CoTaskMemFree(p);
+          ok = true;
+        }
+        item->Release();
+      }
+    }
+    dlg->Release();
+  } else {
+    err = "打不开 Windows 的选择文件夹对话框";
+  }
+  if (SUCCEEDED(init)) CoUninitialize();
+  return ok;
+#else
+  return Zenity("--file-selection --directory --title=\"" + title + "\"", out, err);
+#endif
 }
 
 }  // namespace plat

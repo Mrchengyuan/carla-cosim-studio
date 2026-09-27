@@ -1171,6 +1171,33 @@ void App::BuildTour() {
          cfg_["sync"]["duration"] = 0.0;  // stopped below with the toolbar button
          cfg_["run"]["log_path"] = "";
        }, idle, "08_cosim_config"},
+      // “浏览…” for the .sim and the python_carsim_env folder (the system dialog answers with a test path);
+      // an empty python_carsim_env folder is found from the .sim's folder.
+      {kPanelCoSim, [this] {
+         tour_kept_["carsim"] = cfg_["carsim"];
+         const fs::path dir = fs::u8path(tour_dir_) / "tour_carsim_env";
+         fs::create_directories(dir / "sim");
+         std::ofstream(dir / "carsim_env.py") << "# tour\n";
+         std::ofstream(dir / "sim" / "simfile.sim") << "VEHICLE_CODE tour\n";
+         cfg_["carsim"]["mock"] = false;
+         cfg_["carsim"]["repo_path"] = "";
+         plat::SetTestPick((dir / "sim" / "simfile.sim").u8string());
+         click_target_ = "pick:sim";
+       }, [this] {
+         return click_target_.empty() && cfg_["carsim"].value("sim_path", std::string()) ==
+                (fs::u8path(tour_dir_) / "tour_carsim_env" / "sim" / "simfile.sim").u8string() && ui::TargetShown("cosim:repo_auto");
+       }, "08a_repo_auto"},
+      {kPanelCoSim, [this] {
+         plat::SetTestPick((fs::u8path(tour_dir_) / "tour_carsim_env").u8string());
+         click_target_ = "pick:repo";
+       }, [this] {
+         return click_target_.empty() && cfg_["carsim"].value("repo_path", std::string()) ==
+                (fs::u8path(tour_dir_) / "tour_carsim_env").u8string() && !ui::TargetShown("cosim:repo_auto");
+       }, ""},
+      {kPanelCoSim, [this] {
+         plat::SetTestPick("");
+         cfg_["carsim"] = tour_kept_["carsim"];
+       }, [this] { return cfg_["carsim"] == tour_kept_["carsim"]; }, ""},
       // "默认" asks first: 取消 keeps the config, 恢复默认 resets it (vehicle and spawn point kept); then put it back.
       {kPanelCoSim, [this] { tour_kept_["cfg"] = cfg_; click_target_ = "cfg:default"; },
        [this] { return ui::TargetShown("reset:cancel") && cfg_ == tour_kept_["cfg"]; }, "08b_reset_ask"},

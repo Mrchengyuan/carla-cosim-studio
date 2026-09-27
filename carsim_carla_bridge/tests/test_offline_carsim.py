@@ -546,5 +546,54 @@ class FakeSolverTests(SessionCase):
         self.assertIn("不在原点", self.session(self.real(x0=150)).start()["warnings"][0])
 
 
+class FindRepoTests(unittest.TestCase):
+    """python_carsim_env: the given folder, else found from the .sim's folder
+    upwards; under Windows path rules too (ntpath), as the CarSim service on
+    the Windows computer applies them."""
+
+    def test_windows_paths(self):
+        import ntpath
+        from carsim_local import find_repo
+        have = {"C:\\carsim\\python_carsim_env\\carsim_env.py", "D:\\other\\carsim_env.py"}
+        isfile = lambda p: p in have
+        sim = "C:\\carsim\\python_carsim_env\\sims\\run1\\simfile.sim"
+        self.assertEqual(find_repo("", sim, ntpath, isfile), "C:\\carsim\\python_carsim_env")
+        self.assertEqual(find_repo("D:\\other", sim, ntpath, isfile), "D:\\other")          # given and valid: used
+        self.assertEqual(find_repo("D:\\nope", sim, ntpath, isfile), "C:\\carsim\\python_carsim_env")  # given, wrong
+        self.assertEqual(find_repo("d:/other/", sim, ntpath, lambda p: p.lower() in {h.lower() for h in have}),
+                         "d:\\other")                                                          # / and drive case
+        self.assertIsNone(find_repo("", "E:\\x\\simfile.sim", ntpath, isfile))              # up to E:\\ and stop
+        self.assertIsNone(find_repo("", "", ntpath, isfile))
+
+    def test_real_folders_and_check_carsim(self):
+        from carsim_local import find_repo
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = os.path.join(tmp, "python_carsim_env")
+            os.makedirs(os.path.join(repo, "sims"))
+            open(os.path.join(repo, "carsim_env.py"), "w").close()
+            sim = os.path.join(repo, "sims", "simfile.sim")
+            with open(sim, "w") as f:
+                f.write("VEHICLE_CODE x\nDLLFILE nowhere.dll\nSOFILE nowhere.so\n")
+            self.assertEqual(find_repo("", sim), repo)
+            self.assertEqual(find_repo(os.path.join(tmp, "wrong"), sim), repo)
+            os.remove(os.path.join(repo, "carsim_env.py"))
+            with self.assertRaises(ValueError) as cm:
+                __import__("carsim_local").check_carsim({"carsim": {"sim_path": sim, "repo_path": ""}})
+            self.assertIn("python_carsim_env 目录不对", str(cm.exception))
+            self.assertIn("上层文件夹里也没有", str(cm.exception))
+
+    def test_remote_controller_does_not_put_a_windows_path_on_sys_path(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            ctl = os.path.join(tmp, "ctl.py")
+            with open(ctl, "w") as f:
+                f.write("def control(exports, t, dt):\n    return [0.0, 0.0, 0.0]\n")
+            d = st.default_dict()
+            d["carsim"].update({"remote": True, "repo_path": "C:\\python_carsim_env", "sim_path": "C:\\x.sim"})
+            d["run"]["controller"] = {"path": ctl, "entry": "control"}
+            before = list(sys.path)
+            ses.load_controller(d, CarSimExports(d["carsim"]["export_names"]), lambda: 3)
+            self.assertFalse([p for p in sys.path if "python_carsim_env" in p and p not in before])
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -27,6 +27,27 @@ class RemoteCarSimError(RuntimeError):
     user's words: passed on as it is, never wrapped again."""
 
 
+def find_repo(repo_path, sim_path, path=os.path, isfile=None):
+    """The python_carsim_env folder: the configured one when it holds
+    carsim_env.py, else the .sim's folder or the nearest folder above it that
+    does (the .sim usually sits in python_carsim_env). None: not found.
+    path: os.path, or ntpath / posixpath to check another system's rules."""
+    isfile = isfile or path.isfile
+    if repo_path:
+        repo = path.abspath(repo_path)
+        if isfile(path.join(repo, "carsim_env.py")):
+            return repo
+    folder = path.dirname(path.abspath(sim_path)) if sim_path else ""
+    while folder:
+        if isfile(path.join(folder, "carsim_env.py")):
+            return folder
+        up = path.dirname(folder)
+        if up == folder:
+            break
+        folder = up
+    return None
+
+
 def _carsim_module(repo_path):
     """carsim_env (and its vs_solver) from the configured python_carsim_env folder."""
     repo = os.path.abspath(repo_path)
@@ -64,7 +85,12 @@ def check_carsim(d, service=False):
     if value("VEHICLE_CODE") is None or (value("PROGDIR") is None and value(lib_key) is None):
         raise ValueError("%s 不是 CarSim 生成的 .sim 文件（里面没有 VEHICLE_CODE / PROGDIR）；"
                          "请选 CarSim 生成的 simfile.sim，不是 .par / .cpar 等其他文件" % sim)
-    carsim_env = _carsim_module(c["repo_path"])
+    repo = find_repo(c["repo_path"], sim)
+    if repo is None:
+        raise ValueError("python_carsim_env 目录不对：%s 里没有 carsim_env.py，.sim 所在的文件夹（%s）和它的上层文件夹里也没有；"
+                         "请在“CarSim 动力学”页填 python_carsim_env 的位置" % (
+                             os.path.abspath(c["repo_path"]) if c["repo_path"] else "（未填）", os.path.dirname(sim)))
+    carsim_env = _carsim_module(repo)
     try:
         dll = importlib.import_module("vs_solver").vs_solver().get_dll_path(sim)
     except Exception as e:

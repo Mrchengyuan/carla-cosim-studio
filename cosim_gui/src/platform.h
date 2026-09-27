@@ -45,5 +45,12 @@ std::string ExecutableDir();
 // which breaks non-ASCII paths; there the wide command line is used instead).
 std::vector<std::string> Utf8Args(int argc, char** argv);
 bool FileExists(const std::string& path);
+// The system's "open" dialog for a file (ext: e.g. "sim", "" for any) or a
+// folder: Windows' own dialogs, zenity on Linux. False: cancelled, or err says
+// why there is no dialog. The GUI thread waits while it is open.
+bool PickFile(const std::string& title, const std::string& ext, std::string& out, std::string& err);
+bool PickFolder(const std::string& title, std::string& out, std::string& err);
+// --tour: the next pick returns this instead of opening a dialog ("" = off).
+void SetTestPick(const std::string& path);
 
 }  // namespace plat

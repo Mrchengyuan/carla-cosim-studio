@@ -34,6 +34,53 @@ bool EditString(json& obj, const char* key) {
   return false;
 }
 
+// A path field with a “浏览…” button (the system's dialog; target: its tour
+// click name). err: why there was no dialog.
+bool EditPath(json& obj, const char* key, bool folder, const char* title, const char* target, std::string& err) {
+  const float bw = ImGui::GetFrameHeight() + ImGui::GetStyle().FramePadding.x * 2;
+  ImGui::SetNextItemWidth(std::max(ImGui::GetFontSize() * 6, ImGui::GetContentRegionAvail().x - bw - ImGui::GetStyle().ItemSpacing.x));
+  bool changed = EditString(obj, key);
+  ImGui::SameLine();
+  const bool click = ui::IconButton(ICON_FA_FOLDER_OPEN, folder ? "浏览…（选择文件夹）" : "浏览…（选择文件）", target);
+  ui::RecordTarget(target);
+  if (click) {
+    std::string picked;
+    if (folder ? plat::PickFolder(title, picked, err) : plat::PickFile(title, "sim", picked, err)) {
+      obj[key] = picked;
+      changed = true;
+    }
+  }
+  return changed;
+}
+
+// python_carsim_env as the CarSim service / backend finds it (carsim_local.find_repo):
+// the given folder when it has carsim_env.py, else the .sim's folder or one
+// above it that has. "" when none; checked at most once a second.
+std::string FindCarsimRepo(const std::string& repo, const std::string& sim) {
+  namespace fs = std::filesystem;
+  static std::map<std::string, std::pair<std::string, double>> cache;
+  if (cache.size() > 64) cache.clear();
+  const std::string key = repo + "\n" + sim;
+  const double now = ImGui::GetTime();
+  auto it = cache.find(key);
+  if (it != cache.end() && now - it->second.second <= 1.0) return it->second.first;
+  std::error_code ec;
+  std::string found;
+  if (!repo.empty() && fs::is_regular_file(fs::u8path(repo) / "carsim_env.py", ec)) {
+    found = repo;
+  } else if (!sim.empty()) {
+    for (fs::path d = fs::u8path(sim).parent_path(); !d.empty(); d = d.parent_path()) {
+      if (fs::is_regular_file(d / "carsim_env.py", ec)) {
+        found = d.u8string();
+        break;
+      }
+      if (d.parent_path() == d) break;
+    }
+  }
+  cache.insert_or_assign(key, std::make_pair(found, now));
+  return found;
+}
+
 // The check or cross line under a path field (ok: the file is there).
 void PathMark(bool ok, const std::string& resolved, const char* need = nullptr);
 
@@ -963,14 +1010,28 @@ void App::DrawPanelCoSim() {
     ImGui::TextColored(p.text_dim, "（这台 Windows 电脑上的路径）");
   };
   ImGui::BeginDisabled(mock);
+  std::string pick_err;
   ui::Row(".sim 文件");
-  EditString(cs, "sim_path");
+  EditPath(cs, "sim_path", false, "选择 CarSim 的 .sim 文件", "pick:sim", pick_err);
   here();
-  if (!mock) PathStatus(UserPath(cs.value("sim_path", std::string())));
-  ui::Row("python_carsim_env 目录");
-  EditString(cs, "repo_path");
+  const std::string sim_res = UserPath(cs.value("sim_path", std::string()));
+  if (!mock) PathStatus(sim_res);
+  ui::Row("python_carsim_env 目录", "一般不用填：.sim 在 python_carsim_env 文件夹（或它的子文件夹）里时会自动找到");
+  EditPath(cs, "repo_path", true, "选择 python_carsim_env 文件夹", "pick:repo", pick_err);
   here();
-  if (!mock) PathStatus(UserPath(cs.value("repo_path", std::string())), "carsim_env.py");
+  if (!mock) {
+    const std::string repo_res = UserPath(cs.value("repo_path", std::string()));
+    const std::string found = FindCarsimRepo(repo_res, sim_res);
+    if (!found.empty() && found != repo_res) {  // not the given folder: found from the .sim
+      PathMark(true, found);
+      ImGui::SetCursorPosX(ui::LabelWidth());
+      ImGui::TextColored(p.text_dim, "（自动找到：.sim 所在的文件夹或它的上层）");
+      ui::RecordTarget("cosim:repo_auto");
+    } else {
+      PathStatus(repo_res, "carsim_env.py");
+    }
+  }
+  if (!pick_err.empty()) Log(pick_err, "warn");
   ImGui::EndDisabled();
   ui::EndCard();
 

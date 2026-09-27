@@ -53,7 +53,7 @@ add_custom_command(TARGET carla_cosim_studio POST_BUILD
 target_include_directories(carla_cosim_studio PRIVATE src ${TP}/json ${TP}/stb)
 target_link_libraries(carla_cosim_studio PRIVATE imgui Threads::Threads)
 if(WIN32)
-  target_link_libraries(carla_cosim_studio PRIVATE ws2_32)
+  target_link_libraries(carla_cosim_studio PRIVATE ws2_32 comdlg32 ole32 uuid)
   target_compile_definitions(carla_cosim_studio PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN _WIN32_WINNT=0x0601)
   # GUI app without a console window, keeping main() as the entry point.
   set_target_properties(carla_cosim_studio PROPERTIES WIN32_EXECUTABLE ON)

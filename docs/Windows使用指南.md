@@ -218,7 +218,7 @@ Import（输入）保持你原来的三个，REPLACE 模式：油门、制动、
 2. **CarSim 动力学**：
    - 取消“模拟 CarSim”。
    - `.sim 文件`：例如 `C:\carla-cosim-studio\python_carsim_env\simfile.sim`。
-   - `python_carsim_env 目录`：`C:\carla-cosim-studio\python_carsim_env`。
+   - `python_carsim_env 目录`：`C:\carla-cosim-studio\python_carsim_env`（`.sim` 就在这个文件夹里时可以不填，会自动找到；两项都可以点右边的文件夹图标“浏览…”选）。
    - 导出变量：按 8.2 的顺序填（可以从 CarSim 复制后“用粘贴内容替换”），看到绿色“必需变量齐全”。
    - 单位：CarSim 默认用户单位（deg、km/h、deg/s、rpm、mm），一般不用改。
 3. **驾驶模式**：选 **CarSim 联合仿真**，下面的“控制算法”里：

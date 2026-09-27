@@ -13,6 +13,7 @@
 
 #include "config_file.h"
 #include "imgui.h"
+#include "jpeg_decode.h"
 #include "ui_kit.h"
 
 #if defined(_WIN32)
@@ -121,6 +122,20 @@ bool Base64Decode(const std::string& in, std::vector<unsigned char>& out) {
   return true;
 }
 
+// A live view frame's pixels (RGB, w x h): raw "rgb", or "jpeg" from a backend
+// on a server (a remote GUI's hello asks for it). False: nothing to show.
+bool FramePixels(const json& ev, std::vector<unsigned char>& px, int& w, int& h) {
+  if (ev.contains("jpeg")) {
+    std::vector<unsigned char> jpg;
+    Base64Decode(ev.value("jpeg", std::string()), jpg);
+    return DecodeJpeg(jpg, px, w, h);
+  }
+  Base64Decode(ev.value("rgb", std::string()), px);
+  w = ev.value("w", 0);
+  h = ev.value("h", 0);
+  return static_cast<int>(px.size()) >= w * h * 3;
+}
+
 void PushHist(std::vector<float>& h, float v, size_t max) {
   h.push_back(v);
   if (h.size() > max) h.erase(h.begin(), h.begin() + static_cast<std::ptrdiff_t>(h.size() - max));
@@ -156,7 +171,7 @@ App::App() {
 }
 
 App::~App() {
-  if (be_.Connected()) {
+  if (be_.Connected() && !Remote()) {  // (a backend on a server is stopped there)
     be_.Request("shutdown", json::object(), nullptr);
     for (int i = 0; i < 30 && plat::IsAlive(backend_proc_); ++i) glfwWaitEventsTimeout(0.1);
   }
@@ -185,7 +200,7 @@ void App::Init(int argc, char** argv) {
   const char* py = "python3";
 #endif
   prefs_ = {{"python", py}, {"backend_dir", backend_dir}, {"backend_port", 57100},
-            {"auto_start_backend", true}, {"carla_host", "localhost"}, {"carla_port", 2000},
+            {"auto_start_backend", true}, {"remote_backend", false}, {"carla_host", "localhost"}, {"carla_port", 2000},
             {"last_config", ""}, {"dark_theme", true}};
   std::ifstream pf(fs::u8path(prefs_path_));
   if (pf) {
@@ -295,7 +310,7 @@ const json* App::SelectedVehicleSpec() const {
 // backend / connection
 // --------------------------------------------------------------------------
 void App::StartBackend() {
-  if (plat::IsAlive(backend_proc_)) return;
+  if (Remote() || plat::IsAlive(backend_proc_)) return;  // remote: the server starts it
   stop_since_ = -1;  // the old one is gone: nothing left to wait for
   if (backend_proc_.valid()) plat::Kill(backend_proc_, true);  // gone already: just release it
   backend_rejected_ = false;
@@ -325,6 +340,7 @@ void App::StartBackend() {
 }
 
 void App::StopBackend() {
+  if (Remote()) return;  // on the server: stopped there when the SSH session ends
   if (stop_since_ >= 0) return;  // already stopping
   // The backend cleans CARLA up and exits by itself; the window keeps drawing
   // meanwhile (StopBackendPoll ends it if it does not).
@@ -369,7 +385,13 @@ void App::RestartBackend() {
   // A hung backend cannot clean up: have it print every thread's stack into
   // its log (kept as backend.prev.log), stop it hard, start a fresh one and
   // reconnect, removing what the old one left in CARLA.
-  if (plat::IsAlive(backend_proc_)) {
+  if (Remote()) {
+    // On the server: asked over the connection, it writes the stacks into its
+    // log and exits; the session script there starts a fresh one, which the
+    // GUI reconnects to (see FrameBody).
+    if (be_.Connected()) be_.Request("restart_backend", json::object(), nullptr);
+    for (int i = 0; i < 20 && be_.Connected(); ++i) glfwWaitEventsTimeout(0.1);
+  } else if (plat::IsAlive(backend_proc_)) {
     // Windows has no SIGUSR1: there the backend's socket thread prints them
     // on a "dump_stacks" line (the worker, which may be what hangs, is not needed).
     if (!plat::DumpStacks(backend_proc_) && be_.Connected()) be_.Request("dump_stacks", json::object(), nullptr);
@@ -394,10 +416,20 @@ void App::ConnectBackend(bool quiet) {
     if (!quiet) Log(err, "error");
     return;
   }
-  Log("已连接后端");
+  // Remote: the SSH tunnel accepts the connection even while no backend listens
+  // on the server (and closes it again): it counts once the backend answers
+  // hello, which also asks for the live views as JPEG (a fraction of the bytes).
+  const bool remote = Remote();
+  hello_ok_ = false;
+  if (!remote) Log("已连接后端");
   // A git pull updates the Python side at once, this program only when it is
   // rebuilt: say so instead of misbehaving silently.
-  be_.Request("hello", json::object(), [this](bool ok, const json& r, const std::string& err) {
+  be_.Request("hello", remote ? json{{"jpeg", true}} : json::object(), [this, remote](bool ok, const json& r, const std::string& err) {
+    if (ok) hello_ok_ = true;
+    if (ok && remote) {
+      Log("已连接后端");
+      LoadBackendDefaults();
+    }
     // A lost connection fails it too; only an old backend does not know the command.
     if (!ok && err.find("未知命令") == std::string::npos) return;
     const int theirs = ok && r.is_object() && r.contains("protocol") && r["protocol"].is_number_integer()
@@ -406,6 +438,10 @@ void App::ConnectBackend(bool quiet) {
       Log(Fmt("界面与后端的版本不一致（界面 %d，后端 %d）：请重新编译 CoSim Studio，或把桥接目录更新到与界面相同的版本",
               kBackendProtocol, theirs), "error");
   });
+  if (!remote) LoadBackendDefaults();
+}
+
+void App::LoadBackendDefaults() {
   // Always start from the backend's full defaults and lay what we already have
   // (e.g. a loaded, possibly partial config file) on top, so every section the
   // pages read exists.
@@ -620,7 +656,10 @@ void App::StartRun() {
   const json units = cfg_.contains("carsim") ? cfg_["carsim"].value("units", json::object()) : json::object();
   busy_ = "正在启动 ...";
   starting_ = true;
-  be_.Request("cosim_start", {{"config", cfg_}}, [this, units](bool ok, const json& r, const std::string& err) {
+  // Remote: real CarSim runs in the CarSim service on this computer, not beside the backend.
+  json run_cfg = cfg_;
+  if (Remote() && run_cfg.contains("carsim") && !run_cfg["carsim"].value("mock", false)) run_cfg["carsim"]["remote"] = true;
+  be_.Request("cosim_start", {{"config", run_cfg}}, [this, units](bool ok, const json& r, const std::string& err) {
     busy_.clear();
     starting_ = false;
     if (!ok) {
@@ -959,21 +998,13 @@ void App::OnEvent(const json& ev) {
     const std::string vid = ev.value("view", std::string("p0"));
     if (vid.size() == 2 && vid[1] >= '1' && vid[1] <= '3') {
       ViewPane& pane = panes_[vid[1] - '0'];
-      if (view_on_ && Base64Decode(ev.value("rgb", std::string()), pane.px)) {
-        pane.w = ev.value("w", 0);
-        pane.h = ev.value("h", 0);
-        if (static_cast<int>(pane.px.size()) >= pane.w * pane.h * 3) {
-          pane.dirty = true;
-          ++pane.frames;
-        }
+      if (view_on_ && FramePixels(ev, pane.px, pane.w, pane.h)) {
+        pane.dirty = true;
+        ++pane.frames;
       }
-    } else if (view_on_ && Base64Decode(ev.value("rgb", std::string()), view_pixels_)) {
-      view_w_ = ev.value("w", 0);
-      view_h_ = ev.value("h", 0);
-      if (static_cast<int>(view_pixels_.size()) >= view_w_ * view_h_ * 3) {
-        view_dirty_ = true;
-        ++view_frames_;
-      }
+    } else if (view_on_ && FramePixels(ev, view_pixels_, view_w_, view_h_)) {
+      view_dirty_ = true;
+      ++view_frames_;
     }
   } else if (type == "progress") {
     const int done = ev.value("done", 0), total = ev.value("total", 1);
@@ -1045,7 +1076,9 @@ void App::OnEvent(const json& ev) {
     weather_dirty_ = false;
     last_tel_ = json::object();
     busy_task_.clear();
-    if (!ev.contains("quiet") && stop_since_ < 0) Log("与后端的连接断开了", "error");  // (not the one 停止后端 ended)
+    // (Not the one 停止后端 ended; remote: nor a tunnel with no backend behind it yet.)
+    if (!ev.contains("quiet") && stop_since_ < 0 && (hello_ok_ || !Remote())) Log("与后端的连接断开了", "error");
+    hello_ok_ = false;
   }
 }
 
@@ -1065,7 +1098,8 @@ void App::BuildTour() {
     return l != log_.rend() && l->text == kPrinted;
   };
   tour_ = new std::vector<TourStep>{
-      {kPanelConnect, [this] { ConnectBackend(); }, [this] { return be_.Connected(); }, ""},
+      // (Remote prefs: the backend on the server, started there; through a tunnel it is there once it answers.)
+      {kPanelConnect, [this] { ConnectBackend(); }, [this] { return be_.Connected() && (hello_ok_ || !Remote()); }, ""},
       {kPanelConnect, [this] { ConnectCarla(); }, [this, idle] { return carla_connected_ && idle(); }, "01_connect"},
       {kPanelWorld, [] {}, idle, "02_world"},
       {kPanelVehicle, [this] { FetchVehicleSpecs(false); }, idle, ""},
@@ -1286,6 +1320,17 @@ void App::BuildTour() {
       {kPanelWorld, [this] { dark_ = true; theme_changed_ = true; LoadMap("Town10HD_Opt"); },
        [this, idle] { return idle() && world_.value("map", "") == "Town10HD_Opt"; }, ""},
   };
+  // Remote prefs: the toolbar's "远程" badge and, for real CarSim, the CarSim service's
+  // status on the CarSim page (by a click on its tab; no service needed: "未连接").
+  if (Remote()) {
+    tour_->push_back({kPanelWorld, [this] { tour_kept_["mock"] = cfg_["carsim"]["mock"]; cfg_["carsim"]["mock"] = false; },
+                      idle, ""});
+    tour_->push_back({-1, [this] { click_target_ = "tab:CarSim"; }, [this] {
+                        return panel_ == kPanelCoSim && click_target_.empty() && ui::TargetShown("toolbar:remote") &&
+                               ui::TargetShown("cosim:service");
+                      }, "17_remote"});
+    tour_->push_back({kPanelCoSim, [this] { cfg_["carsim"]["mock"] = tour_kept_["mock"]; }, idle, ""});
+  }
 }
 
 // A CarSim co-simulation (mock CarSim, route following on the road) with

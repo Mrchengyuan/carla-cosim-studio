@@ -59,7 +59,7 @@ PROBE_ROLE = "cosim_probe"  # cars vehicle_specs spawns to measure a vehicle mod
 # space, estimates): served by their own thread, so a dataset playback or
 # deleting a large dataset never holds up a run's frames on the worker.
 IO_CMDS = {"dataset_list", "dataset_info", "dataset_frame", "dataset_export", "dataset_delete",
-           "disk_info", "rig_estimate"}
+           "disk_info", "rig_estimate", "path_status"}
 # What "hello" reports; the GUI (kBackendProtocol in cosim_gui/src/app.cpp) warns
 # when it was built for another one. Raise both together whenever a command,
 # event or config field the GUI relies on changes.
@@ -408,7 +408,10 @@ class Backend:
     def cmd_ping(self):
         return "pong"
 
-    def cmd_hello(self):
+    def cmd_hello(self, jpeg=False):
+        # A GUI at the other end of an SSH tunnel (its remote_backend setting)
+        # asks for its live views as JPEG instead of raw RGB.
+        self.views.jpeg = bool(jpeg)
         return {"protocol": PROTOCOL}
 
     def cmd_connect(self, host="localhost", port=2000, timeout=20.0, recover=False):
@@ -1303,6 +1306,16 @@ class Backend:
     def cmd_disk_info(self, path="."):
         return coll.disk_info(path)
 
+    def cmd_path_status(self, paths=()):
+        """The GUI's check or cross under a path field, for files on this
+        machine when the GUI runs on another one (remote_backend): relative
+        paths resolve like a run's (from the bridge directory, the working directory)."""
+        out = {}
+        for p in paths:
+            r = os.path.abspath(p) if p else ""
+            out[p] = {"resolved": r, "exists": os.path.exists(r), "is_file": os.path.isfile(r)}
+        return out
+
     def _pause_clock(self, paused):
         """The real-time factor counts running time only."""
         clock = getattr(self.session, "clock", None)
@@ -1633,11 +1646,17 @@ def _socket_thread_request(req, send):
     """Requests the socket thread answers itself, since the worker may be the
     thread that hangs: "dump_stacks" prints every thread's stack into the log
     (the GUI sends it before restarting a backend where there is no SIGUSR1,
-    i.e. on Windows). False: a request for the worker."""
-    if req.get("cmd") != "dump_stacks":
+    i.e. on Windows); "restart_backend" does the same and then exits with code
+    3 (a GUI whose backend runs on a server, remote_backend: the session script
+    there starts a new one). False: a request for the worker."""
+    cmd = req.get("cmd")
+    if cmd not in ("dump_stacks", "restart_backend"):
         return False
     faulthandler.dump_traceback(all_threads=True)
     send({"id": req.get("id"), "ok": True, "result": True})
+    if cmd == "restart_backend":
+        print("restart_backend: exiting with code 3", flush=True)
+        os._exit(3)
     return True
 
 

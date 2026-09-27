@@ -86,6 +86,7 @@ class App {
   void DrawPanelRecorder();
   void DrawPanelView();
   void DrawViewImage(float max_w, float max_h);
+  void BackendPathStatus(const std::string& path);  // check / cross under a path the backend reads
 
   // ---------------------------------------------------------- rig editor (rig_editor.cpp)
   void DrawPanelRig();
@@ -103,6 +104,7 @@ class App {
   void StopBackendPoll();  // every frame while StopBackend waits for the backend to exit
   void RestartBackend();
   void ConnectBackend(bool quiet = false);  // quiet: a retry while it starts, no error
+  void LoadBackendDefaults();                // default config and rig presets of a backend just connected
   void ConnectCarla(bool recover = false);
   void RefreshWorld();
   void RefreshAfterMapChange();
@@ -154,6 +156,9 @@ class App {
             const std::string& busy_text = "");
   const json* SelectedVehicleSpec() const;
   bool Running() const { return run_state_ == "running" || run_state_ == "paused"; }
+  // The backend runs on a server, reached through an SSH tunnel (prefs "remote_backend"):
+  // never started or stopped here; CarSim runs in the CarSim service on this computer.
+  bool Remote() const { return prefs_.value("remote_backend", false); }
   // The rig's mounts are still an older config's (CARLA frame: car centre, y right).
   bool RigLegacy() const {
     return cfg_.contains("rig") && cfg_["rig"].is_object() && cfg_["rig"].value("frame", std::string("carsim")) == "carla";
@@ -177,6 +182,9 @@ class App {
   bool auto_connect_ = false;  // --auto-connect: connect to CARLA once the backend is up
   bool recover_connect_ = false;  // after RestartBackend: reconnect and clear what the old one left
   bool backend_rejected_ = false;  // the backend on our port serves another GUI window: stop reconnecting
+  bool hello_ok_ = false;          // the backend answered this connection's hello (remote: an SSH tunnel
+                                   // accepts a connection even while no backend listens behind it)
+  json server_paths_ = json::object();  // remote: "path_status" answers, path -> {asked, pending, status}
   bool rig_converting_ = false;   // an old config's rig (CARLA frame) is being converted by the backend,
                                   // or that failed (retried on the next CARLA connection / config load)
   std::string busy_task_;         // what the backend worker has been busy with ("busy" heartbeat)

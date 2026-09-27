@@ -1,9 +1,11 @@
 """Live views for the GUI viewport: several sensors on the ego streamed at
 once (camera, semantic / depth / instance, lidar and radar as bird's-eye
-images). Each view is one sensor; frames go to the GUI as raw RGB.
+images). Each view is one sensor; frames go to the GUI as raw RGB, or as
+JPEG to a GUI that asks for it (remote: through an SSH tunnel).
 """
 
 import base64
+import io
 import math
 import threading
 import time
@@ -86,11 +88,20 @@ class _Bev:
         return img
 
 
+def encode_jpeg(rgb, quality=80):
+    """RGB image (h x w x 3, uint8) -> base64 JPEG."""
+    from PIL import Image  # only for a GUI that asks for JPEG
+    buf = io.BytesIO()
+    Image.fromarray(np.ascontiguousarray(rgb)).save(buf, format="JPEG", quality=quality)
+    return base64.b64encode(buf.getvalue()).decode("ascii")
+
+
 class ViewStreamer:
     def __init__(self, emit):
         self.emit = emit
         self.views = {}          # id -> {"actor", "spec", "period", "last", ...}
         self.lock = threading.Lock()
+        self.jpeg = False        # frames as JPEG (the GUI's hello asked: remote_backend)
 
     def specs(self):
         return [dict(v["spec"]) for v in self.views.values()]
@@ -183,11 +194,16 @@ class ViewStreamer:
                 return
             v["last"] = now
             rgb = self._render(v, data)
+            jpeg = encode_jpeg(rgb) if self.jpeg else None
         except Exception as e:  # never kill the sensor thread
             print("view %s render failed: %s" % (vid, e), flush=True)
             return
-        self.emit({"event": "frame", "view": vid, "w": int(rgb.shape[1]), "h": int(rgb.shape[0]), "frame": data.frame,
-                   "rgb": base64.b64encode(np.ascontiguousarray(rgb).tobytes()).decode("ascii")})
+        frame = {"event": "frame", "view": vid, "w": int(rgb.shape[1]), "h": int(rgb.shape[0]), "frame": data.frame}
+        if jpeg is None:
+            frame["rgb"] = base64.b64encode(np.ascontiguousarray(rgb).tobytes()).decode("ascii")
+        else:
+            frame["jpeg"] = jpeg
+        self.emit(frame)
 
     def _points(self, v, data):
         """Points in the vehicle frame (x, y) with the colour value: height above

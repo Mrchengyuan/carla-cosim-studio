@@ -191,8 +191,9 @@ void App::Frame() {
 
 void App::FrameBody() {
   StopBackendPoll();
-  if (!be_.Connected() && plat::IsAlive(backend_proc_) && !backend_rejected_ && tour_dir_.empty() && stop_since_ < 0 &&
-      frame_ % 30 == 0)
+  // (Remote: the backend on the server, through the SSH tunnel, whenever it is not connected.)
+  if (!be_.Connected() && (plat::IsAlive(backend_proc_) || Remote()) && !backend_rejected_ && tour_dir_.empty() &&
+      stop_since_ < 0 && frame_ % 30 == 0)
     ConnectBackend(true);
   if (tour_) TourTick();
   // Desktop launcher: connect to CARLA as soon as the backend answers.
@@ -228,6 +229,11 @@ void App::FrameBody() {
     recover_connect_ = false;
     ConnectCarla(true);
   }
+  // Remote: the CarSim service on this computer connects to the server by itself;
+  // keep its status on the CarSim page current (world_info).
+  if (Remote() && panel_ == kPanelCoSim && carla_connected_ && !Running() && busy_.empty() && be_.PendingCount() == 0 &&
+      frame_ % 120 == 0)
+    RefreshWorld();
   // A backend that hangs (a CARLA call that never returns) or died: say so,
   // with a way out, instead of a GUI that silently stops updating.
   if (!busy_task_.empty() && ImGui::GetTime() - busy_seen_ > 3.0) busy_task_.clear();  // finished since
@@ -592,7 +598,11 @@ void App::DrawToolbar() {
                     cfg_["drive"].value("dynamics", std::string("cosim")) == "cosim";
   const char* kMock = "模拟 CarSim";
   const float mock_tw = ImGui::GetFont()->CalcTextSizeA(fs * 0.82f, 1e9f, 0, kMock).x;
-  const float box_w = fs * 29.5f + (mock ? mock_tw + fs * 1.6f : 0.0f);
+  // The backend (CARLA, the control algorithm) runs on a server: say so too.
+  const bool remote = Remote();
+  const char* kRemote = "远程";
+  const float remote_tw = ImGui::GetFont()->CalcTextSizeA(fs * 0.82f, 1e9f, 0, kRemote).x;
+  const float box_w = fs * 29.5f + (mock ? mock_tw + fs * 1.6f : 0.0f) + (remote ? remote_tw + fs * 1.6f : 0.0f);
   const float right = ImGui::GetWindowContentRegionMax().x;
   // Narrow windows (1280 px): tighter tabs, so the readout box on the right keeps its room.
   float labels_w = 0;
@@ -649,15 +659,22 @@ void App::DrawToolbar() {
   field("时间", have ? Fmt("%.2f", last_tel_.value("t", 0.0)) : std::string("-"), "s", fs * 8.0f);
   field("车速", have ? Fmt("%.1f", last_tel_.value("speed_kmh", 0.0)) : std::string("-"), "km/h", fs * 9.0f);
   field("实时", have ? Fmt("%.2f", last_tel_.value("rt_factor", 0.0)) : std::string("-"), "x", fs * 6.8f);
-  if (mock) {
+  // Tags after the readouts: the text in a tinted frame, a tooltip on hover.
+  auto tag = [&](const char* id, const char* text, float tw, const ImVec4& col, const char* tip) {
     const float ls = fs * 0.82f;
-    const ImVec2 a(x - fs * 0.1f, cy - ls * 0.5f - fs * 0.22f), b(a.x + mock_tw + fs, cy + ls * 0.5f + fs * 0.22f);
-    dl->AddRectFilled(a, b, ImGui::GetColorU32(ui::WithAlpha(p.warning, 0.15f)), 3.0f);
-    dl->AddRect(a, b, ImGui::GetColorU32(ui::WithAlpha(p.warning, 0.55f)), 3.0f);
-    dl->AddText(ImGui::GetFont(), ls, ImVec2(a.x + fs * 0.5f, cy - ls * 0.5f), ImGui::GetColorU32(p.warning), kMock);
-    if (ImGui::IsMouseHoveringRect(a, b))
-      ImGui::SetTooltip("用的是内置的简单车辆模型，不是 CarSim。在“CarSim 动力学”页取消“模拟 CarSim”即用真实 CarSim");
-  }
+    const ImVec2 a(x - fs * 0.1f, cy - ls * 0.5f - fs * 0.22f), b(a.x + tw + fs, cy + ls * 0.5f + fs * 0.22f);
+    dl->AddRectFilled(a, b, ImGui::GetColorU32(ui::WithAlpha(col, 0.15f)), 3.0f);
+    dl->AddRect(a, b, ImGui::GetColorU32(ui::WithAlpha(col, 0.55f)), 3.0f);
+    dl->AddText(ImGui::GetFont(), ls, ImVec2(a.x + fs * 0.5f, cy - ls * 0.5f), ImGui::GetColorU32(col), text);
+    ui::RecordTarget(id, a, b);
+    if (ImGui::IsMouseHoveringRect(a, b)) ImGui::SetTooltip("%s", tip);
+    x += tw + fs * 1.6f;
+  };
+  if (mock)
+    tag("toolbar:mock", kMock, mock_tw, p.warning, "用的是内置的简单车辆模型，不是 CarSim。在“CarSim 动力学”页取消“模拟 CarSim”即用真实 CarSim");
+  if (remote)
+    tag("toolbar:remote", kRemote, remote_tw, p.accent,
+        "后端、CARLA 和你的控制算法在云端服务器上运行，界面经 SSH 隧道连接；真实 CarSim 在这台电脑上的 CarSim 服务里运行");
   if (have && dur > 0) {
     const float frac = static_cast<float>(std::min(1.0, last_tel_.value("t", 0.0) / dur));
     dl->AddRectFilled(ImVec2(bp.x + 1, bp.y + bh - 3), ImVec2(bp.x + 1 + (bw - 2) * frac, bp.y + bh - 1),
@@ -856,7 +873,8 @@ void App::DrawViewport(float w, float h) {
     const char* icon = ICON_FA_VIDEO_SLASH;
     std::string msg, sub;
     int action = 0;
-    if (!be_.Connected() && !plat::IsAlive(backend_proc_)) { msg = "后端没有运行"; sub = "界面靠 Python 后端和 CARLA 通信"; action = 4; }
+    if (!be_.Connected() && Remote()) { msg = "正在连接云端后端 ..."; sub = "经启动脚本建立的 SSH 隧道，断开后自动重连"; icon = ICON_FA_SPINNER; }
+    else if (!be_.Connected() && !plat::IsAlive(backend_proc_)) { msg = "后端没有运行"; sub = "界面靠 Python 后端和 CARLA 通信"; action = 4; }
     else if (!carla_connected_) { msg = "未连接 CARLA"; sub = "启动 CARLA 服务器后点“连接”"; action = 1; }
     else if (!ego) { msg = "还没有主车"; sub = "在“车辆与视角”里选择车型和出生点"; action = 2; }
     else if (view_on_) { msg = "正在等待画面 ..."; icon = ICON_FA_SPINNER; }
@@ -1007,8 +1025,10 @@ void App::DrawViewport(float w, float h) {
     const bool pressed = ui::Button("", label, ui::Kind::Primary, ImVec2(lw, 0));
     ui::RecordTarget("viewport:restart_backend");
     if (ImGui::IsItemHovered())
-      ImGui::SetTooltip("结束当前后端（它的线程调用栈会记到 backend.prev.log），启动新的后端并重新连接 CARLA，\n"
-                        "同时清理上一个后端留在 CARLA 里的主车、交通和传感器");
+      ImGui::SetTooltip("%s", Remote() ? "服务器上的后端把线程调用栈记进它的日志（remote_backend.log）后退出，服务器随即启动新的后端；\n"
+                                         "界面重新连接 CARLA，同时清理上一个后端留在 CARLA 里的主车、交通和传感器"
+                                       : "结束当前后端（它的线程调用栈会记到 backend.prev.log），启动新的后端并重新连接 CARLA，\n"
+                                         "同时清理上一个后端留在 CARLA 里的主车、交通和传感器");
     if (pressed) RestartBackend();
     note_y += fs * 2.6f;
   }
@@ -1770,9 +1790,9 @@ void App::DrawStatusBar() {
     ImGui::SameLine(0, 10);
   };
   const bool be = be_.Connected();
-  ui::StatusDot(be ? p.success : (plat::IsAlive(backend_proc_) ? p.warning : p.danger));
+  ui::StatusDot(be ? p.success : (plat::IsAlive(backend_proc_) || Remote() ? p.warning : p.danger));
   ImGui::SameLine(0, 2);
-  ImGui::TextColored(dim, "后端 %s", be ? "已连接" : (plat::IsAlive(backend_proc_) ? "启动中" : "未运行"));
+  ImGui::TextColored(dim, "后端 %s", be ? "已连接" : Remote() ? "连接中" : (plat::IsAlive(backend_proc_) ? "启动中" : "未运行"));
   sep();
   ui::StatusDot(carla_connected_ ? p.success : p.danger);
   ImGui::SameLine(0, 2);

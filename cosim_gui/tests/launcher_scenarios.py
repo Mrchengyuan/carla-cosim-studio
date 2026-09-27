@@ -256,9 +256,14 @@ def sc_main(tmp, out):
     st = run(make_package(os.path.join(tmp, "p_main")), os.path.join(out, "main"), "main")
     t = texts(st)
     check("main: ready, stop, again, quit asks: all tour steps", st.get("tour_steps_done", 0) >= 6, (st.get("tour_steps_done"), t[-5:]))
-    check("main: ready twice, the GUI opened twice, the service connected twice",
+    # Started again at once, the server may still be ending the last session (its backend stops
+    # slowly after CARLA's first start): it replaces it, and the service, which may have reached
+    # the old backend meanwhile, reconnects to the new one. So: at least twice, connected at the end.
+    service = [x for x in texts(st, 2) if x.startswith(("已连上云端", "连接断开", "正在连接云端"))]
+    check("main: ready twice, the GUI opened twice, the service connected (again) each time",
           sum("云端就绪" in x for x in t) == 2 and sum(x == "打开仿真界面" for x in t) == 2
-          and sum(x.startswith("已连上云端（127.0.0.1:58121）") for x in t) == 2, t)
+          and sum(x.startswith("已连上云端（127.0.0.1:58121）") for x in t) >= 2
+          and service[-1].startswith("已连上云端"), t)
     time.sleep(3)
     left = ours_running("/p_main/")
     check("main: nothing left running, ports free", not listening(58120) and not listening(58121) and not left, left)

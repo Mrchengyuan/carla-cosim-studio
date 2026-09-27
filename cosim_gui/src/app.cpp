@@ -119,6 +119,9 @@ void PushHist(std::vector<float>& h, float v, size_t max) {
   if (h.size() > max) h.erase(h.begin(), h.begin() + static_cast<std::ptrdiff_t>(h.size() - max));
 }
 
+// Banner and log line of a run stopped by an error (cosim_state "error").
+std::string RunErrorNote(const std::string& why) { return "运行出错已停止：" + why + "（详情见底部“输出”）"; }
+
 }  // namespace
 
 bool appui::Base64(const std::string& in, std::vector<unsigned char>& out) { return Base64Decode(in, out); }
@@ -532,8 +535,9 @@ void App::StartRun() {
     busy_.clear();
     if (!ok) {
       // The run did not start (e.g. an error in the control algorithm): say
-      // why on the viewport and show the output.
-      Log(err, "error");
+      // why on the viewport and show the output. A start that failed once the
+      // run existed has just logged the reason (cosim_state "error").
+      if (log_.empty() || log_.back().text != RunErrorNote(err)) Log(err, "error");
       run_note_level_ = "error";
       run_note_ = "运行没有启动：" + err;
       run_note_ego_ = -1;  // about the ego the failed start leaves (it respawns it), see SetWorld
@@ -818,7 +822,7 @@ void App::OnEvent(const json& ev) {
       const double t = last_tel_.value("t", 0.0);
       if (run_state_ == "error") {
         run_note_level_ = "error";
-        run_note_ = "运行出错已停止：" + ev.value("detail", std::string()) + "（详情见底部“输出”）";
+        run_note_ = RunErrorNote(ev.value("detail", std::string()));
       } else if (!ev.value("detail", std::string()).empty()) {
         const std::string why = ev.value("detail", std::string());
         run_note_level_ = "warn";

@@ -117,13 +117,21 @@ def _user_error(what, e, path):
     return "%s：%s: %s%s" % (what, type(e).__name__, msg, where)
 
 
-def _scene_miss(k, sel):
+def _scene_miss(k, sel, rig=()):
     """Why the scene handed to control() has no key k: it is not ticked
-    "给算法" on the 场景信息 page ('' when it is, or k is no scene key)."""
+    "给算法" on the 场景信息 page, or a ticked sensor is no enabled sensor of
+    the rig (rig: the 传感器套件 sensors, if known). '' when k is no scene key."""
+    sensors = sel.get("sensors") or ()
     if k == "lane" and not sel.get("lane"):
         return "“场景信息”页车道一栏没有勾选“给算法”的量"
-    if k == "sensors" and not sel.get("sensors"):
-        return "“场景信息”页没有勾选给算法的传感器"
+    if k == "sensors":  # there only when a ticked sensor is an enabled one of the rig
+        if not sensors:
+            return "“场景信息”页没有勾选给算法的传感器"
+        return "“场景信息”页勾选给算法的传感器（%s）在“传感器套件”里没有启用或已经删掉" % "、".join(sensors)
+    if k in sensors:  # scene["sensors"] has every ticked sensor the rig has enabled
+        return "这个传感器在“传感器套件”里没有启用或已经删掉"
+    if any(s.get("name") == k for s in rig):
+        return "没有在“场景信息”页给这个传感器勾选“给算法”"
     if k == "collisions" and sel.get("collision", "log") == "off":
         return "“场景信息”页碰撞选了“不检测”"
     for keys, ticked in ((EGO_KEYS, sel.get("ego") or ()), (LANE_KEYS, sel.get("lane") or ()),
@@ -133,11 +141,14 @@ def _scene_miss(k, sel):
     return ""
 
 
-def _name_clashes(folder):
+def _name_clashes(path):
     """Modules of the algorithm's folder that its code imports under a name
     sys.modules already holds from another file (the backend's config.py,
     CARLA's agents package, the standard library): `import config` would
-    silently return that one. [(name, own file, the loaded file), ...]"""
+    silently return that one. Its code: the algorithm file and the files of
+    the folder it imports, directly or through them (not every script lying
+    in the folder). [(name, own file, the loaded file), ...]"""
+    folder = os.path.dirname(path)
     taken = []
     for n in sorted(os.listdir(folder)):
         own = os.path.join(folder, n) if n.endswith(".py") else os.path.join(folder, n, "__init__.py")
@@ -150,22 +161,45 @@ def _name_clashes(folder):
             taken.append((name, n if n.endswith(".py") else n + os.sep, f))
     if not taken:
         return []
-    imported = set()
-    for root, dirs, files in os.walk(folder):  # the algorithm's files and packages
-        dirs[:] = [x for x in dirs if os.path.isfile(os.path.join(root, x, "__init__.py"))]
-        for fn in files:
-            if not fn.endswith(".py"):
-                continue
-            try:
-                with open(os.path.join(root, fn), "rb") as fh:
-                    tree = ast.parse(fh.read())
-            except (OSError, SyntaxError, ValueError):
-                continue  # a syntax error is reported by the import itself
-            for node in ast.walk(tree):
-                if isinstance(node, ast.Import):
-                    imported.update(a.name.split(".")[0] for a in node.names)
-                elif isinstance(node, ast.ImportFrom) and not node.level and node.module:
+
+    def files(base, name):  # module a.b.c under base: a/__init__.py, a/b/__init__.py, a/b/c.py
+        out = []
+        for part in name.split("."):
+            base = os.path.join(base, part)
+            f = next((g for g in (base + ".py", os.path.join(base, "__init__.py")) if os.path.isfile(g)), None)
+            if f is None:
+                break
+            out.append(f)
+        return out
+
+    imported, todo, seen = set(), [path], set()
+    while todo:
+        f = todo.pop()
+        if f in seen:
+            continue
+        seen.add(f)
+        try:
+            with open(f, "rb") as fh:
+                tree = ast.parse(fh.read())
+        except (OSError, SyntaxError, ValueError):
+            continue  # a syntax error is reported by the import itself
+        for node in ast.walk(tree):  # also imports inside functions
+            mods = []
+            if isinstance(node, ast.Import):
+                imported.update(a.name.split(".")[0] for a in node.names)
+                mods = [(folder, a.name) for a in node.names]
+            elif isinstance(node, ast.ImportFrom):
+                base = folder
+                if node.level:  # from . import x: relative to the package of f
+                    base = os.path.dirname(f)
+                    for _ in range(node.level - 1):
+                        base = os.path.dirname(base)
+                elif node.module:
                     imported.add(node.module.split(".")[0])
+                pre = node.module + "." if node.module else ""
+                mods = ([(base, node.module)] if node.module else []) + \
+                       [(base, pre + a.name) for a in node.names if a.name != "*"]  # a.name may be a module
+            todo += [g for base, name in mods for g in files(base, name) if _own_file(g, folder)]
     return [t for t in taken if t[0] in imported]
 
 
@@ -233,7 +267,7 @@ def load_controller(d, ex, n_imports=None, scene=None):
         sys.path.remove(folder)
     sys.path.insert(0, folder)
     importlib.invalidate_caches()  # files added since the last run
-    clash = _name_clashes(folder)
+    clash = _name_clashes(path)
     if clash:
         name, own, other = clash[0]
         raise RuntimeError("你的 %s 和后端已经加载的同名模块（%s）冲突：import %s 拿到的是那个模块，不是你的文件。"
@@ -279,7 +313,8 @@ def load_controller(d, ex, n_imports=None, scene=None):
             k = e.args[0] if len(e.args) == 1 and isinstance(e.args[0], str) else None
             no_export = "导出变量里没有 %r（导出变量在“CarSim 动力学”页设置，现有：%s）" % (
                 k, "、".join(names[:12]) + (" ..." if len(names) > 12 else ""))
-            why = _scene_miss(k, d.get("scene") or {}) if with_scene and k is not None else ""
+            why = _scene_miss(k, d.get("scene") or {}, (d.get("rig") or {}).get("sensors") or ()) \
+                if with_scene and k is not None else ""
             if why:  # scene objects / lane only have the keys ticked for the algorithm
                 hint = "——场景里没有 %r：%s" % (k, why)
                 if k in EGO_KEYS and k not in exports:  # could also be meant as a CarSim export
@@ -420,6 +455,11 @@ class CoSimSession:
             self.driver = make_driver(d, self.sync.ex, lambda: self.env.config.get("n_import"),
                                       lambda: self.scene.view())
         self.env = make_env(d)
+        folder = os.path.dirname(getattr(self.driver, "path", ""))
+        if folder:  # make_env put python_carsim_env first: the algorithm's own modules go before it again
+            if folder in sys.path:
+                sys.path.remove(folder)
+            sys.path.insert(0, folder)
         if d["run"]["record_dir"]:
             self.camera = spawn_chase_camera(w, self.vehicle, d["run"]["record_dir"])
 

@@ -53,12 +53,14 @@ class ControllerTests(unittest.TestCase):
             f.write(body)
         return p
 
-    def load(self, rel, entry="Controller", scene=None, scene_sel=None):
+    def load(self, rel, entry="Controller", scene=None, scene_sel=None, rig=None):
         d = st.load_dict(None, {})
         d["run"]["controller"] = {"path": os.path.join(self.tmp, rel), "entry": entry}
         d["carsim"]["repo_path"] = self.tmp
         if scene_sel is not None:
             d["scene"].update(scene_sel)
+        if rig is not None:
+            d["rig"]["sensors"] = rig
         return session.load_controller(d, Ex(["Xo", "Vx"]), None, (lambda: scene) if scene is not None else None)
 
     def error(self, ctl):
@@ -89,6 +91,27 @@ class ControllerTests(unittest.TestCase):
         self.write("a/c.py", "def control(exports, t, dt, scene):\n    return [scene['lane']['offset'], 0.0, 0.0]\n")
         ctl = self.load("a/c.py", "control", scene={"objects": [], "ego": {}}, scene_sel={"lane": []})
         self.assertIn("场景里没有 'lane'：“场景信息”页车道一栏没有勾选", self.error(ctl))
+
+    def test_missing_sensor_data_points_to_the_scene_and_rig_pages(self):
+        self.write("a/c.py", "def control(exports, t, dt, scene):\n    return [scene['sensors']['cam']['data'], 0, 0]\n")
+        rig = [{"name": "cam", "type": "camera_rgb", "enabled": False}, {"name": "lidar", "type": "lidar"}]
+        lidar = {"lidar": {"type": "lidar", "data": None}}
+
+        def msg(ticked, sensors=None):
+            scene = {"objects": [], "ego": {}}
+            if sensors is not None:
+                scene["sensors"] = sensors
+            m = self.error(self.load("a/c.py", "control", scene=scene, scene_sel={"sensors": ticked}, rig=rig))
+            self.assertNotIn("CarSim 动力学", m)
+            return m
+
+        # ticked, but disabled in the rig: the scene has no 'sensors' at all
+        self.assertIn("场景里没有 'sensors'：“场景信息”页勾选给算法的传感器（cam）在“传感器套件”里没有启用", msg(["cam"]))
+        self.assertIn("场景里没有 'sensors'：“场景信息”页没有勾选给算法的传感器", msg([]))
+        # only another sensor ticked: the scene has just that one
+        self.assertIn("场景里没有 'cam'：没有在“场景信息”页给这个传感器勾选“给算法”", msg(["lidar"], lidar))
+        # ticked together with another one, but disabled in the rig
+        self.assertIn("场景里没有 'cam'：这个传感器在“传感器套件”里没有启用", msg(["cam", "lidar"], lidar))
 
     def test_missing_export_still_points_to_the_carsim_page(self):
         self.write("a/c.py", "def control(exports, t, dt):\n    return [exports['LatErr'], 0.0, 0.0]\n")
@@ -161,6 +184,41 @@ class ControllerTests(unittest.TestCase):
         self.write("d/ctrl.py", "def control(e, t, dt):\n    return [0.1, 0.0, 0.0]\n")
         self.write("d/config.py", "KP = 1\n")
         self.assertEqual(self.load("d/ctrl.py", "control")([0.0, 0.0], 0.0)[0], 0.1)
+        # ... also when another script lying in the folder imports it
+        self.write("d/train.py", "import config\n")
+        self.assertEqual(self.load("d/ctrl.py", "control")([0.0, 0.0], 0.0)[0], 0.1)
+        # reached through a package and its relative import: found
+        self.write("g/ctrl.py", "from pkg import run\n\ndef control(e, t, dt):\n    return run()\n")
+        self.write("g/pkg/__init__.py", "from .inner import run\n")
+        self.write("g/pkg/inner.py", "def run():\n    import config\n    return [config.KP, 0.0, 0.0]\n")
+        self.write("g/config.py", "KP = 1\n")
+        with self.assertRaisesRegex(RuntimeError, "你的 config.py"):
+            self.load("g/ctrl.py", "control")
+
+    def test_algorithm_folder_stays_before_python_carsim_env(self):
+        """make_env puts python_carsim_env first; an import inside control()
+        must still get the algorithm's own file of that name."""
+        repo = os.path.dirname(self.write("repo/carsim_env.py", (
+            "class CarSimEnv:\n    def __init__(self, sim):\n"
+            "        self.config, self.t_current = {'n_import': 3, 't_step': 0.01}, 0.0\n\n"
+            "    def reset(self):\n        return [0.0, 0.0]\n")))
+        self.write("repo/helper.py", "V = 2.0\n")
+        self.write("algo/helper.py", "V = 1.0\n")
+        path = self.write("algo/ctrl.py", "def control(e, t, dt):\n    import helper\n    return [helper.V, 0.0, 0.0]\n")
+        d = st.load_dict(None, {})
+        d["run"].update(driver="custom", controller={"path": path, "entry": "control"}, record_dir="")
+        d["carsim"].update(mock=False, sim_path=os.path.join(repo, "x.sim"), repo_path=repo)
+        settings = SimpleNamespace(synchronous_mode=False, fixed_delta_seconds=None)
+        world = SimpleNamespace(get_settings=lambda: settings, apply_settings=lambda s: None, tick=lambda: 1)
+        sync = SimpleNamespace(ex=Ex(["Xo", "Vx"]), sync=lambda *a: SimpleNamespace(velocity=None),
+                               ref_local=[0.0, 0.0, 0.0], external_api=False, server_api=None)
+        ses = session.CoSimSession(world, None, None, d)
+        with mock.patch.object(session, "CarlaVehicleSync", lambda *a, **k: sync), \
+                mock.patch.object(session, "start_scene", lambda *a, **k: None):
+            ses.start()
+        self.assertEqual(sys.path[0], os.path.dirname(path))
+        self.assertIn(repo, sys.path)
+        self.assertEqual(ses.driver([0.0, 0.0], 0.0)[0], 1.0)
 
     # ------------------------------------------------------- A17: SystemExit
     def test_sys_exit_in_control(self):

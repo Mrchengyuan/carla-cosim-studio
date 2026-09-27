@@ -67,6 +67,7 @@ class Backend:
         self.spectator_mode = "free"
         self.sensors = {}          # id -> {"actor", "type", "save_dir", "count", "file"}
         self.traffic = {"vehicles": [], "walkers": [], "controllers": []}
+        self.traffic_seed = 0      # seed of the last spawn_traffic (also for cars moved off the ego's spawn point)
         self.idle_tick = False     # tick the world ourselves when sync mode is on and idle
         self.frame_dt = 0.05
         self.spec_cache = {}
@@ -636,7 +637,7 @@ class Backend:
                                      [carla.command.DestroyActor(i) for i in ids], False)
         self.traffic["vehicles"] = [a for a in self.traffic["vehicles"] if a.id not in ids]
         free = [p for p in w.get_map().get_spawn_points() if p.location.distance(tf.location) > 40.0]
-        random.shuffle(free)
+        random.Random(self.traffic_seed).shuffle(free)  # same seed, same new places
         for bp in blueprints:
             bp.set_attribute("role_name", "autopilot")
             for p in free:
@@ -717,7 +718,8 @@ class Backend:
     def cmd_spawn_traffic(self, vehicles=20, walkers=10, seed=0, safe=True):
         w = self._need_world()
         self._clear_replay()
-        rng = random.Random(int(seed))
+        self.traffic_seed = int(seed)
+        rng = random.Random(self.traffic_seed)
         bl = w.get_blueprint_library()
         vbps = [b for b in bl.filter("vehicle.*") if not safe or
                 (b.has_attribute("base_type") and b.get_attribute("base_type").as_str() == "car")]
@@ -725,6 +727,13 @@ class Backend:
         rng.shuffle(pts)
         ego_loc = self.ego.get_location() if self._alive(self.ego) else None
         tm_port = self._need_tm().get_port()
+        # Everything random in the traffic follows the seed too: the traffic
+        # manager's choices (route at junctions, lane changes; setting its seed
+        # also resets the traffic lights, so not in the middle of a run) and
+        # the pedestrians' spawn points, destinations and road crossings.
+        if not self._run_active():
+            self.tm.set_random_device_seed(self.traffic_seed % 2 ** 32)
+        w.set_pedestrians_seed(self.traffic_seed % 2 ** 32)
         n = 0
         for p in pts:
             if n >= int(vehicles):
@@ -1101,6 +1110,9 @@ class Backend:
             s.synchronous_mode, s.fixed_delta_seconds = True, d["sync"]["frame_dt"]
             w.apply_settings(s)
             self._tm_sync(True)
+            # The traffic lights start their cycle again with every run, like
+            # the ego, instead of wherever the time before the run left them.
+            w.reset_all_traffic_lights()
             for _ in range(20):
                 w.tick()
             cosim = d["drive"]["dynamics"] == "cosim"

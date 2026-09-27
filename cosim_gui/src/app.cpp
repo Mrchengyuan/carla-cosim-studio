@@ -739,6 +739,9 @@ void App::ConformConfig() {
   }
   if (cfg_.contains("sync") && cfg_["sync"].is_object() && cfg_["sync"].value("use_external_api", json()).is_boolean())
     ext = cfg_["sync"]["use_external_api"];
+  // Out of Conform's way (it would count them as wrong types), back after it.
+  if (!ref.is_null()) cfg_["sync"].erase("reference_point");
+  if (!ext.is_null()) cfg_["sync"].erase("use_external_api");
   int fixed = Conform(cfg_, cfg_defaults_);
   if (!ref.is_null()) cfg_["sync"]["reference_point"] = ref;
   if (!ext.is_null()) cfg_["sync"]["use_external_api"] = ext;

@@ -105,8 +105,10 @@ class ExportCheck:
     MOVING = 2.0  # m/s
 
     def __init__(self, ex, wheel_radius=None, z0=0.0):
-        """z0: the reference point's height above the ground (0 = front axle)."""
-        self.ex, self.z0 = ex, float(z0)
+        """z0: the reference point's height above the ground (0 = front axle);
+        None: Zo is not checked (height mode "ground": the car follows the
+        CARLA road, and the CarSim road may lie at any height)."""
+        self.ex, self.z0 = ex, None if z0 is None else float(z0)
         self.wheel_radius = list(wheel_radius or [0.33] * 4)
         self.done = False
         self._said = set()
@@ -115,9 +117,9 @@ class ExportCheck:
         """New warnings (text, CarSim units); prev: the exports dt s earlier."""
         ex, w = self.ex, {}
         ua, us = ex.units.get("angle", "deg"), ex.units.get("speed", "km/h")
-        if abs(ex.raw(obs, "Zo") - self.z0) > 0.5:
-            w["Zo"] = "Zo = %.3g m，平路上应约为参考点离地高度 %.2f m（CarSim 路面本来就有这个高度时可忽略）" % (
-                ex.raw(obs, "Zo"), self.z0)
+        if self.z0 is not None and abs(ex.raw(obs, "Zo") - self.z0) > 0.5:
+            w["Zo"] = "Zo = %.3g m，平路上应约为参考点离地高度 %.2f m（CarSim 路面本来就在这个高度时，" \
+                      "把高度模式改成“贴合 CARLA 路面”）" % (ex.raw(obs, "Zo"), self.z0)
         for n in ("Pitch", "Roll"):
             if abs(ex.angle(obs, n)) > 10.0:
                 w[n] = "%s = %.4g %s（车身俯仰 / 侧倾一般不到 10°）" % (n, ex.raw(obs, n), ua)

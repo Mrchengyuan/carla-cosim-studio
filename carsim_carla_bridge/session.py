@@ -299,9 +299,11 @@ class CoSimSession:
         self.n_frames = max(1, int(round(d["sync"]["duration"] / frame_dt))) if d["sync"]["duration"] > 0 else 0
         # Only the count is known to match the .sim: warn when the values do
         # not look like the named variables (now, and once the car moves).
+        # Height mode "ground" puts the car on the CARLA road: Zo is not checked.
         bb = self.vehicle.bounding_box
+        z0 = float(self.sync.ref_local[2]) - (bb.location.z - bb.extent.z)
         self.export_check = ExportCheck(self.sync.ex, self.sync.wheel_radius_m,
-                                        float(self.sync.ref_local[2]) - (bb.location.z - bb.extent.z))
+                                        None if d["sync"]["z_mode"] == "ground" else z0)
         self._t_start = self.env.t_current
         self._wall0 = time.perf_counter()
         return {"external_api": self.sync.external_api, "server_api": self.sync.server_api,

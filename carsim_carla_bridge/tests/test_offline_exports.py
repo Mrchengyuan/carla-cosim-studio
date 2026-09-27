@@ -106,6 +106,12 @@ class ExportCheckTests(unittest.TestCase):
         self.assertEqual(len(w), 1)
         self.assertIn("Zo = 0.6 m", w[0])
 
+    def test_zo_not_checked_without_z0(self):
+        names = list(cfg.EXPORT_NAMES)
+        obs = [0.0] * len(names)
+        obs[names.index("Zo")] = 40.0  # a CarSim road that high: fine in height mode "ground"
+        self.assertEqual(ExportCheck(CarSimExports(names, DEFAULT), z0=None)(obs), [])
+
 
 class MockUnitsTests(unittest.TestCase):
     def run_mock(self, units, frames=60):
@@ -227,6 +233,15 @@ class ExampleControllerTests(unittest.TestCase):
         self.assertTrue(seen and all(abs(v - 36.0) < 1e-9 for v in seen), seen)
 
 
+class HillEnv(MockCarSimEnv):
+    """The .sim's road lies 5 m up (Zo = 5 m on it)."""
+
+    def _exports(self):
+        v = list(super()._exports())
+        v[self.export_names.index("Zo")] += 5.0
+        return tuple(v)
+
+
 class FakeSync:
     """CarlaVehicleSync without CARLA: the exports as the CarSim page reads them."""
 
@@ -294,6 +309,52 @@ class SessionTests(unittest.TestCase):
         self.assertEqual(len(out), 1, out)
         self.assertGreaterEqual(out[0][0], 1.0)
         self.assertIn("Vx =", out[0][1])
+
+    def test_raised_carsim_road(self):
+        d = self.config(DEFAULT)
+        info, out, _ = self.run_session(d, HillEnv(cfg.EXPORT_NAMES, t_stop=10.0))
+        self.assertEqual(len(info["warnings"]), 1, info["warnings"])
+        self.assertIn("Zo = 5 m", info["warnings"][0])
+        self.assertIn("贴合 CARLA 路面", info["warnings"][0])
+        self.assertEqual(out, [])
+        d["sync"]["z_mode"] = "ground"  # the car follows the CARLA road: Zo is not checked
+        info, out, _ = self.run_session(d, HillEnv(cfg.EXPORT_NAMES, t_stop=10.0))
+        self.assertEqual(info["warnings"], [])
+        self.assertEqual(out, [])
+
+    def test_backend_logs_start_warnings(self):
+        class World:
+            def get_settings(self):
+                return SimpleNamespace(synchronous_mode=False, fixed_delta_seconds=None)
+
+            def apply_settings(self, s):
+                pass
+
+            def tick(self):
+                return 1
+
+        class StubSession:
+            scene = None
+
+            def __init__(self, *args):
+                pass
+
+            def start(self):
+                return {"external_api": False, "server_api": None, "reference_point": [0.0, 0.0, 0.0],
+                        "t_step": 0.001, "inner_steps": 20, "clock_warning": False,
+                        "warnings": ["导出变量可疑：开始时"]}
+
+        b = Backend()
+        events = []
+        b.emit = events.append
+        b.world = World()
+        b.cmd_spawn_ego = lambda *args: setattr(b, "ego", SimpleNamespace())
+        with mock.patch("backend_server.CoSimSession", StubSession), \
+                mock.patch("backend_server.rigmod.spec_of", lambda v: {}):
+            info = b.cmd_cosim_start({"carsim": {"mock": True}})
+        self.assertEqual(info["warnings"], ["导出变量可疑：开始时"])
+        self.assertIn({"event": "log", "level": "warn", "msg": "导出变量可疑：开始时"}, events)
+        self.assertEqual(b.cosim_state, "running")
 
     def test_backend_logs_and_strips_warnings(self):
         b = Backend()

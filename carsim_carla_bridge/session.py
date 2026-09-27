@@ -17,7 +17,7 @@ import carla
 
 import rig as rigmod
 import settings as st
-from bridge import REQUIRED_EXPORTS, CarlaVehicleSync, front_axle_local
+from bridge import REQUIRED_EXPORTS, CarlaVehicleSync, ExportCheck, front_axle_local
 from collector import DISK_RESERVE_GB
 from drivers import ManualDriver, RouteFollower
 from scene import Recorder, SceneProvider, gui_view
@@ -141,7 +141,7 @@ def make_env(d):
     if c["mock"]:
         from mock_carsim import MockCarSimEnv
         dur = d["sync"]["duration"]
-        return MockCarSimEnv(c["export_names"], t_stop=dur + 1.0 if dur > 0 else 1e9)
+        return MockCarSimEnv(c["export_names"], t_stop=dur + 1.0 if dur > 0 else 1e9, units=c["units"])
     sim, carsim_env = check_carsim(d)
     try:
         return carsim_env.CarSimEnv(sim)
@@ -473,6 +473,14 @@ class CoSimSession:
         # duration <= 0: run until stopped (or until CarSim reaches t_stop).
         self.n_frames = max(1, int(round(d["sync"]["duration"] / frame_dt))) if d["sync"]["duration"] > 0 else 0
         self._t0 = self.env.t_current  # t_start of the .sim, not always 0
+        # Only the count is known to match the .sim: warn when the values do
+        # not look like the named variables (now, and once the car moves).
+        # Height mode "ground" puts the car on the CARLA road: Zo is not checked.
+        bb = self.vehicle.bounding_box
+        z0 = float(self.sync.ref_local[2]) - (bb.location.z - bb.extent.z)
+        self.export_check = ExportCheck(self.sync.ex, self.sync.wheel_radius_m,
+                                        None if d["sync"]["z_mode"] == "ground" else z0)
+        self.warnings += self.export_check(self.obs)
         self.clock = WallClock()
         return {"external_api": self.sync.external_api, "server_api": self.sync.server_api,
                 "reference_point": [round(float(x), 3) for x in self.sync.ref_local],
@@ -508,6 +516,7 @@ class CoSimSession:
         if not all(math.isfinite(a) for a in action):
             raise RuntimeError("控制算法输出了无效数值（NaN / 无穷大）：%s" % list(action))
         self.last_action = [float(a) for a in action]
+        prev, t_prev = self.obs, env.t_current
         self.obs, _, done, info = env.control_step(action, self.inner)
         # A non-zero return without a model stop is an error, with or without a message.
         if info.get("error") or (info.get("return_code") and "end_reason" not in info):
@@ -519,6 +528,9 @@ class CoSimSession:
             if not t_stop > 0 or env.t_current < t_stop - 1.5 * t_step:
                 self.end_reason = "CarSim 模型请求停止（.sim 里的事件 / 停止条件），t = %.2f s，.sim 结束时间 %.2f s" % (
                     env.t_current, t_stop)
+        warnings = []
+        if not self.export_check.done and env.t_current - self._t0 >= 1.0:
+            warnings = self.export_check(self.obs, prev, env.t_current - t_prev)
         state = self.state = self.sync.sync(self.obs, env.t_current, frame_dt)
         world_frame = self.world.tick()
         self.frame += 1
@@ -543,6 +555,7 @@ class CoSimSession:
             "wheel_rotation": list(state.wheel_rotation),
             "wheel_suspension_mm": [x * 1000.0 for x in state.wheel_suspension],
             "action": [float(a) for a in action],
+            "warnings": warnings,
             "world_frame": world_frame,
             "dynamics": "CarSim",
             "done": self.done,

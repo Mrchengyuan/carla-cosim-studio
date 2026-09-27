@@ -5,7 +5,7 @@
 from simple_controller import SimplePathFollower   # 来自 python_carsim_env
 
 LATERAL_ERROR = "LatErr"
-SPEED = "Vx"            # km/h
+SPEED = "Vx"            # SimplePathFollower 按 km/h 算
 TARGET_KMH = 50.0
 
 
@@ -14,5 +14,6 @@ class Controller:
         self.ctrl = SimplePathFollower()
         self.ctrl.reset()
 
-    def control(self, exports, t, dt):
-        return list(self.ctrl.control(exports[SPEED], TARGET_KMH, exports[LATERAL_ERROR], dt=dt))
+    def control(self, exports, t, dt, scene):
+        v_kmh = exports[SPEED] * (1.0 if scene["units"]["speed"] == "km/h" else 3.6)
+        return list(self.ctrl.control(v_kmh, TARGET_KMH, exports[LATERAL_ERROR], dt=dt))

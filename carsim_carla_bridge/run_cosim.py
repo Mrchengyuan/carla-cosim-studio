@@ -106,6 +106,8 @@ def main():
                 print("collision at t=%.2f s with %s (id %s)" % (tel["t"], hit["model"], hit["id"]))
             if tel.get("warning"):
                 print("warning:", tel["warning"])
+            for msg in tel.get("warnings", []):
+                print("warning: t=%.2f s: %s" % (tel["t"], msg))
         if getattr(session, "end_reason", ""):
             print("stopped:", session.end_reason)
         if tel:

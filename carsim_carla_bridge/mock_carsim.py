@@ -1,8 +1,9 @@
 """Stand-in for CarSimEnv when no CarSim license is available (e.g. on Linux).
 
 Same interface as python_carsim_env.carsim_env.CarSimEnv and produces the
-same export variables, in CarSim conventions (ISO axes, deg, km/h, rpm), so
-the bridge can be exercised end to end. The dynamics are a kinematic bicycle
+same export variables, in CarSim conventions (ISO axes) and in the units set
+on the CarSim page (carsim.units; default deg, km/h, deg/s, rpm, mm), so the
+bridge can be exercised end to end. The dynamics are a kinematic bicycle
 with Ackermann steering and quasi-static roll/pitch - enough to check signs,
 not a vehicle model.
 """
@@ -18,12 +19,24 @@ class MockCarSimEnv:
     WHEEL_RADIUS = 0.35  # m
     STEER_RATIO = 16.0   # steering wheel deg / road wheel deg
 
-    def __init__(self, export_names, t_step=0.001, t_stop=60.0):
+    def __init__(self, export_names, t_step=0.001, t_stop=60.0, units=None):
         self.export_names = list(export_names)
         self.config = {"t_start": 0.0, "t_stop": t_stop, "t_step": t_step,
                        "n_import": 3, "n_export": len(self.export_names)}
         self.t_step = t_step
         self.t_stop = t_stop
+        # User units -> the units set on the CarSim page (as bridge.CarSimExports reads them).
+        u = units or {}
+        k = {"angle": 1.0 if u.get("angle", "deg") == "deg" else math.radians(1.0),
+             "speed": 1.0 if u.get("speed", "km/h") == "km/h" else 1.0 / 3.6,
+             "rate": 1.0 if u.get("rate", "deg/s") == "deg/s" else math.radians(1.0),
+             "wheel_spin": 1.0 if u.get("wheel_spin", "rpm") == "rpm" else 2 * math.pi / 60.0,
+             "jounce": 1.0 if u.get("jounce", "mm") == "mm" else 1e-3}
+        kind = {"Yaw": "angle", "Pitch": "angle", "Roll": "angle", "Steer_SW": "angle",
+                "Vx": "speed", "Vy": "speed", "AVx": "rate", "AVy": "rate", "AVz": "rate"}
+        for s in ("L1", "R1", "L2", "R2"):
+            kind.update({"Steer_" + s: "angle", "AVy_" + s: "wheel_spin", "Jnc_" + s: "jounce"})
+        self._unit = {n: k[g] for n, g in kind.items()}
 
     def reset(self):
         self.t_current = 0.0
@@ -89,4 +102,4 @@ class MockCarSimEnv:
             "Jnc_L1": -4.0 * self.ay - 3.0 * self.ax, "Jnc_R1": 4.0 * self.ay - 3.0 * self.ax,
             "Jnc_L2": -4.0 * self.ay + 3.0 * self.ax, "Jnc_R2": 4.0 * self.ay + 3.0 * self.ax,
         }
-        return tuple(float(vals.get(n, 0.0)) for n in self.export_names)
+        return tuple(float(vals.get(n, 0.0)) * self._unit.get(n, 1.0) for n in self.export_names)

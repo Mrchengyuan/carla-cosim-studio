@@ -4,7 +4,8 @@ control() 写成 4 个参数，就会每帧收到 scene（一个字典），只�
 照旧只收到前 3 个。scene 里每个键的含义、单位见 docs/场景与数据接口.md。
 
 一切按 CarSim：自车坐标系原点在 CarSim 参考点（默认前轴中心的地面），
-x 向前、y 向左（左为正）；速度 km/h、角度 deg（跟随“CarSim 动力学”页的单位）。
+x 向前、y 向左（左为正）；速度 km/h、角度 deg（跟随“CarSim 动力学”页的单位，
+当前单位在 scene["units"] 里）。
 
 这个示例只用“场景信息”页默认勾选的量：
     障碍物  rel_x, rel_y（相对位置 m）, rel_vx（相对纵向速度）, gap（包围盒间距 m）
@@ -24,10 +25,9 @@ class Controller:
     def reset(self):
         pass
 
-    KMH = 3.6             # 速度单位换算：CarSim 导出单位是 km/h 时为 3.6；改成 m/s 时改为 1.0
-
     def control(self, exports, t, dt, scene):
-        v = exports["Vx"] / self.KMH  # m/s
+        kmh = 3.6 if scene["units"]["speed"] == "km/h" else 1.0  # 导出的速度 / kmh = m/s
+        v = exports["Vx"] / kmh  # m/s
         lane = scene.get("lane")
         center = lane.get("center_rel") if lane else None
 
@@ -52,7 +52,7 @@ class Controller:
         if lead is not None:
             gap = lead["gap"]
             want = self.MIN_GAP + self.TIME_GAP * v
-            a_follow = 0.4 * (gap - want) + 0.9 * lead["rel_vx"] / self.KMH
+            a_follow = 0.4 * (gap - want) + 0.9 * lead["rel_vx"] / kmh
             a_cmd = min(a_cmd, a_follow)
             if gap < self.MIN_GAP * 0.5:
                 a_cmd = min(a_cmd, -6.0)

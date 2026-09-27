@@ -1074,7 +1074,7 @@ class Backend:
                     info["t_step"], req_dt, info["frame_dt"]), "warn")
             if not info["mock"] and info["t_stop"] > 0:
                 self._log("这次运行最晚在 CarSim 的结束时间 t = %.1f s 停止（.sim 里设定）" % info["t_stop"])
-            for msg in info["warnings"]:
+            for msg in info.get("warnings", []):
                 self._log(msg, "warn")
         else:
             self._log("仿真开始：CARLA 物理，驾驶：%s" % d["drive"]["carla_driver"])
@@ -1246,6 +1246,8 @@ class Backend:
                 self._start_walkers(pending)
             for hit in tel.get("collisions", []):
                 self._log("碰撞：撞到 %s（id %s），t = %.2f s" % (hit["model"], hit["id"], tel["t"]), "warn")
+            for msg in tel.pop("warnings", []):  # the log has them; not for the telemetry
+                self._log(msg, "warn")
             if self.collector is not None:
                 self.collector.on_tick(tel["world_frame"], tel["frame"])
                 if self.collector.done:

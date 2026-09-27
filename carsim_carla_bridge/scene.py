@@ -122,6 +122,8 @@ class SceneProvider:
         self.world, self.ego, self.s = world, ego, s
         self.frame_dt = float(d["sync"]["frame_dt"])
         self.units = Units(d["carsim"].get("units"))
+        # Handed to the algorithm as scene["units"]: what exports and scene use.
+        self.unit_names = {**st.default_dict()["carsim"]["units"], **(d["carsim"].get("units") or {})}
         self.anchor_tf = None
         self._anchor_src = anchor
         self.ref_local = None if ref_local is None else np.asarray(ref_local, dtype=float)
@@ -300,6 +302,7 @@ class SceneProvider:
         """The keys of the latest scene selected for the algorithm."""
         if self._view is None and self.latest is not None:
             self._view = self._select(self.s, True)
+            self._view["units"] = dict(self.unit_names)  # always, not a selection
         return self._view
 
     def record_view(self):

@@ -7,7 +7,7 @@ JSON layout (all keys optional, missing ones fall back to config.py):
 {
   "carla":  {"host": "localhost", "port": 2000,
              "vehicle": "vehicle.tesla.model3", "spawn_index": 0},
-  "carsim": {"sim_path": "", "repo_path": "../python_carsim_env", "mock": false,
+  "carsim": {"sim_path": "", "repo_path": "../python_carsim_env", "mock": false, "remote": false,
              "export_names": [...], "units": {"angle": "deg", ...}},
   "sync":   {"frame_dt": 0.02, "duration": 0.0, "reference_point": "front_axle",
              "z_mode": "carsim", "wheel_spin_sign": -1.0,
@@ -34,7 +34,9 @@ def default_dict():
         # writes the one it is connected to when it saves).
         "carla": {"host": "localhost", "port": 2000,
                   "vehicle": "vehicle.tesla.model3", "spawn_index": 0},
-        "carsim": {"sim_path": "", "repo_path": "../python_carsim_env", "mock": False,
+        # remote: CarSim runs on the user's Windows computer (carsim_service.py), and
+        # sim_path / repo_path are paths there; mock goes first.
+        "carsim": {"sim_path": "", "repo_path": "../python_carsim_env", "mock": False, "remote": False,
                    "export_names": list(_defaults.EXPORT_NAMES),
                    "units": dict(_defaults.UNITS)},
         # duration 0 = run until stopped (or until CarSim reaches t_stop).

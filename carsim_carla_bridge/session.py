@@ -6,7 +6,6 @@ both run exactly the same code path.
 
 import ast
 import contextlib
-import ctypes
 import importlib.util
 import inspect
 import json
@@ -20,9 +19,14 @@ import traceback
 
 import carla
 
+import carsim_remote
 import rig as rigmod
 import settings as st
 from bridge import REQUIRED_EXPORTS, CarlaVehicleSync, ExportCheck, front_axle_local
+# CarSim on this computer, shared with the CarSim service (remote mode). Called
+# through this module's names: the tests replace them here.
+from carsim_local import (_VS_API, RemoteCarSimError, _carsim_module, _reset_failed, _vs_error,  # noqa: F401
+                          check_carsim, mock_env, open_carsim, reset_env)
 from collector import DISK_RESERVE_GB
 from drivers import ManualDriver, RouteFollower
 from scene import (ALWAYS_OBJECT_KEYS, EGO_KEYS, LANE_KEYS, OBJECT_KEYS, Recorder, RunKpi, SceneProvider, gui_view,
@@ -39,70 +43,6 @@ def demo_driver(t):
 
 # Longest CARLA frame: PhysX substeps cover at most 10 x 0.01 s per frame.
 MAX_FRAME_DT = 0.1
-# What python_carsim_env's get_api reads from the solver (a missing one is a
-# bare AttributeError there).
-_VS_API = ("vs_run", "vs_initialize", "vs_read_configuration", "vs_integrate_io", "vs_copy_export_vars",
-           "vs_terminate_run", "vs_error_occurred", "vs_set_opt_error_dialog", "vs_get_error_message", "vs_road_l")
-
-
-def _carsim_module(repo_path):
-    """carsim_env (and its vs_solver) from the configured python_carsim_env folder."""
-    repo = os.path.abspath(repo_path)
-    if not os.path.isfile(os.path.join(repo, "carsim_env.py")):
-        raise ValueError("python_carsim_env 目录不对：%s 里没有 carsim_env.py（“CarSim 动力学”页）" % repo)
-    if repo in sys.path:
-        sys.path.remove(repo)
-    sys.path.insert(0, repo)
-    # A different python_carsim_env folder than last run: import that one.
-    old = sys.modules.get("carsim_env")
-    if old is not None and os.path.dirname(os.path.abspath(getattr(old, "__file__", ""))) != repo:
-        for m in ("carsim_env", "vs_solver"):
-            sys.modules.pop(m, None)
-    import carsim_env
-    return carsim_env
-
-
-def check_carsim(d):
-    """The .sim, python_carsim_env and the solver the .sim names, checked in
-    plain words: python_carsim_env reports these as a bare TypeError,
-    AttributeError or ModuleNotFoundError. Returns (.sim path, carsim_env)."""
-    c = d["carsim"]
-    if not c["sim_path"]:
-        raise ValueError("没有设置 CarSim .sim 文件（“CarSim 动力学”页；没有 CarSim 时可勾选“模拟 CarSim”）")
-    sim = os.path.abspath(c["sim_path"])
-    if not os.path.isfile(sim):
-        raise ValueError(("CarSim .sim 文件填的是目录：%s" if os.path.isdir(sim) else "CarSim .sim 文件不存在：%s") % sim)
-    with open(sim, "rb") as f:
-        lines = [ln.strip() for ln in f.read(1 << 20).decode("latin-1").splitlines()]
-    lib_key = "SOFILE" if sys.platform == "linux" else "DLLFILE"  # as vs_solver.get_dll_path
-
-    def value(key):
-        return next((ln[len(key):].strip() for ln in lines if ln.startswith(key)), None)
-    if value("VEHICLE_CODE") is None or (value("PROGDIR") is None and value(lib_key) is None):
-        raise ValueError("%s 不是 CarSim 生成的 .sim 文件（里面没有 VEHICLE_CODE / PROGDIR）；"
-                         "请选 CarSim 生成的 simfile.sim，不是 .par / .cpar 等其他文件" % sim)
-    carsim_env = _carsim_module(c["repo_path"])
-    try:
-        dll = importlib.import_module("vs_solver").vs_solver().get_dll_path(sim)
-    except Exception as e:
-        raise ValueError("读不了 .sim 文件 %s：%s: %s" % (sim, type(e).__name__, e))
-    if not dll or not os.path.isfile(dll):
-        rel = [v for v in (value("PROGDIR"), value(lib_key)) if v and not os.path.isabs(v)]
-        raise ValueError("找不到 CarSim 求解器：%s（由 .sim 里的 PROGDIR / %s 得出%s）" % (
-            dll, lib_key, "；其中的相对路径 %s 是按后端的工作目录 %s 解析的，请在 .sim 里写绝对路径"
-            % (" ".join(rel), os.getcwd()) if rel else ""))
-    try:
-        lib = ctypes.CDLL(dll)
-    except OSError as e:
-        # python_carsim_env retries with ctypes.WinDLL, which Linux does not
-        # have: the loader's own reason would be lost.
-        raise RuntimeError("无法加载 CarSim 求解器 %s：%s（Python 是 %d 位，求解器要同样位数，例如 carsim_64.dll；"
-                           "求解器依赖的 CarSim 安装文件也要在）" % (dll, e, 8 * ctypes.sizeof(ctypes.c_void_p)))
-    missing = [n for n in _VS_API if not hasattr(lib, n)]
-    if missing:
-        raise RuntimeError("CarSim 求解器 %s 缺少 python_carsim_env 要用的函数：%s（选错了 DLL，或求解器版本不对）"
-                           % (dll, "、".join(missing)))
-    return sim, carsim_env
 
 
 def check_run_config(d):
@@ -138,58 +78,23 @@ def check_run_files(d):
         path = os.path.abspath(d["run"]["controller"]["path"])
         if not os.path.isfile(path):
             raise ValueError("控制算法文件不存在：%s" % path)
-    if not d["carsim"]["mock"]:
+    if d["carsim"]["mock"]:
+        return
+    if d["carsim"].get("remote"):  # the .sim and python_carsim_env are on the Windows computer: its service checks them
+        carsim_remote.check(d)
+    else:
         check_carsim(d)
 
 
 def make_env(d):
+    """The run's CarSim: the mock, the CarSim service on the user's Windows
+    computer (carsim.remote, carsim_remote.py), else CarSim on this one."""
     c = d["carsim"]
     if c["mock"]:
-        from mock_carsim import MockCarSimEnv
-        dur = d["sync"]["duration"]
-        return MockCarSimEnv(c["export_names"], t_stop=dur + 1.0 if dur > 0 else 1e9, units=c["units"])
-    sim, carsim_env = check_carsim(d)
-    try:
-        return carsim_env.CarSimEnv(sim)
-    except Exception as e:
-        raise RuntimeError("加载 CarSim 失败：%s: %s" % (type(e).__name__, e)) from e
-
-
-def _vs_error(env):
-    """The CarSim solver's own error message; '' without one (and for the mock)."""
-    dll = getattr(getattr(env, "solver", None), "dll_handle", None)
-    try:
-        if dll is None or not dll.vs_error_occurred():
-            return ""
-        raw = dll.vs_get_error_message()
-        return raw.decode("mbcs" if os.name == "nt" else "utf-8", errors="replace").strip() if raw else ""
-    except Exception:
-        return ""
-
-
-def _reset_failed(env, err):
-    """Why CarSim could not start the run: the solver's own message, else what python_carsim_env saw."""
-    cfg = env.config if isinstance(getattr(env, "config", None), dict) else {}
-    why = _vs_error(env)
-    if not why and cfg and not (cfg.get("n_import", 0) > 0 and cfg.get("n_export", 0) > 0):
-        why = "没有读出导入 / 导出变量（导入 %s 个、导出 %s 个）" % (cfg.get("n_import"), cfg.get("n_export"))
-    elif not why:
-        why = "%s: %s" % (type(err).__name__, err)
-    sim = str(getattr(env, "sim_path", ""))
-    return ("CarSim 没能开始这次运行：%s。常见原因：CarSim 许可证不可用；.sim 引用的数据文件路径不对；"
-            ".sim 里没有设导入 / 导出变量%s" % (
-                why, "；路径 %s 里有中文等非 ASCII 字符，CarSim 求解器可能读不到" % sim if not sim.isascii() else ""))
-
-
-def reset_env(env):
-    """env.reset() with CarSim's own reason when the .sim cannot run:
-    python_carsim_env never asks the solver and only says that the import /
-    export counts are invalid. A reset that returned is a started run: the
-    solver's error flag may be left over from an earlier failed start."""
-    try:
-        return env.reset()
-    except Exception as e:
-        raise RuntimeError(_reset_failed(env, e)) from e
+        return mock_env(d)
+    if c.get("remote"):
+        return carsim_remote.RemoteCarSimEnv(d)
+    return open_carsim(*check_carsim(d))
 
 
 def make_driver(d, ex, n_imports=None, scene=None, output=None):
@@ -749,6 +654,9 @@ def _run_json(ses, end=None, reason=None):
     """run.json: where and how the run went (end / reason None while it runs)."""
     d, kpi = ses.d, ses.kpi
     cosim = d["drive"]["dynamics"] == "cosim"
+    sim = None
+    if cosim and not d["carsim"]["mock"]:  # carsim.remote: on the Windows computer, as its CarSim service found it
+        sim = getattr(ses.env, "sim_path", None) if d["carsim"].get("remote") else os.path.abspath(d["carsim"]["sim_path"])
     name = getattr(getattr(ses.scene, "map", None), "name", None)
     return {"map": name.split("/")[-1] if isinstance(name, str) else None,
             "spawn_index": d["carla"]["spawn_index"],
@@ -758,7 +666,7 @@ def _run_json(ses, end=None, reason=None):
             "controller": _controller_file(d),
             # The modified CARLA's external-dynamics interface, else the stock-CARLA fallback.
             "external_api": bool(getattr(getattr(ses, "sync", None), "external_api", False)),
-            "carsim_sim": os.path.abspath(d["carsim"]["sim_path"]) if cosim and not d["carsim"]["mock"] else None,
+            "carsim_sim": sim,
             "carsim_mock": cosim and bool(d["carsim"]["mock"]),
             "t_start": kpi.t_start if kpi else None, "t_end": kpi.t_end if kpi else None,
             "end": end, "end_reason": reason,

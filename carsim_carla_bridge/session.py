@@ -81,7 +81,7 @@ def check_run_files(d):
     if d["carsim"]["mock"]:
         return
     if d["carsim"].get("remote"):  # the .sim and python_carsim_env are on the Windows computer: its service checks them
-        carsim_remote.SERVICE.need()
+        carsim_remote.check(d)
     else:
         check_carsim(d)
 

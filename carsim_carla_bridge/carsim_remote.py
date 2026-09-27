@@ -23,14 +23,18 @@ NO_SERVICE = ("Windows 上的 CarSim 服务没有连上云端：请在 Windows �
               "看到“已连上云端”后再点运行")
 LOST = "与 Windows 上的 CarSim 服务的连接断开了（%s）"
 # How long the backend waits for an answer, s: loading CarSim and starting its run can be slow.
-TIMEOUTS = {"open": 120.0, "reset": 120.0, "step": 30.0, "close": 10.0}
+TIMEOUTS = {"check": 120.0, "open": 120.0, "reset": 120.0, "step": 30.0, "close": 10.0, "ping": 10.0}
+# s without a request before the backend pings the service: a network that died
+# without a word (no FIN / RST) is noticed between runs too.
+PING = 5.0
 HELLO_TIMEOUT = 10.0  # for the first line of a new connection
 RETRY = 2.0           # s between tries to listen on a port in use
 
 
 class _Conn:
-    """One connection of the service, after its hello. A thread reads it, so
-    a service that goes away is noticed between runs too (world_info)."""
+    """One connection of the service, after its hello. A thread reads it and
+    another pings it when idle, so a service that goes away is noticed
+    between runs too (world_info)."""
 
     def __init__(self, sock, lines, hello, on_close):
         self.sock, self.lines, self._on_close = sock, lines, on_close
@@ -38,11 +42,13 @@ class _Conn:
         self.why = ""  # why it closed, for LOST
         self.closed = threading.Event()
         self._replies = queue.Queue()
-        self._lock = threading.Lock()  # one request at a time
+        self._lock = threading.Lock()  # one request at a time, pings included
         self._n = 0
+        self._last = time.monotonic()  # when the last request ended
 
     def start(self):
         threading.Thread(target=self._read, daemon=True).start()
+        threading.Thread(target=self._ping, daemon=True).start()
 
     def _read(self):
         why = "Windows 上的服务已退出，或网络断了"
@@ -73,30 +79,50 @@ class _Conn:
         """The service's result for cmd; RemoteCarSimError with its own words
         when it failed, with LOST when the connection is gone or it did not
         answer in time (the connection is closed then: the service starts over)."""
-        timeout = TIMEOUTS[cmd]
         with self._lock:
-            if self.closed.is_set():
-                raise RemoteCarSimError(LOST % self.why)
-            self._n += 1
             try:
-                self.lines.send(dict(args, id=self._n, cmd=cmd))
-            except OSError as e:
-                self.close("网络出错：%s" % e)
+                return self._request(cmd, args)
+            finally:
+                self._last = time.monotonic()
+
+    def _request(self, cmd, args):
+        timeout = TIMEOUTS[cmd]
+        if self.closed.is_set():
+            raise RemoteCarSimError(LOST % self.why)
+        self._n += 1
+        try:
+            self.lines.send(dict(args, id=self._n, cmd=cmd))
+        except OSError as e:
+            self.close("网络出错：%s" % e)
+            raise RemoteCarSimError(LOST % self.why)
+        end = time.monotonic() + timeout
+        while True:
+            try:
+                msg = self._replies.get(timeout=max(0.0, end - time.monotonic()))
+            except queue.Empty:
+                self.close("%g s 没有回应" % timeout)
                 raise RemoteCarSimError(LOST % self.why)
-            end = time.monotonic() + timeout
-            while True:
-                try:
-                    msg = self._replies.get(timeout=max(0.0, end - time.monotonic()))
-                except queue.Empty:
-                    self.close("%g s 没有回应" % timeout)
-                    raise RemoteCarSimError(LOST % self.why)
-                if msg is None:
-                    raise RemoteCarSimError(LOST % self.why)
-                if isinstance(msg, dict) and msg.get("id") == self._n:
-                    break
+            if msg is None:
+                raise RemoteCarSimError(LOST % self.why)
+            if isinstance(msg, dict) and msg.get("id") == self._n:
+                break
         if not msg.get("ok"):
             raise RemoteCarSimError(str(msg.get("error") or "Windows 上的 CarSim 服务出错，没有给出原因"))
         return msg.get("result")
+
+    def _ping(self):
+        """A ping after PING s without a request; no answer in time closes the
+        connection like a service that went away. Never during a request (a
+        run's steps keep it busy anyway)."""
+        while not self.closed.wait(PING):
+            if time.monotonic() - self._last < PING or not self._lock.acquire(blocking=False):
+                continue
+            try:
+                self._request("ping", {})
+            except RemoteCarSimError:
+                pass  # closed, with its reason
+            finally:
+                self._lock.release()
 
 
 class ServiceLink:
@@ -204,6 +230,12 @@ class ServiceLink:
 
 
 SERVICE = ServiceLink()
+
+
+def check(d, link=None):
+    """The run's .sim, python_carsim_env and solver, checked by the service
+    before the backend changes its world (check_run_files, as with CarSim here)."""
+    (link or SERVICE).need().request("check", carsim=d["carsim"], duration=d["sync"]["duration"])
 
 
 def _num(v):

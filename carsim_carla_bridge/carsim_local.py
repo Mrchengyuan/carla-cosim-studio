@@ -44,10 +44,11 @@ def _carsim_module(repo_path):
     return carsim_env
 
 
-def check_carsim(d):
+def check_carsim(d, service=False):
     """The .sim, python_carsim_env and the solver the .sim names, checked in
     plain words: python_carsim_env reports these as a bare TypeError,
-    AttributeError or ModuleNotFoundError. Returns (.sim path, carsim_env)."""
+    AttributeError or ModuleNotFoundError. Returns (.sim path, carsim_env).
+    service: checked by the CarSim service (remote mode), not the backend."""
     c = d["carsim"]
     if not c["sim_path"]:
         raise ValueError("没有设置 CarSim .sim 文件（“CarSim 动力学”页；没有 CarSim 时可勾选“模拟 CarSim”）")
@@ -71,8 +72,8 @@ def check_carsim(d):
     if not dll or not os.path.isfile(dll):
         rel = [v for v in (value("PROGDIR"), value(lib_key)) if v and not os.path.isabs(v)]
         raise ValueError("找不到 CarSim 求解器：%s（由 .sim 里的 PROGDIR / %s 得出%s）" % (
-            dll, lib_key, "；其中的相对路径 %s 是按后端的工作目录 %s 解析的，请在 .sim 里写绝对路径"
-            % (" ".join(rel), os.getcwd()) if rel else ""))
+            dll, lib_key, "；其中的相对路径 %s 是按%s的工作目录 %s 解析的，请在 .sim 里写绝对路径"
+            % (" ".join(rel), " CarSim 服务" if service else "后端", os.getcwd()) if rel else ""))
     try:
         lib = ctypes.CDLL(dll)
     except OSError as e:
@@ -102,11 +103,11 @@ def open_carsim(sim, carsim_env):
         raise RuntimeError("加载 CarSim 失败：%s: %s" % (type(e).__name__, e)) from e
 
 
-def make_env(d):
-    """CarSim on this computer: the mock, else the checked .sim."""
+def make_env(d, service=False):
+    """CarSim on this computer: the mock, else the checked .sim (service: see check_carsim)."""
     if d["carsim"]["mock"]:
         return mock_env(d)
-    return open_carsim(*check_carsim(d))
+    return open_carsim(*check_carsim(d, service))
 
 
 def _vs_error(env):
@@ -151,7 +152,7 @@ def reset_env(env):
 # ---------------------------------------------------------- the service link
 # Backend (carsim_remote.py) <-> CarSim service (carsim_service.py): JSON
 # lines, UTF-8. Raise with any change of their messages.
-SERVICE_PROTOCOL = 1
+SERVICE_PROTOCOL = 2
 
 
 def json_safe(o):

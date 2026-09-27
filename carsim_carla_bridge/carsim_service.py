@@ -12,14 +12,18 @@ for, one round trip per CARLA frame. It reconnects by itself; Ctrl+C ends it.
 run's config says (tests).
 
 Messages (JSON, one per line, UTF-8; floats that are not finite are null):
-  service -> backend  {"type": "hello", "role": "carsim", "protocol": 1, "platform", "host", "python"}
-  backend -> service  {"type": "hello", "ok": true, "protocol": 1}     (ok false + "error": closed)
-  backend -> service  {"id": n, "cmd": "open", "carsim": {the run's carsim config}, "duration": s}
+  service -> backend  {"type": "hello", "role": "carsim", "protocol": 2, "platform", "host", "python"}
+  backend -> service  {"type": "hello", "ok": true, "protocol": 2}     (ok false + "error": closed)
+  backend -> service  {"id": n, "cmd": "check", "carsim": {the run's carsim config}, "duration": s}
+                          -> {}  (.sim, python_carsim_env and solver checked here before the backend
+                                  changes its world; with the mock nothing to check)
+                      {"id": n, "cmd": "open", "carsim": {...}, "duration": s}
                           -> {"config": CarSimEnv.config, "sim_path": the .sim here}
                       {"id": n, "cmd": "reset"}  -> {"obs": [...], "t_current": s, "config": {...}}
                       {"id": n, "cmd": "step", "action": [...], "inner": k}
                           -> {"obs": [...], "done": bool, "info": {...}, "t_current": s}
                       {"id": n, "cmd": "close"}  -> {}
+                      {"id": n, "cmd": "ping"}   -> {}  (the backend, after 5 s without a request)
   replies             {"id": n, "ok": true, "result": ...} or {"id": n, "ok": false, "error": "<中文>"}
 The values are CarSim's own (its frames and units, the .sim's export order):
 nothing here converts them.
@@ -34,7 +38,7 @@ import socket
 import sys
 import time
 
-from carsim_local import SERVICE_PROTOCOL, JsonLines, make_env, reset_env
+from carsim_local import SERVICE_PROTOCOL, JsonLines, check_carsim, make_env, reset_env
 
 RETRY = 2.0          # s between connection attempts
 HELLO_TIMEOUT = 10.0  # for the backend's answer to the hello
@@ -55,10 +59,21 @@ class CarSim:
     def __init__(self, mock):
         self.mock, self.env = mock, None
 
+    def _cfg(self, carsim, duration):
+        """The run's config for carsim_local (--mock: the mock, whatever the run says)."""
+        return {"carsim": dict(carsim, mock=bool(carsim.get("mock")) or self.mock),
+                "sync": {"duration": float(duration)}}
+
+    def check(self, carsim, duration):
+        """The run's pre-flight here, as check_run_files does with CarSim on the server."""
+        d = self._cfg(carsim, duration)
+        if not d["carsim"]["mock"]:
+            check_carsim(d, service=True)
+        return {}
+
     def open(self, carsim, duration):
         self.close()
-        carsim = dict(carsim, mock=bool(carsim.get("mock")) or self.mock)
-        self.env = make_env({"carsim": carsim, "sync": {"duration": float(duration)}})
+        self.env = make_env(self._cfg(carsim, duration), service=True)
         sim = str(getattr(self.env, "sim_path", "") or "")
         print("运行开始：%s" % (sim or "模拟 CarSim"), flush=True)
         return {"config": self.env.config, "sim_path": sim}
@@ -87,6 +102,10 @@ class CarSim:
 
     def handle(self, req):
         cmd = req.get("cmd")
+        if cmd == "ping":
+            return {}
+        if cmd == "check":
+            return self.check(req["carsim"], req.get("duration", 0.0))
         if cmd == "open":
             return self.open(req["carsim"], req.get("duration", 0.0))
         if cmd == "reset":

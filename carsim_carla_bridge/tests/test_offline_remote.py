@@ -61,6 +61,33 @@ def free_port():
         return s.getsockname()[1]
 
 
+def watch(conn):
+    """[(time, cmd), ...] of what the backend sends on conn from now on."""
+    sent, send = [], conn.lines.send
+
+    def record(msg):
+        sent.append((time.monotonic(), msg.get("cmd")))
+        send(msg)
+    conn.lines.send = record
+    return sent
+
+
+def listening(pid):
+    """The TCP ports process pid listens on (Linux: /proc)."""
+    inodes, ports = set(), set()
+    for fd in os.listdir("/proc/%d/fd" % pid):
+        with contextlib.suppress(OSError):
+            link = os.readlink("/proc/%d/fd/%s" % (pid, fd))
+            if link.startswith("socket:["):
+                inodes.add(link[8:-1])
+    for table in ("/proc/net/tcp", "/proc/net/tcp6"):
+        with contextlib.suppress(OSError), open(table) as f:
+            for cols in (line.split() for line in f.readlines()[1:]):
+                if cols[3] == "0A" and cols[9] in inodes:  # 0A = LISTEN
+                    ports.add(int(cols[1].rsplit(":", 1)[1], 16))
+    return ports
+
+
 def remote_cfg(**sync):
     """A remote run's config: paths on the Windows computer, which the server does not have."""
     d = st.load_dict(None, {"carsim": {"remote": True, "sim_path": "C:\\CarSim\\simfile.sim",
@@ -72,7 +99,7 @@ def remote_cfg(**sync):
 class FakeService:
     """A CarSim service by hand: says hello, then answer(request) -> result (None: no reply)."""
 
-    def __init__(self, port, answer=lambda req: None, host="pc-1", protocol=1):
+    def __init__(self, port, answer=lambda req: None, host="pc-1", protocol=carsim_local.SERVICE_PROTOCOL):
         self.sock = socket.create_connection(("127.0.0.1", port))
         self.lines = carsim_local.JsonLines(self.sock)
         self.lines.send({"type": "hello", "role": "carsim", "protocol": protocol, "platform": "win32",
@@ -163,6 +190,7 @@ class ProtocolTests(LinkCase):
         self.connected()
         self.assertEqual(self.link.status(), {"connected": True, "host": socket.gethostname(), "platform": sys.platform})
         d = remote_cfg()
+        carsim_remote.check(d, self.link)  # the mock: nothing to check (the paths are made up)
         env = carsim_remote.RemoteCarSimEnv(d, self.link)
         local = carsim_local.mock_env(d)  # the same run on this computer
         self.assertEqual(env.config, local.config)
@@ -191,6 +219,19 @@ class ProtocolTests(LinkCase):
         self.assertEqual(str(cm.exception), str(local.exception))
         wait(lambda: str(local.exception) in console())  # the same words in the service's window
         self.assertTrue(self.link.status()["connected"])
+
+    def test_a_bad_sim_is_refused_before_the_world_changes(self):
+        _, console = self.service()  # real CarSim: the service checks the .sim on its computer
+        self.connected()
+        b = backend_server.Backend()
+        b.world, spawned = object(), []
+        b.cmd_spawn_ego = lambda *a: spawned.append(a)
+        with self.assertRaises(RemoteCarSimError) as cm:
+            b.cmd_cosim_start({"carsim": {"remote": True, "sim_path": "C:\\CarSim\\simfile.sim"}, "run": {"driver": "demo"}})
+        msg = str(cm.exception)
+        self.assertTrue(msg.startswith("CarSim .sim 文件不存在："), msg)
+        self.assertEqual(spawned, [])  # like a bad .sim of CarSim on the server
+        wait(lambda: msg in console())
 
     def test_reset_env_does_not_wrap_the_services_reason(self):
         class Remote:
@@ -268,6 +309,17 @@ class RealCarSimTests(LinkCase):
         self.assertTrue(msg.startswith("CarSim 没能开始这次运行：License not available (fake solver)"), msg)
         self.assertEqual(msg.count("CarSim 没能开始这次运行"), 1)
 
+    def test_relative_paths_are_the_services(self):
+        self.d["carsim"]["sim_path"] = oc.write_sim(os.path.join(self.tmp.name, "rel.sim"), ".")
+        with self.assertRaises(ValueError) as local:
+            carsim_local.check_carsim(self.d)
+        self.assertIn("其中的相对路径 . 是按后端的工作目录", str(local.exception))
+        with self.assertRaises(RemoteCarSimError) as cm:
+            ses.check_run_files(self.d)  # before the world changes, as with CarSim on the server
+        msg = str(cm.exception)
+        self.assertIn("找不到 CarSim 求解器", msg)
+        self.assertIn("其中的相对路径 . 是按 CarSim 服务的工作目录 %s 解析的" % os.path.realpath(BRIDGE), msg)
+
 
 class NoServiceTests(unittest.TestCase):
     def setUp(self):
@@ -317,6 +369,8 @@ class PreflightTests(LinkCase):
             d = remote_cfg()
             d["carsim"]["mock"] = True  # the mock goes first: no service needed either
             ses.check_run_files(d)
+        self.assertEqual([r["cmd"] for r in self.service_pc.requests], ["check"])  # the service checks them
+        self.assertEqual(self.service_pc.requests[0]["carsim"]["repo_path"], "D:\\python_carsim_env")
 
     def test_backend_starts_the_run(self):
         started = []
@@ -502,7 +556,7 @@ class ConnectionTests(LinkCase):
         env = carsim_remote.RemoteCarSimEnv(d, self.link)
         env.reset()
         new = self.fake(mock_answers(d), host="pc-2")
-        self.assertEqual(new.hello, {"type": "hello", "ok": True, "protocol": 1})
+        self.assertEqual(new.hello, {"type": "hello", "ok": True, "protocol": carsim_local.SERVICE_PROTOCOL})
         self.connected("pc-2")
         self.assertTrue(old.closed.wait(5))  # the backend closed the older one
         with self.assertRaises(RemoteCarSimError) as cm:
@@ -543,30 +597,103 @@ class ConnectionTests(LinkCase):
                                                   "已退出"])
 
 
+class PingTests(LinkCase):
+    """A network that died without a word: pings while idle, never during a run."""
+
+    def setUp(self):
+        for p in (mock.patch.object(carsim_remote, "PING", 0.1), mock.patch.dict(carsim_remote.TIMEOUTS, ping=0.5)):
+            p.start()
+            self.addCleanup(p.stop)
+        super().setUp()
+
+    def test_the_service_answers_pings(self):
+        _, console = self.service("--mock")
+        self.connected()
+        self.assertEqual(self.link.need().request("ping"), {})
+        sent = watch(self.link.need())
+        time.sleep(1.0)
+        self.assertGreaterEqual([cmd for _, cmd in sent].count("ping"), 4)
+        self.assertTrue(self.link.status()["connected"])
+        self.assertEqual(console().splitlines(), ["正在连接云端…", "已连上云端（127.0.0.1:%d），等待运行" % self.port])
+
+    def test_a_silent_service_is_dropped(self):
+        b = backend_server.Backend()
+        logs = []
+        b.emit = logs.append
+        self.link.on_change = b._carsim_service_changed
+        fake = self.fake()  # nothing comes back, and no FIN either
+        self.connected()
+        wait(lambda: not self.link.status()["connected"], 5)
+        self.assertEqual([r["cmd"] for r in fake.requests], ["ping"])
+        self.assertTrue(fake.closed.wait(5))  # the backend closed the socket
+        self.assertIn({"event": "log", "level": "warn", "msg": "Windows 上的 CarSim 服务断开了"}, logs)
+        with self.assertRaises(RemoteCarSimError) as cm:
+            ses.check_run_files(remote_cfg())
+        self.assertEqual(str(cm.exception), NO_SERVICE)
+
+    def test_pings_never_interleave_with_a_run(self):
+        d = remote_cfg()
+        answers = mock_answers(d)
+
+        def slow(req):
+            if req["cmd"] == "step":
+                time.sleep(0.25)  # longer than PING: the step is in flight when a ping would be due
+            return answers(req)
+        self.fake(slow)
+        self.connected()
+        sent = watch(self.link.need())
+        env = carsim_remote.RemoteCarSimEnv(d, self.link)
+        env.reset()
+        start = time.monotonic()
+        for _ in range(4):
+            env.control_step([0.3, 0.0, 0.0], 10)
+        end = time.monotonic()
+        time.sleep(0.5)  # idle again
+        pings = [t for t, cmd in sent if cmd == "ping"]
+        self.assertEqual([t for t in pings if start <= t <= end], [])
+        self.assertGreaterEqual(len([t for t in pings if t > end]), 2)
+        self.assertEqual([cmd for _, cmd in sent if cmd != "ping"], ["open", "reset", "step", "step", "step", "step"])
+        env.close()
+
+
 class BackendCliTests(unittest.TestCase):
-    def test_carsim_port_option(self):
-        port, carsim_port = free_port(), free_port()
+    def backend(self, *args):
+        """backend_server.py on a free port (no CARLA needed): (process, port, GUI connection)."""
+        port = free_port()
         log = tempfile.TemporaryFile()
-        backend = subprocess.Popen([sys.executable, os.path.join(BRIDGE, "backend_server.py"), "--port", str(port),
-                                    "--carsim-port", str(carsim_port)], cwd=BRIDGE, stdout=log, stderr=subprocess.STDOUT)
-        service = c = None
-        try:
-            c = Conn(port)  # no CARLA needed for this
-            service = subprocess.Popen([sys.executable, SERVICE, "--port", str(carsim_port), "--mock"], cwd=BRIDGE,
-                                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            e = c.wait_event(lambda m: m.get("event") == "log" and "CarSim 服务" in m.get("msg", ""), 20)
-            self.assertEqual(e["msg"], "Windows 上的 CarSim 服务已连上（%s）" % socket.gethostname())
-            service.kill()
-            e = c.wait_event(lambda m: m.get("event") == "log" and m.get("level") == "warn", 20)
-            self.assertEqual(e["msg"], "Windows 上的 CarSim 服务断开了")
-        finally:
-            if c is not None:
-                c.s.close()
-            for p in (service, backend):
-                if p is not None and p.poll() is None:
-                    p.terminate()
-                    p.wait(20)
+        p = subprocess.Popen([sys.executable, os.path.join(BRIDGE, "backend_server.py"), "--port", str(port)] + list(args),
+                             cwd=BRIDGE, stdout=log, stderr=subprocess.STDOUT)
+
+        def stop():
+            if p.poll() is None:
+                p.terminate()
+                p.wait(20)
             log.close()
+        self.addCleanup(stop)
+        c = Conn(port)
+        self.addCleanup(c.s.close)
+        return p, port, c
+
+    @unittest.skipUnless(os.path.isdir("/proc/self/fd"), "needs Linux /proc")
+    def test_no_carsim_port_by_default(self):
+        # Only the remote session's backend listens for the service: not the desktop GUI's, not the tests'.
+        p, port, _ = self.backend()
+        self.assertEqual(listening(p.pid), {port})
+
+    def test_carsim_port_option(self):
+        carsim_port = free_port()
+        p, port, c = self.backend("--carsim-port", str(carsim_port))
+        if os.path.isdir("/proc/self/fd"):
+            self.assertEqual(listening(p.pid), {port, carsim_port})
+        service = subprocess.Popen([sys.executable, SERVICE, "--port", str(carsim_port), "--mock"], cwd=BRIDGE,
+                                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        self.addCleanup(service.wait)
+        self.addCleanup(service.kill)
+        e = c.wait_event(lambda m: m.get("event") == "log" and "CarSim 服务" in m.get("msg", ""), 20)
+        self.assertEqual(e["msg"], "Windows 上的 CarSim 服务已连上（%s）" % socket.gethostname())
+        service.kill()
+        e = c.wait_event(lambda m: m.get("event") == "log" and m.get("level") == "warn", 20)
+        self.assertEqual(e["msg"], "Windows 上的 CarSim 服务断开了")
 
 
 class StandaloneTests(unittest.TestCase):

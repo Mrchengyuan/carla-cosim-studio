@@ -13,6 +13,7 @@ Commands that only touch files (IO_CMDS) have a thread of their own.
 
 Remote mode (carsim.remote): the CarSim service on the user's Windows computer
 connects to --carsim-port (127.0.0.1) and runs CarSim there (carsim_remote.py).
+Only the remote session's backend gives it: by default nothing listens for it.
 """
 
 import argparse
@@ -1785,7 +1786,8 @@ if __name__ == "__main__":
     ap.add_argument("--port", type=int, default=57100)
     ap.add_argument("--exit-with-client", action="store_true",
                     help="clean up and exit when the client disconnects")
-    ap.add_argument("--carsim-port", type=int, default=57121,
-                    help="where the CarSim service connects in remote mode (127.0.0.1); 0 = nowhere")
+    ap.add_argument("--carsim-port", type=int, default=0,
+                    help="where the CarSim service connects in remote mode (127.0.0.1, e.g. 57121); "
+                         "0 (default) = nowhere")
     a = ap.parse_args()
     serve(a.port, a.exit_with_client, a.carsim_port)

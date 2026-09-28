@@ -1510,6 +1510,9 @@ void App::BuildTour() {
                                          << ".py\", \"dynamics\": \"cosim\", \"carsim_mock\": true, \"t_start\": 0.0, \"t_end\": 9.9, "
                                          << "\"end\": \"finished\", \"kpi\": {\"lane_offset_rms\": " << (k ? 0.12 : 0.05)
                                          << ", \"collisions\": 0, \"distance\": " << (k ? 180 : 200) << "}, \"units\": {}}";
+           std::ofstream(f / "output.txt") << "12:00:00 联合仿真开始（模拟 CarSim）\n12:00:00 [算法] 算法启动了\n"
+                                           << "12:00:05 [警告] 前方 30 m 有障碍物\n12:00:09 [算法] 结束：偏差 0.05 m\n"
+                                           << "12:00:10 运行指标：车道偏移 RMS 0.05 m\n12:00:10 运行结束（完成）\n";
            std::ofstream m(f / "log.csv"), l(f / "log_lane.csv"), d(f / "log_debug.csv");
            m << "t,frame,ego_X,ego_Y,ego_Speed,u1,u2,u3,Vx,Vy,AVz,Steer_L1,Steer_R1\n";
            l << "t,frame,offset,heading_err\n";
@@ -1541,6 +1544,11 @@ void App::BuildTour() {
            return l.text.find("在 CARLA 里回放：") != std::string::npos;
          });
        }, ""},
+      // A 的输出 (output.txt of run A) in its window by a click; closed again.
+      {kPanelRuns, [this] { click_target_ = "runs:output"; }, [this] {
+         return run_out_open_ && !run_out_pending_ && run_out_.value("lines", 0) == 6 && ui::TargetShown("runs:output_text");
+       }, "12e25_runs_output"},
+      {kPanelRuns, [this] { run_out_open_ = false; }, [] { return !ui::TargetShown("runs:output_text"); }, ""},
       // 车辆参数辨识 on run A (made-up cornering with tire scales 1.0): found again; saved in the tour's folder.
       {kPanelRuns, [this] { props_scroll_end_ = true; }, [] { return ui::TargetShown("ident:run"); }, ""},
       {kPanelRuns, [this, dir] {

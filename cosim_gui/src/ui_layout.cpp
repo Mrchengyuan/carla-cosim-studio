@@ -323,6 +323,7 @@ void App::FrameBody() {
   DrawAbout();
   ImGui::End();
   DrawPanels(fs);
+  DrawRunOutput();
 }
 
 // The default layout: 工程 left, 属性 right, 画面 in the middle, the five

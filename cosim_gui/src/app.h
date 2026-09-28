@@ -312,6 +312,11 @@ class App {
   bool compare_play_ = false, compare_carla_ = false, compare_replay_pending_ = false;
   // 车辆参数辨识 (运行对比 page): the last result (for run ident_folder_), a request out.
   json ident_result_;
+  // 运行对比: run A's 输出 (output.txt) in a window.
+  json run_out_;
+  std::string run_out_folder_;
+  bool run_out_open_ = false, run_out_pending_ = false, run_out_algo_only_ = false;
+  void DrawRunOutput();
   // 文件 → 从模板新建 (the backend's templates_list) / 最近打开 (prefs "recent_configs").
   json templates_;
   bool templates_pending_ = false;

@@ -3,12 +3,14 @@
 // time series overlaid in the dockable 对比 panel (run_series).
 #include <algorithm>
 #include <cmath>
+#include <filesystem>
 
 #include "app.h"
 #include "implot.h"
 #include "ui_kit.h"
 
 using appui::Fmt;
+namespace fs = std::filesystem;
 
 namespace {
 const ImVec4 kRunColors[] = {ImVec4(0.30f, 0.62f, 1.00f, 1), ImVec4(1.00f, 0.55f, 0.20f, 1), ImVec4(0.35f, 0.85f, 0.45f, 1),
@@ -213,8 +215,62 @@ void App::DrawPanelRuns() {
     compare_focus_ = true;
   }
   ui::RecordTarget("runs:open");
+  ImGui::SameLine();
+  ImGui::BeginDisabled(!be_.Connected() || run_out_pending_);
+  if (ui::Button(ICON_FA_TERMINAL, "A 的输出")) {
+    const std::string folder = runs_sel_[0];
+    run_out_pending_ = true;
+    be_.Request("run_output", {{"folder", folder}}, [this, folder](bool ok, const json& r, const std::string& err) {
+      run_out_pending_ = false;
+      run_out_folder_ = folder;
+      run_out_ = ok ? r : json{{"error", err}};
+      run_out_open_ = true;
+    });
+  }
+  ui::RecordTarget("runs:output");
+  if (ImGui::IsItemHovered()) ImGui::SetTooltip("这次运行时“输出”窗口的全部内容（算法的 print、报错、运行指标），存在运行文件夹的 output.txt 里");
+  ImGui::EndDisabled();
   ui::EndCard();
   DrawIdent();
+}
+
+void App::DrawRunOutput() {
+  if (!run_out_open_) return;
+  const ui::Palette& p = ui::Colors();
+  const float fs = ImGui::GetFontSize();
+  ImGui::SetNextWindowSize(ImVec2(fs * 60, fs * 32), ImGuiCond_FirstUseEver);
+  if (ImGui::Begin((std::string(ICON_FA_TERMINAL "  运行输出 · ") + fs::u8path(run_out_folder_).filename().u8string() +
+                    "###runoutput").c_str(), &run_out_open_)) {
+    if (run_out_.contains("error")) {
+      ImGui::TextColored(p.warning, "%s", run_out_.value("error", std::string()).c_str());
+    } else {
+      const std::string text = run_out_.value("text", std::string());
+      ImGui::Checkbox("只看算法输出", &run_out_algo_only_);
+      ImGui::SameLine();
+      if (ui::Button(ICON_FA_COPY, "复制全部")) ImGui::SetClipboardText(text.c_str());
+      ImGui::SameLine();
+      ImGui::TextColored(p.text_dim, "%d 行%s  ·  %s", run_out_.value("lines", 0),
+                         run_out_.value("truncated", false) ? "（太长，只显示最后 2 MB）" : "",
+                         (fs::u8path(run_out_folder_) / "output.txt").u8string().c_str());
+      ImGui::BeginChild("##outtext", ImVec2(0, 0), ImGuiChildFlags_Borders, ImGuiWindowFlags_HorizontalScrollbar);
+      size_t a = 0;
+      while (a < text.size()) {
+        size_t b = text.find('\n', a);
+        if (b == std::string::npos) b = text.size();
+        const std::string line = text.substr(a, b - a);
+        a = b + 1;
+        const bool algo = line.find("[算法] ") != std::string::npos;
+        if (run_out_algo_only_ && !algo) continue;
+        const ImVec4 col = line.find("[错误] ") != std::string::npos ? p.danger
+                           : line.find("[警告] ") != std::string::npos ? p.warning
+                           : algo ? p.text : p.text_dim;
+        ImGui::TextColored(col, "%s", line.c_str());
+      }
+      ui::RecordTarget("runs:output_text");
+      ImGui::EndChild();
+    }
+  }
+  ImGui::End();
 }
 
 void App::DrawIdent() {

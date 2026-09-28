@@ -72,7 +72,7 @@ PROBE_ROLE = "cosim_probe"  # cars vehicle_specs spawns to measure a vehicle mod
 IO_CMDS = {"dataset_list", "dataset_info", "dataset_frame", "dataset_export", "dataset_delete",
            "disk_info", "rig_estimate", "path_status", "carsim_service", "controller_browse",
            "runs_list", "run_series", "controller_params", "batch_summary", "vehicle_identify",
-           "templates_list", "template_config"}
+           "templates_list", "template_config", "run_output"}
 # What "hello" reports; the GUI (kBackendProtocol in cosim_gui/src/app.cpp) warns
 # when it was built for another one. Raise both together whenever a command,
 # event or config field the GUI relies on changes.
@@ -89,6 +89,10 @@ class Backend:
         self.scenario_ids = []  # 测试场景 props of the last run (removed when the next one starts)
         self._replay_cache = {}  # 运行对比 replay: folder -> (ego track, anchor frame)
         self._replay_ref = None  # (ego id, its reference point in its own frame)
+        # The 输出 of a run, also into its record folder (output.txt): a list of lines until the
+        # folder exists, then the file's path; None between runs.
+        self._run_out = None
+        self._run_out_lock = threading.Lock()
         self._scn_start = None  # (map name, scenario.find_start of it)
         self.ending = None         # the session in stop(), for the heartbeat: the algorithm's finish()
         self.cosim_state = "stopped"
@@ -126,6 +130,33 @@ class Backend:
 
     def _log(self, msg, level="info"):
         self.emit({"event": "log", "level": level, "msg": msg})
+        self._run_out_add(msg, level)
+
+    _OUT_TAGS = {"warn": "[警告] ", "error": "[错误] ", "algo": "[算法] "}
+
+    def _run_out_add(self, msg, level="info", folder=None):
+        """A line of the running run's 输出 into <record folder>/output.txt (kept in memory
+        until the folder is there; folder: the run's, when the session no longer has it)."""
+        if self._run_out is None:
+            return
+        line = "%s %s%s" % (time.strftime("%H:%M:%S"), self._OUT_TAGS.get(level, ""),
+                            str(msg).rstrip("\n").replace("\n", "\n    "))  # a traceback: indented under its line
+        with self._run_out_lock:
+            out = self._run_out
+            if isinstance(out, list):
+                out.append(line)
+                del out[:-5000]
+                folder = folder or getattr(self.session, "record_dir", None)
+                if not (folder and os.path.isdir(folder)):
+                    return
+                self._run_out, lines = os.path.join(folder, "output.txt"), out
+            else:
+                lines = [line]
+            try:
+                with open(self._run_out, "a", encoding="utf-8") as f:
+                    f.write("".join(x + "\n" for x in lines))
+            except OSError:
+                pass  # (a full disk: the run record says so itself)
 
     def _algo_output(self, ses=None, end=False):
         """What the user's algorithm printed, and its traceback, to the 输出
@@ -1176,6 +1207,7 @@ class Backend:
         if self.cosim_state in ("running", "paused"):
             raise RuntimeError("已经有仿真在运行")
         d = st.load_dict(None, config or {})
+        self._run_out = []  # this run's 输出, for output.txt in its record folder
         for note in check_run_config(d):
             self._log(note)
         world_done = self._fix_world(d)  # world.fixed: the map and weather of the config first (traffic: below)
@@ -1516,6 +1548,10 @@ class Backend:
             res["saved"] = vehicle_ident.save(save_path, folder, m, I, a, b, res)
         return res
 
+    def cmd_run_output(self, folder):
+        """A run's 输出 (output.txt in its record folder) for the 运行对比 page."""
+        return runsmod.run_output(folder)
+
     def cmd_run_series(self, folder, max_points=2000):
         """One run's time series for the GUI's comparison (runs.run_series)."""
         return runsmod.run_series(folder, int(max_points))
@@ -1584,6 +1620,7 @@ class Backend:
             if self.cosim_state in ("running", "paused"):
                 self._set_cosim_state(final, detail)
             return
+        record_dir = getattr(ses, "record_dir", None)  # (the session forgets it when it stops)
         self._algo_output(ses, end=True)
         n = getattr(ses, "ctrl_n", 0)
         if isinstance(n, int) and n > 0:  # the user's control() ran
@@ -1606,6 +1643,9 @@ class Backend:
             self._log("运行记录：%s" % summary["record_dir"])
         if summary.get("kpi_text"):
             self._log("运行指标：%s" % summary["kpi_text"])
+        self._run_out_add("运行结束（%s）%s" % ({"finished": "完成", "stopped": "停止", "error": "出错"}.get(final, final),
+                                            "：" + detail if detail else ""), folder=record_dir)
+        self._run_out = None
         # Back to what the user had before co-sim (usually async), so the
         # world does not stay frozen in sync mode with nobody ticking.
         pre, self._pre_cosim_settings = getattr(self, "_pre_cosim_settings", None), None

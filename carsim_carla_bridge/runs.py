@@ -170,3 +170,25 @@ def pose_at(track, t):
         return a[i] + k * (a[j] - a[i])
     dyaw = (track["yaw"][j] - track["yaw"][i] + 180.0) % 360.0 - 180.0
     return (min(max(t, ts[0]), ts[-1]), lerp(track["x"]), lerp(track["y"]), lerp(track["z"]), track["yaw"][i] + k * dyaw)
+
+
+MAX_OUTPUT = 2 * 1024 * 1024
+
+
+def run_output(folder):
+    """A run's 输出 (output.txt): {"text", "lines", "truncated"} (the last 2 MB of a longer one)."""
+    folder = os.path.abspath(folder)
+    if _read_json(os.path.join(folder, "run.json")) is None:
+        raise ValueError("不是一次运行的记录（没有 run.json）：%s" % folder)
+    path = os.path.join(folder, "output.txt")
+    if not os.path.isfile(path):
+        raise ValueError("这次运行没有保存输出（output.txt）：这个功能加入之前的运行，或者运行记录目录为空")
+    size = os.path.getsize(path)
+    with open(path, "rb") as f:
+        if size > MAX_OUTPUT:
+            f.seek(size - MAX_OUTPUT)
+        data = f.read()
+    text = data.decode("utf-8", errors="replace")
+    if size > MAX_OUTPUT:
+        text = text.split("\n", 1)[-1]
+    return {"text": text, "lines": text.count("\n"), "truncated": size > MAX_OUTPUT}

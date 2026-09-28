@@ -30,8 +30,18 @@ enum Panel {
   kPanelScene,
   kPanelTestScene,
   kPanelRuns,
+  kPanelBatch,
   kPanelCount
 };
+
+// The 测试场景 presets (a lane closure list each), shared by the 测试场景 and 批量测试 pages.
+struct TestScenePreset {
+  const char* id;
+  const char* name;
+  const char* tip;
+  json closures;
+};
+const std::vector<TestScenePreset>& TestScenePresets();
 
 class App {
  public:
@@ -87,6 +97,9 @@ class App {
   void DrawPanelDrive();
   void DrawPanelTestScene();
   void DrawPanelRuns();
+  void DrawPanelBatch();
+  void BatchTick();
+  std::vector<json> BatchPlan();
   void DrawCompare();
   void RunsRefresh();
   void RunsToggle(const std::string& folder);
@@ -134,7 +147,8 @@ class App {
   void SetSpectator(const std::string& mode);
   void SpawnTraffic();
   void ClearTraffic();
-  void StartRun();
+  // over: settings merged over the page's config for this run (批量测试); done: after the backend's answer.
+  void StartRun(const json& over = json(), std::function<void(bool, const json&, const std::string&)> done = nullptr);
   void RunCommand(const std::string& cmd);
   void RefreshActors();
   void RefreshDisk();
@@ -270,6 +284,16 @@ class App {
   json algo_params_ = json::object();
   std::string algo_params_path_;
   bool algo_params_pending_ = false;
+  // 批量测试: what to run (scenario presets x spawn points x values of one algorithm constant),
+  // the runs one after the other, their results and the report.
+  bool batch_scn_[5] = {true, false, false, false, false};  // 不开封道, then the 测试场景 presets
+  std::string batch_spawns_, batch_param_, batch_values_;
+  double batch_duration_ = 40.0;
+  std::vector<json> batch_items_, batch_results_;
+  int batch_i_ = -1;
+  bool batch_running_ = false, batch_stop_ = false, batch_wait_ = false;
+  std::string batch_dir_;
+  json batch_report_ = json::object();
   std::string runs_path_;
   json runs_list_ = json::object();
   std::vector<std::string> runs_sel_;

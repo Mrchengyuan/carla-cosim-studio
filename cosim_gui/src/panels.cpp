@@ -1172,6 +1172,20 @@ json Closure(double dist, int lane, double taper, double length, const char* kin
 }
 }  // namespace
 
+const std::vector<TestScenePreset>& TestScenePresets() {
+  static const std::vector<TestScenePreset> kPresets = {
+      {"scn:preset:0", "封闭本车道（锥桶）", "前方 250 m 起封闭车所在的车道，要向左或向右换道绕开",
+       json::array({Closure(250, 0, 40, 100, "cones")})},
+      {"scn:preset:1", "封闭左侧车道（护栏）", "前方 250 m 起用护栏封闭左边一条车道：车道本身不用让，考验不误判",
+       json::array({Closure(250, -1, 30, 120, "barrier")})},
+      {"scn:preset:2", "连续两处封道", "250 m 处封闭本车道，550 m 处封闭左侧车道：往左绕开的要再换回来",
+       json::array({Closure(250, 0, 40, 80, "cones"), Closure(550, -1, 40, 80, "cones")})},
+      {"scn:preset:3", "只剩一条车道", "300 m 处封闭本车道和右边两条，只剩最左一条能走：要连续向左并线",
+       json::array({Closure(300, 0, 40, 100, "cones"), Closure(300, 1, 40, 100, "cones"), Closure(300, 2, 40, 100, "cones")})},
+  };
+  return kPresets;
+}
+
 void App::DrawPanelTestScene() {
   if (!cfg_.contains("scenario") || !cfg_["scenario"].is_object()) {
     ImGui::TextDisabled("等待后端返回配置 ...");
@@ -1239,22 +1253,7 @@ void App::DrawPanelTestScene() {
   ui::DimWrapped("点“运行”时按下表摆好锥桶或护栏，下一次运行开始时清掉重摆，所以每次运行的场景都一样。");
   ImGui::Dummy(ImVec2(0, fs * 0.2f));
   ui::SectionCaption("预设（点一下替换下表）");
-  struct Preset {
-    const char* id;
-    const char* name;
-    const char* tip;
-    json closures;
-  };
-  static const Preset kPresets[] = {
-      {"scn:preset:0", "封闭本车道（锥桶）", "前方 250 m 起封闭车所在的车道，要向左或向右换道绕开",
-       json::array({Closure(250, 0, 40, 100, "cones")})},
-      {"scn:preset:1", "封闭左侧车道（护栏）", "前方 250 m 起用护栏封闭左边一条车道：车道本身不用让，考验不误判",
-       json::array({Closure(250, -1, 30, 120, "barrier")})},
-      {"scn:preset:2", "连续两处封道", "250 m 处封闭本车道，550 m 处封闭左侧车道：往左绕开的要再换回来",
-       json::array({Closure(250, 0, 40, 80, "cones"), Closure(550, -1, 40, 80, "cones")})},
-      {"scn:preset:3", "只剩一条车道", "300 m 处封闭本车道和右边两条，只剩最左一条能走：要连续向左并线",
-       json::array({Closure(300, 0, 40, 100, "cones"), Closure(300, 1, 40, 100, "cones"), Closure(300, 2, 40, 100, "cones")})},
-  };
+  const auto& kPresets = TestScenePresets();
   for (int i = 0; i < 4; ++i) {
     if (i) ImGui::SameLine();
     if (ui::Button("", kPresets[i].name)) {

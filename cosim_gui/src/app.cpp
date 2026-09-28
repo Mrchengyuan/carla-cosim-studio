@@ -659,7 +659,7 @@ void App::RefreshActors() {
        [this](const json& r) { actors_ = r; });
 }
 
-void App::StartRun() {
+void App::StartRun(const json& over, std::function<void(bool, const json&, const std::string&)> done) {
   if (vehicle_sel_ >= 0 && vehicle_sel_ < static_cast<int>(vehicles_.size()))
     cfg_["carla"]["vehicle"] = vehicles_[static_cast<size_t>(vehicle_sel_)]["id"];
   cfgfile::SyncRunDriver(cfg_);
@@ -669,12 +669,14 @@ void App::StartRun() {
   starting_ = true;
   // Remote: real CarSim runs in the CarSim service on this computer, not beside the backend.
   json run_cfg = cfg_;
+  if (over.is_object()) run_cfg.merge_patch(over);  // 批量测试: this item's settings
   if (Remote() && run_cfg.contains("carsim") && !run_cfg["carsim"].value("mock", false) &&
       !run_cfg["carsim"].value("chrono", false))  // the Chrono BMW runs beside the backend
     run_cfg["carsim"]["remote"] = true;
-  be_.Request("cosim_start", {{"config", run_cfg}}, [this, units](bool ok, const json& r, const std::string& err) {
+  be_.Request("cosim_start", {{"config", run_cfg}}, [this, units, done](bool ok, const json& r, const std::string& err) {
     busy_.clear();
     starting_ = false;
+    if (done) done(ok, r, err);
     if (!ok) {
       // The run did not start (e.g. an error in the control algorithm): say
       // why on the viewport and show the output.
@@ -1473,6 +1475,21 @@ void App::BuildTour() {
          return compare_open_ && ui::TargetShown("compare:plots") && compare_dbg_ == "cost";
        }, "12e_runs_compare"},
       {kPanelRuns, [this] { compare_open_ = false; runs_sel_.clear(); }, [this] { return !ui::TargetShown("compare:plots"); }, ""},
+      // 批量测试: 不开封道 and (a click) 封闭本车道 at the current spawn point, 2 s each; the report.
+      {kPanelBatch, [this, dir] {
+         cfg_["run"]["log_path"] = (dir / "tour_batch_runs").u8string();  // the batch folder in the tour's, not runs/
+         batch_duration_ = 2.0; batch_spawns_.clear(); batch_param_.clear(); click_target_ = "batch:scn:1"; },
+       [this] { return batch_scn_[0] && batch_scn_[1] && ui::TargetShown("batch:start"); }, ""},
+      {kPanelBatch, [this] { click_target_ = "batch:start"; }, [this] {
+         return !batch_running_ && batch_results_.size() == 2 && batch_report_.value("rows", json::array()).size() == 2 &&
+                ui::TargetShown("batch:report");
+       }, "12f_batch"},
+      {kPanelBatch, [this] {}, [this, dir] { return batch_dir_.rfind((dir / "tour_batch_runs").u8string(), 0) == 0; }, ""},
+      {kPanelBatch, [this] { props_scroll_end_ = true; }, [] { return ui::TargetShown("batch:open_runs"); }, ""},
+      {-1, [this] { click_target_ = "batch:open_runs"; }, [this] {  // (-1: the click changes the page)
+         // The batch's folder in 运行对比: its runs (the ones that started) listed.
+         return panel_ == kPanelRuns && runs_path_ == batch_report_.value("dir", std::string()) && runs_list_.contains("runs");
+       }, ""},
       {kPanelActors, [this] { ClearTraffic(); RefreshActors(); }, idle, "13_actors"},
       {kPanelRecorder, [] {}, idle, "14_recorder"},
       {kPanelTestScene, [this] { tour_kept_["spawn"] = cfg_["carla"]["spawn_index"]; click_target_ = "scn:town04"; },

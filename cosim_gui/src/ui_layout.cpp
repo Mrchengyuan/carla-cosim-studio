@@ -47,7 +47,9 @@ const std::vector<NavGroup>& Nav() {
         {kPanelCoSim, ICON_FA_GEARS, "CarSim 动力学", "CarSim 模型、导出变量、单位和坐标对齐。"},
         {kPanelScene, ICON_FA_CUBES, "场景信息", "每帧交给控制算法的周围目标（车、行人、障碍物）、前方车道和传感器数据；碰撞时怎么处理。"},
         {kPanelTestScene, ICON_FA_ROAD_BARRIER, "测试场景",
-         "高速施工封道：在出生点前方指定的车道摆放锥桶或护栏，每次运行都摆在同样的位置，用来测试避障算法。"}}},
+         "高速施工封道：在出生点前方指定的车道摆放锥桶或护栏，每次运行都摆在同样的位置，用来测试避障算法。"},
+        {kPanelBatch, ICON_FA_LIST_CHECK, "批量测试",
+         "一次选好几个场景、出生点和参数值，自动一个接一个运行，最后给出每一项的指标、是否通过和一份报告。"}}},
       {"数据", ICON_FA_DATABASE,
        {{kPanelCollect, ICON_FA_DATABASE, "数据采集", "同步采集传感器数据、真值标注和车辆状态。"},
         {kPanelRecorder, ICON_FA_FILM, "录制与回放", "用 CARLA 录制器记录整个场景并回放。"},
@@ -274,6 +276,7 @@ void App::FrameBody() {
     last_panel = panel_;
   }
   DatasetTick();
+  BatchTick();
   UploadViewTexture();
   UpdateKeyboardDriving();
   HandleShortcuts();
@@ -791,7 +794,7 @@ void App::DrawToolbar() {
 bool App::PageEnabled(int panel) const {
   switch (panel) {
     case kPanelConnect: return true;
-    case kPanelRig: case kPanelDrive: case kPanelCoSim: case kPanelScene: case kPanelTestScene: case kPanelCollect:
+    case kPanelRig: case kPanelDrive: case kPanelCoSim: case kPanelScene: case kPanelTestScene: case kPanelCollect: case kPanelBatch:
       return cfg_defaults_.is_object() || carla_connected_;
     case kPanelDataset: case kPanelRuns: return be_.Connected();
     default: return carla_connected_;
@@ -826,6 +829,7 @@ void App::DrawNav() {
       }
       case kPanelRecorder: return recording_ ? "REC" : "";
       case kPanelRuns: return runs_sel_.empty() ? "" : Fmt("%d 次", static_cast<int>(runs_sel_.size()));
+      case kPanelBatch: return batch_running_ ? Fmt("%d/%d", batch_i_ + 1, static_cast<int>(batch_items_.size())) : "";
       case kPanelView: return view_on_ ? "开" : "";
       default: return "";
     }
@@ -913,6 +917,7 @@ void App::DrawProperties() {
     case kPanelView: DrawPanelView(); break;
     case kPanelDataset: DrawPanelDataset(); break;
     case kPanelRuns: DrawPanelRuns(); break;
+    case kPanelBatch: DrawPanelBatch(); break;
     default: break;
   }
   if (props_scroll_end_) {

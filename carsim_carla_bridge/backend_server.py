@@ -522,9 +522,15 @@ class Backend:
             self._log("已清理上一次后端留在 CARLA 里的 %d 个对象（主车、交通、行人、传感器、测试场景的锥桶 / 护栏）" % len(acts), "warn")
 
     def _scenario_start(self, cmap):
-        """scenario.find_start of this map, once per map."""
+        """scenario.find_start of this map, once per map; None when it fails (world_info
+        must not fail over it)."""
         if self._scn_start is None or self._scn_start[0] != cmap.name:
-            self._scn_start = (cmap.name, scenariomod.find_start(cmap))
+            try:
+                start = scenariomod.find_start(cmap)
+            except Exception:
+                traceback.print_exc()
+                start = None
+            self._scn_start = (cmap.name, start)
         return self._scn_start[1]
 
     def cmd_world_info(self):

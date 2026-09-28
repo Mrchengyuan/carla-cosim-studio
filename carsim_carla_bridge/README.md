@@ -32,7 +32,8 @@ CarSim 负责全部车辆动力学计算，CARLA 负责场景、渲染和传感�
 | `coords.py` | ISO 8855 ↔ UE 坐标 / 欧拉角 / 角速度换算 |
 | `config.py` | 默认值：导出变量顺序、单位、参考点。界面“CarSim 动力学”页的设置（`cosim_config.json`）覆盖它，按你的 .sim 改页上的设置即可 |
 | `settings.py` | 配置：`config.py` 的默认值 + 界面保存的 JSON；`to_bridge_cfg()` 把它交给 `CarlaVehicleSync` |
-| `scene.py` | 每帧交给控制算法的 `scene`（车辆、行人、停放车辆，前方车道，传感器数据，碰撞判断；CarSim 坐标系和单位；只给勾选的量）和运行记录 CSV（`control(exports, t, dt, scene)`，定义见 `docs/场景与数据接口.md`） |
+| `scene.py` | 每帧交给控制算法的 `scene`（车辆、行人、停放车辆、测试场景的锥桶 / 护栏，前方车道，传感器数据，碰撞判断；CarSim 坐标系和单位；只给勾选的量）和运行记录 CSV（`control(exports, t, dt, scene)`，定义见 `docs/场景与数据接口.md`） |
+| `scenario.py` | 测试场景（界面“测试场景”页）：在出生点前方指定车道用锥桶 / 护栏封道，按地图算好位置，运行开始时摆放、下一次运行开始时清掉；找 Town04 高速起点 |
 | `session.py` | 一次联合仿真运行（逐帧步进），界面后端和 `run_cosim.py` 共用 |
 | `backend_server.py` | 界面后端：本机 TCP / JSON，执行界面的命令（CARLA 操作、运行、采集） |
 | `carsim_local.py` | 本机的 CarSim：检查 .sim / python_carsim_env / 求解器、模拟 CarSim、开始运行失败时的原因；后端和 CarSim 服务共用，只用标准库 |

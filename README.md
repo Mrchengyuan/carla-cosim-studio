@@ -163,7 +163,7 @@ git clone https://github.com/Mrchengyuan/python_carsim_env
 |---|---|
 | **CarSim 联合仿真** | CarSim 与 CARLA 同步步进；四轮实际转向角（阿克曼、转向柔度一比一）、车轮转速（可看出打滑 / 抱死）、悬架行程、车身侧倾俯仰全部同步；导出变量可视化编辑与校验 |
 | **驾驶模式** | **CarSim 联合仿真**：你的 Python 控制算法（每次运行自动重新加载，改完代码直接再运行）控制 CarSim，CARLA 照 CarSim 结果同步；测试用演示 / 路线跟随 / 键盘驾驶。**CARLA 物理**（不需要 CarSim）：路线跟随、CARLA 自动驾驶（遵守红绿灯、跟车）、键盘驾驶 |
-| **场景信息（给控制算法）** | 每帧把 CARLA 场景里自车 50 m 内的**车辆、行人、停放车辆**（全局和相对自车的位置、速度、航向、中心距离、包围盒间距、尺寸）、**前方车道**（车道宽、偏离量、航向偏差、曲率、中心线、车道线、相邻车道、限速、路口、红绿灯）和可选的**传感器数据**（numpy 图像 / 点云 / 雷达）交给你的 Python 控制算法；**一切按 CarSim 的坐标系和单位**；像 CarSim 选输出变量一样**勾选**要哪些量（给算法和写进记录分开选）；**碰撞检测**（CarSim 的车在 CARLA 里撞上也不会停）可选停止运行或记录；底部“场景”标签实时显示（俯视图 + 表格） |
+| **场景信息（给控制算法）** | 每帧把 CARLA 场景里自车 50 m 内的**车辆、行人、停放车辆、测试场景的锥桶 / 护栏**（全局和相对自车的位置、速度、航向、中心距离、包围盒间距、尺寸）、**前方车道**（车道宽、偏离量、航向偏差、曲率、中心线、车道线、相邻车道、限速、路口、红绿灯）和可选的**传感器数据**（numpy 图像 / 点云 / 雷达）交给你的 Python 控制算法；**一切按 CarSim 的坐标系和单位**；像 CarSim 选输出变量一样**勾选**要哪些量（给算法和写进记录分开选）；**碰撞检测**（CarSim 的车在 CARLA 里撞上也不会停）可选停止运行或记录；底部“场景”标签实时显示（俯视图 + 表格） |
 | **测试场景（高速施工封道）** | 在出生点前方指定的车道用**锥桶或护栏**封道（渐变段 + 封闭段 + 箭头导向牌），每次运行摆在同样的位置，用来测试避障 / 换道算法；预设按 **Town04 高速**起点（单向 4 车道，自动找出生点）：封闭本车道、封闭左侧车道、连续两处封道、只剩一条车道，距离 / 车道 / 长度 / 类型都可改；锥桶和护栏作为 `type = "static"` 的障碍物交给算法，撞上计入碰撞，`run.json` 记下摆了什么 |
 | **运行记录** | 每次运行一个文件夹（`runs/时间_算法文件名/`，不覆盖以前的）：从开始时刻起按采样周期把勾选的自车量、障碍物、车道、CarSim 导出变量和控制算法的输出写成 CSV（障碍物每行一个，和数据采集同一套采样时刻），另存这次的配置、算法文件副本和 `run.json`（地图、出生点、种子、结束原因、运行指标）；运行结束时输出窗口给出文件夹和运行指标（车道偏移、航向偏差、碰撞、前方最小间距、行驶距离、最大 \|Ay\|，CarSim 单位） |
 | **传感器套件** | 预设 单前视 / KITTI / nuScenes / 量产车 / 感知真值，按车型尺寸自动布置；俯视图 + 侧视图拖动安装，显示视场角；相机、深度、语义、实例、激光雷达、毫米波雷达、IMU、GNSS |
@@ -208,7 +208,7 @@ git clone https://github.com/Mrchengyuan/python_carsim_env
 | `carsim_carla_bridge/` | Python 后端、CarSim 桥接、驾驶模式、数据采集、测试和文档 |
 | `carla_patches/` | CARLA 0.9.16 补丁（改版 CARLA 就是官方源码打上它们编译出来的）：外部动力学接口（含 CARLA 自身错误的修复）；Python 包等待服务器时释放全局锁；Linux 编译用的 libpng 地址修复 |
 | `scripts/` | Ubuntu：`build_ue4.sh`、`build_carla.sh`、`carla_server.sh`、`carla_mod_server.sh`、`start_studio.sh`、`stop_carla.sh`、`install_desktop_icons.sh`，以及它们共用的 `env.sh`（路径、端口）和 `carla_stop_lib.sh`（关闭 CARLA）；远程使用的服务器端：`remote_session.sh`、`install_remote_key.sh`、`build_remote_package.sh`；`scripts/windows/`：`start_studio.bat`、`stop_carla.bat`、`install_shortcuts.bat`、`env.bat` |
-| `docs/` | 使用文档（Ubuntu / Windows 使用指南、界面操作手册、场景与数据接口说明）；`docs/images/` 是截图 |
+| `docs/` | 使用文档（Ubuntu / Windows / 远程使用指南、界面操作手册、控制算法编写指南、场景与数据接口说明）；`docs/images/` 是截图 |
 
 ## 快速开始
 
@@ -274,8 +274,9 @@ class Controller:
 **用 CARLA 场景里的信息**：把 `control` 写成 4 个参数，每帧就会多收到一个 `scene`（算法本来就在 Python 后端里运行，场景信息直接从 CARLA 读出来交给它，不经过界面；界面只是把同一份数据显示出来）。只写 3 个参数的算法照旧运行。
 ```python
     def control(self, exports, t, dt, scene):
-        for o in scene["objects"]:            # 自车 50 m 内的车辆和行人，由近到远
-            o["id"], o["type"]                # 编号（整次运行不变）、"vehicle" / "walker"
+        for o in scene["objects"]:            # 自车 50 m 内的障碍物，由近到远
+            o["id"], o["type"]                # 编号（整次运行不变）；"vehicle" 车辆（地图里停放的车 o["parked"] 为 True）、
+                                              # "walker" 行人、"static" 测试场景的锥桶 / 护栏 / 导向牌
             o["rel_x"], o["rel_y"]            # 相对位置，自车坐标系（x 向前、y 向左），m
             o["rel_vx"], o["rel_vy"]          # 相对速度，km/h（rel_vx 为负 = 在靠近）
             o["dist"], o["gap"]               # 中心距离、包围盒间距，m

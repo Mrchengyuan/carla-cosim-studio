@@ -214,6 +214,108 @@ void App::DrawPanelRuns() {
   }
   ui::RecordTarget("runs:open");
   ui::EndCard();
+  DrawIdent();
+}
+
+void App::DrawIdent() {
+  const ui::Palette& p = ui::Colors();
+  const float fs = ImGui::GetFontSize();
+  const std::string folder = runs_sel_.empty() ? std::string() : runs_sel_[0];
+  ui::BeginCard(ICON_FA_WRENCH, "车辆参数辨识（A）");
+  ui::DimWrapped("从 A 这次运行（CarSim、Chrono 宝马或模拟 CarSim）的导出变量辨识 KMPPI 预测模型的前 / 后轴轮胎侧向力比例因子"
+                 "（方法同原工程 identify_plant.py，用每个样本的 3DOF 力平衡）。下面填这台车的参数（CarSim 车辆参数里查）；"
+                 "要一次有弯道或蛇行的运行（侧向加速度最大至少 1 m/s²）。");
+  if (!cfg_.contains("ident") || !cfg_["ident"].is_object()) cfg_["ident"] = json::object();
+  json& id = cfg_["ident"];
+  struct F { const char* key; const char* name; const char* tip; double def; };
+  static const F kFields[] = {{"m", "质量 m (kg)", "整车质量", 1910.0},
+                              {"I", "横摆惯量 I (kg·m²)", "绕竖直轴的转动惯量", 3482.0},
+                              {"a", "质心到前轴 a (m)", "", 1.371},
+                              {"b", "质心到后轴 b (m)", "", 1.386}};
+  for (const F& f : kFields) {
+    ui::Row(f.name, f.tip, fs * 10);
+    double v = id.value(f.key, f.def);
+    if (ImGui::InputDouble(Fmt("##ident_%s", f.key).c_str(), &v, 0.0, 0.0, "%g") && v > 0) id[f.key] = v;
+    ui::RecordTarget(std::string("ident:") + f.key);
+  }
+  ui::Row("保存到", "KMPPI 的车辆参数文件（相对路径以 carsim_carla_bridge 目录为准）", fs * 16);
+  std::string path = id.value("path", std::string("controllers/kmppi/vehicle_identified.json"));
+  if (appui::InputStr("##ident_path", path)) id["path"] = path;
+  auto request = [this, folder](const std::string& save) {
+    const json& d = cfg_["ident"];
+    ident_pending_ = true;
+    be_.Request("vehicle_identify",
+                {{"folder", folder}, {"m", d.value("m", 1910.0)}, {"I", d.value("I", 3482.0)}, {"a", d.value("a", 1.371)},
+                 {"b", d.value("b", 1.386)}, {"save_path", save}},
+                [this, folder, save](bool ok, const json& r, const std::string& err) {
+                  ident_pending_ = false;
+                  ident_folder_ = folder;
+                  ident_result_ = ok ? r : json{{"error", err}};
+                  if (!ok) return;
+                  if (save.empty()) {
+                    Log(Fmt("车辆参数辨识：轮胎比例因子 前 %.3f、后 %.3f（R² %.3f，%d 个样本）", r.value("front_lateral_scale", 0.0),
+                            r.value("rear_lateral_scale", 0.0), r.value("r2", 0.0), r.value("samples", 0)));
+                    return;
+                  }
+                  // KMPPI's VEHICLE_JSON (the 算法参数 of the current algorithm file) set to the file.
+                  const std::string algo = cfg_["run"]["controller"].value("path", std::string());
+                  bool has = false;
+                  if (algo == algo_params_path_)
+                    for (const json& prm : algo_params_.value("params", json::array()))
+                      has = has || prm.value("name", std::string()) == "VEHICLE_JSON";
+                  const std::string saved = r.value("saved", std::string());
+                  if (has) {
+                    cfg_["run"]["params"][algo]["VEHICLE_JSON"] = saved;
+                    Log("车辆参数已保存到 " + saved + "；“驾驶模式”页的算法参数 VEHICLE_JSON 已设为它，下次运行 KMPPI 就用这组参数");
+                  } else {
+                    Log("车辆参数已保存到 " + saved + "；当前的算法文件没有 VEHICLE_JSON 参数：用 KMPPI（controllers/kmppi/controller.py）"
+                        "时在它的算法参数里把 VEHICLE_JSON 设为这个文件", "warn");
+                  }
+                });
+  };
+  const bool can = !folder.empty() && be_.Connected() && !ident_pending_;
+  ImGui::BeginDisabled(!can);
+  if (ui::Button(ICON_FA_WAND_MAGIC_SPARKLES, ident_pending_ ? "辨识中…" : "辨识")) request("");
+  ui::RecordTarget("ident:run");
+  ImGui::EndDisabled();
+  const json& r = ident_result_;
+  if (ident_folder_ != folder || r.is_null()) {
+    ui::EndCard();
+    return;
+  }
+  if (r.contains("error")) {
+    ImGui::PushTextWrapPos(0);
+    ImGui::TextColored(p.warning, "%s", r.value("error", std::string()).c_str());
+    ImGui::PopTextWrapPos();
+    ui::RecordTarget("ident:result");
+    ui::EndCard();
+    return;
+  }
+  if (ImGui::BeginTable("##ident", 2, ImGuiTableFlags_BordersInnerH | ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingStretchProp)) {
+    auto row = [&](const char* name, const std::string& v) {
+      ImGui::TableNextRow();
+      ImGui::TableNextColumn();
+      ImGui::TextUnformatted(name);
+      ImGui::TableNextColumn();
+      ImGui::TextUnformatted(v.c_str());
+    };
+    row("前轴轮胎比例因子", Fmt("%.4f", r.value("front_lateral_scale", 0.0)));
+    row("后轴轮胎比例因子", Fmt("%.4f", r.value("rear_lateral_scale", 0.0)));
+    row("拟合 R²", Fmt("%.3f", r.value("r2", 0.0)));
+    row("用到的样本", Fmt("%d", r.value("samples", 0)));
+    row("最大侧向加速度", Fmt("%.2f m/s²", r.value("ay_max", 0.0)));
+    row("最大侧偏角 前 / 后", Fmt("%.2f° / %.2f°", r.value("alpha_f_max", 0.0) * 57.29578, r.value("alpha_r_max", 0.0) * 57.29578));
+    ImGui::EndTable();
+  }
+  ui::RecordTarget("ident:result");
+  if (r.value("r2", 0.0) < 0.8)
+    ui::DimWrapped("R² 偏低：这次运行的转向可能太少或太剧烈（超出线性区），也可能车辆参数填得不对。");
+  if (r.contains("saved")) ImGui::TextColored(p.success, "已保存：%s", r.value("saved", std::string()).c_str());
+  ImGui::BeginDisabled(!can);
+  if (ui::Button(ICON_FA_FLOPPY_DISK, "保存并用于 KMPPI", ui::Kind::Primary)) request(id.value("path", std::string()));
+  ui::RecordTarget("ident:save");
+  ImGui::EndDisabled();
+  ui::EndCard();
 }
 
 void App::DrawCompare() {

@@ -1122,6 +1122,29 @@ void App::OnEvent(const json& ev) {
 // --------------------------------------------------------------------------
 // --tour: scripted walk through every panel, saving screenshots
 // --------------------------------------------------------------------------
+namespace {
+// The tour's made-up runs: CarSim exports (Vx, Vy at the front axle, AVz, Steer_L1, Steer_R1 in km/h, deg,
+// deg/s) of a slow cornering of KMPPI's 3DOF model with both tire scales 1.0 (the Chrono BMW's m, a, b):
+// what 车辆参数辨识 should find again.
+std::string TourCornering(double t, int k) {
+  const double m = 1910.0, a = 1.371, b = 1.386, L = a + b, vx = 20.0, B = 19.4, C = 1.3, E = -1.0;
+  const double D = 0.95 * m * 9.81 / 4.0;
+  auto pac = [&](double al) { const double Ba = B * al; return D * std::sin(C * std::atan(Ba - E * (Ba - std::atan(Ba)))); };
+  auto inv = [&](double f) {  // the slip angle of a wheel force (bisection, below the peak)
+    double lo = -0.15, hi = 0.15;
+    for (int i = 0; i < 60; ++i) { const double mid = 0.5 * (lo + hi); (pac(mid) < f ? lo : hi) = mid; }
+    return 0.5 * (lo + hi);
+  };
+  const double r = 0.12 + (0.06 + 0.02 * k) * std::sin(0.3 * t);
+  const double ar = inv(m * vx * r * a / L / 2.0);
+  const double vy = b * r - vx * std::tan(ar);
+  double delta = 0.0;
+  for (int i = 0; i < 4; ++i) delta = inv(m * vx * r * b / (L * std::cos(delta)) / 2.0) + std::atan2(vy + a * r, vx);
+  const double deg = 180.0 / 3.14159265358979323846;
+  return Fmt("%.6f,%.6f,%.6f,%.6f,%.6f", vx * 3.6, (vy + a * r) * 3.6, r * deg, delta * deg, delta * deg);
+}
+}  // namespace
+
 void App::BuildTour() {
   fs::create_directories(fs::u8path(tour_dir_));
   auto idle = [this] { return busy_.empty() && be_.PendingCount() == 0; };
@@ -1459,13 +1482,13 @@ void App::BuildTour() {
                                          << "\"end\": \"finished\", \"kpi\": {\"lane_offset_rms\": " << (k ? 0.12 : 0.05)
                                          << ", \"collisions\": 0, \"distance\": " << (k ? 180 : 200) << "}, \"units\": {}}";
            std::ofstream m(f / "log.csv"), l(f / "log_lane.csv"), d(f / "log_debug.csv");
-           m << "t,frame,ego_X,ego_Y,ego_Speed,u1,u2,u3\n";
+           m << "t,frame,ego_X,ego_Y,ego_Speed,u1,u2,u3,Vx,Vy,AVz,Steer_L1,Steer_R1\n";
            l << "t,frame,offset,heading_err\n";
            d << "t,frame,cost\n";
            for (int i = 0; i < 100; ++i) {
              const double t = i * 0.1;
              m << t << "," << i << "," << 20 * t << "," << (k ? 0.3 : 0.1) * std::sin(t) << "," << 72 - k * 5 * std::sin(t) << ","
-               << 0.2 << ",0," << 5 * std::sin(t + k) << "\n";
+               << 0.2 << ",0," << 5 * std::sin(t + k) << "," << TourCornering(t, k) << "\n";
              l << t << "," << i << "," << (k ? 0.12 : 0.05) * std::sin(2 * t) << ",0\n";
              d << t << "," << i << "," << 100 - 8 * t + k * 5 << "\n";
            }
@@ -1489,6 +1512,21 @@ void App::BuildTour() {
            return l.text.find("在 CARLA 里回放：") != std::string::npos;
          });
        }, ""},
+      // 车辆参数辨识 on run A (made-up cornering with tire scales 1.0): found again; saved in the tour's folder.
+      {kPanelRuns, [this] { props_scroll_end_ = true; }, [] { return ui::TargetShown("ident:run"); }, ""},
+      {kPanelRuns, [this, dir] {
+         tour_kept_["ident"] = cfg_["ident"];
+         cfg_["ident"] = {{"m", 1910.0}, {"I", 3482.0}, {"a", 1.371}, {"b", 1.386}, {"path", (dir / "tour_vehicle.json").u8string()}};
+         click_target_ = "ident:run"; }, [this] {
+         return !ident_pending_ && ident_result_.is_object() && std::fabs(ident_result_.value("front_lateral_scale", 0.0) - 1.0) < 0.05 &&
+                std::fabs(ident_result_.value("rear_lateral_scale", 0.0) - 1.0) < 0.05 && ui::TargetShown("ident:result");
+       }, ""},
+      {kPanelRuns, [this] { props_scroll_end_ = true; }, [] { return ui::TargetShown("ident:save"); }, "12e3_runs_ident"},
+      {kPanelRuns, [this] { click_target_ = "ident:save"; }, [this, dir] {
+         return !ident_pending_ && ident_result_.contains("saved") && fs::exists(dir / "tour_vehicle.json") &&
+                std::any_of(log_.begin(), log_.end(), [](const LogLine& l) { return l.text.find("车辆参数已保存到") != std::string::npos; });
+       }, ""},
+      {kPanelRuns, [this] { cfg_["ident"] = tour_kept_["ident"]; }, [this] { return cfg_["ident"] == tour_kept_["ident"]; }, ""},
       {kPanelRuns, [this] { compare_open_ = false; runs_sel_.clear(); }, [this] { return !ui::TargetShown("compare:plots"); }, ""},
       // 批量测试: 不开封道 and (a click) 封闭本车道 at the current spawn point, 2 s each; the report.
       {kPanelBatch, [this, dir] {

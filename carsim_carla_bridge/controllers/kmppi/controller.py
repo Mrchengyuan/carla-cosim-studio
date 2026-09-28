@@ -33,13 +33,18 @@
            推演的状态由包在预测模型外面的一层记下来（_Recorder），算法本身不动。
     曲线   ESS、温度、最小代价、加权平均代价、ax、前轮转角、计算耗时放在 self.debug 里：
            界面“曲线”面板第二排实时显示，运行记录里是 log_debug.csv。
+    车辆   预测模型的车辆参数默认是 Chrono 宝马 E90 的（bmw_e90_identified.json）。换成 CarSim 的车时，先用这台车
+           跑一次有弯道的运行，在“运行对比”页的“车辆参数辨识”里填质量、横摆惯量、质心到前 / 后轴距离，点“辨识”，
+           再点“保存并用于 KMPPI”：写出 vehicle_identified.json，并把下面的 VEHICLE_JSON 设成它。
     GPU    USE_GPU = True 时 K 条候选的推演和代价在 NVIDIA 显卡上算（kmppi_gpu.py，要装 CuPy：
            pip install cupy-cuda12x）：RTX 3090 上每次计算约 11 ms，CPU 约 55 ms（每个控制周期算 2 次，
            CPU 版比 0.05 s 的周期慢，仿真跟不上实时）。结果和 CPU 版一致到舍入误差（代价相对差 ~1e-13，
            tests/test_offline_kmppi_gpu.py 核对）。没有显卡或 CuPy 时自动用 CPU，并在“输出”页说明原因。
 单位跟随“CarSim 动力学”页（scene["units"]）。
 """
+import json
 import math
+import os
 import time
 
 import numpy as np
@@ -62,6 +67,7 @@ PRINT_EVERY = 5.0    # s，每隔多久在“输出”页打印一行状态
 DRAW_CANDIDATES = 64  # 每次画多少条候选轨迹（0 = 不画）
 DRAW_EVERY = 3       # 每隔几步取一个点（T = 33 步 → 12 个点）
 USE_GPU = True       # 推演放在 NVIDIA 显卡上（没有显卡或 CuPy 时自动用 CPU）
+VEHICLE_JSON = ""    # 车辆参数文件（“运行对比”页辨识出来的；相对路径以这个文件夹为准）；空 = Chrono 宝马 E90
 
 
 class _Recorder:
@@ -89,6 +95,17 @@ class Controller:
         cfg.ref_speed = REF_SPEED
         self.cfg = cfg
         self.vehicle = cfg.resolved_vehicle()
+        if VEHICLE_JSON:
+            here = os.path.dirname(os.path.abspath(__file__))
+            path = VEHICLE_JSON if os.path.isabs(VEHICLE_JSON) else os.path.join(here, VEHICLE_JSON)
+            with open(path, encoding="utf-8") as f:
+                ident = json.load(f)
+            for key in ("m", "I", "a", "b", "front_lateral_scale", "rear_lateral_scale", "pac_By", "pac_Cy", "pac_Ey"):
+                if key in ident:
+                    setattr(self.vehicle, key, float(ident[key]))
+            v = self.vehicle
+            print("KMPPI：车辆参数用 %s：m %.0f kg、I %.0f kg·m²、a %.3f m、b %.3f m、轮胎比例因子 前 %.3f 后 %.3f" % (
+                path, v.m, v.I, v.a, v.b, v.front_lateral_scale, v.rear_lateral_scale))
         model = BicycleModel(self.vehicle, cfg.dt, cfg.ax_max, cfg.delta_max)
         self.ref_box = ReferenceBox(cfg.T)
         self.rec = _Recorder(model.step)

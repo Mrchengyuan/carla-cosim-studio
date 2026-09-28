@@ -74,6 +74,9 @@ def default_dict():
         # (loaded if another one is up), the weather (CARLA weather parameters) and the traffic
         # (cleared, then vehicles / walkers spawned with seed): the same surroundings every time.
         "world": {"fixed": False, "map": "", "weather": {}, "traffic": {"vehicles": 0, "walkers": 0, "seed": 0}},
+        # 车辆参数辨识 (运行对比 page, vehicle_ident.py): the car's mass (kg), yaw inertia (kg m^2),
+        # CG to front / rear axle (m); path = where the KMPPI vehicle file is written.
+        "ident": {"m": 1910.0, "I": 3482.0, "a": 1.371, "b": 1.386, "path": "controllers/kmppi/vehicle_identified.json"},
         # Sensor mounts in CarSim's vehicle frame (origin = the reference
         # point, y left; rig.py). "carla" = an older config (car centre, y right).
         "rig": {"preset": "front_camera", "sensors": [], "frame": "carsim"},

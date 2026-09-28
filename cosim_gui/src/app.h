@@ -103,6 +103,7 @@ class App {
   void BatchTick();
   std::vector<json> BatchPlan();
   void DrawCompare();
+  void DrawIdent();  // 车辆参数辨识 card (运行对比 page)
   void RunsRefresh();
   void RunsToggle(const std::string& folder);
   void DrawPanelScene();
@@ -309,6 +310,10 @@ class App {
   double compare_t_ = 0.0, compare_sent_t_ = -1.0, compare_sent_at_ = 0.0;
   float compare_speed_ = 1.0f;
   bool compare_play_ = false, compare_carla_ = false, compare_replay_pending_ = false;
+  // 车辆参数辨识 (运行对比 page): the last result (for run ident_folder_), a request out.
+  json ident_result_;
+  std::string ident_folder_;
+  bool ident_pending_ = false;
   int draw_mag_ = 0;                 // 轨迹 tab's lateral magnification: 0 = fit the lane
   json collect_stats_ = json::object();
   static constexpr int kHist = 900;

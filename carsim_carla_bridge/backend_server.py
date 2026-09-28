@@ -41,6 +41,7 @@ import numpy as np
 import carsim_remote
 import batch_report
 import runs as runsmod
+import vehicle_ident
 import chrono_local
 import collector as coll
 import dataset as dsmod
@@ -69,7 +70,7 @@ PROBE_ROLE = "cosim_probe"  # cars vehicle_specs spawns to measure a vehicle mod
 # deleting a large dataset never holds up a run's frames on the worker.
 IO_CMDS = {"dataset_list", "dataset_info", "dataset_frame", "dataset_export", "dataset_delete",
            "disk_info", "rig_estimate", "path_status", "carsim_service", "controller_browse",
-           "runs_list", "run_series", "controller_params", "batch_summary"}
+           "runs_list", "run_series", "controller_params", "batch_summary", "vehicle_identify"}
 # What "hello" reports; the GUI (kBackendProtocol in cosim_gui/src/app.cpp) warns
 # when it was built for another one. Raise both together whenever a command,
 # event or config field the GUI relies on changes.
@@ -1496,6 +1497,14 @@ class Backend:
     def cmd_runs_list(self, path=""):
         """The run records in a record dir (relative: the bridge dir), newest first (runs.list_runs)."""
         return runsmod.list_runs(path or "runs")
+
+    def cmd_vehicle_identify(self, folder, m, I, a, b, save_path=""):
+        """车辆参数辨识 (vehicle_ident.py) from a run's record; save_path: also written as a KMPPI
+        vehicle file (relative: to this folder)."""
+        res = vehicle_ident.identify(folder, m, I, a, b)
+        if save_path:
+            res["saved"] = vehicle_ident.save(save_path, folder, m, I, a, b, res)
+        return res
 
     def cmd_run_series(self, folder, max_points=2000):
         """One run's time series for the GUI's comparison (runs.run_series)."""

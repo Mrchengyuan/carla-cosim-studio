@@ -14,7 +14,8 @@ car follows the Chrono car (the front wheel angles reach CARLA); KMPPI's
 candidate trajectories are drawn in CARLA every frame (self.draw: 64
 candidates with end dots, the reference, the weighted mean, the best one)
 and reach the GUI's 轨迹 tab with the telemetry; its diagnostics
-(self.debug) reach the GUI and log_debug.csv; a
+(self.debug) reach the GUI and log_debug.csv; 车辆参数辨识 from the run's
+record finds the tire scales of the original's step steers (bmw_e90_identified.json);
 the page's 0.02 s frame step: the run goes at the algorithm's FRAME_DT
 (0.05 s) and says so; KMPPI with OUTPUT = "carsim" through the mock
 CarSim (throttle / brake / steering wheel), from 20 m/s: speed held, on its
@@ -176,6 +177,15 @@ def main():
               (len(offs), round(rms, 3), round(max(offs), 3) if offs else None))
         check("it covers > 700 m", (k.get("distance") or 0.0) > 700.0, k.get("distance"))
         check("it steers through the curve (front wheel angle > 1 deg)", wheel > 1.0, wheel)
+        # 车辆参数辨识 from this run's record: the tire scales the original's step steers found for this car.
+        ident = c.call("vehicle_identify", folder=folder, m=1910.0, I=3482.0, a=1.371, b=1.386)
+        want = json.load(open(os.path.join(HERE, "..", "controllers", "kmppi", "bmw_e90_identified.json"), encoding="utf-8"))
+        de = max(abs(ident["front_lateral_scale"] / want["front_lateral_scale"] - 1),
+                 abs(ident["rear_lateral_scale"] / want["rear_lateral_scale"] - 1))
+        check("车辆参数辨识 from this run: the tire scales of the original's step steers (< 10%), R² > 0.8",
+              de < 0.10 and ident["r2"] > 0.8,
+              (round(ident["front_lateral_scale"], 3), round(ident["rear_lateral_scale"], 3), round(ident["r2"], 3),
+               ident["samples"], round(ident["ay_max"], 2)))
 
         if cam is not None:
             cam.stop()

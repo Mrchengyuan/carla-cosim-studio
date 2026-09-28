@@ -1,3 +1,4 @@
+#include "view_modes.h"
 #include "app.h"
 
 #include <algorithm>
@@ -663,7 +664,9 @@ void App::StartRun() {
   starting_ = true;
   // Remote: real CarSim runs in the CarSim service on this computer, not beside the backend.
   json run_cfg = cfg_;
-  if (Remote() && run_cfg.contains("carsim") && !run_cfg["carsim"].value("mock", false)) run_cfg["carsim"]["remote"] = true;
+  if (Remote() && run_cfg.contains("carsim") && !run_cfg["carsim"].value("mock", false) &&
+      !run_cfg["carsim"].value("chrono", false))  // the Chrono BMW runs beside the backend
+    run_cfg["carsim"]["remote"] = true;
   be_.Request("cosim_start", {{"config", run_cfg}}, [this, units](bool ok, const json& r, const std::string& err) {
     busy_.clear();
     starting_ = false;
@@ -757,10 +760,12 @@ json App::PaneSpec(const std::string& source, int w, int h) const {
 }
 
 std::vector<std::pair<std::string, std::string>> App::ViewSources() {
-  std::vector<std::pair<std::string, std::string>> out = {
-      {"cam:chase", "相机 · 跟车"}, {"cam:hood", "相机 · 车头"}, {"cam:wheel", "相机 · 前轮特写"}, {"cam:top", "相机 · 俯视"},
-      {"semantic", "语义分割（前视）"}, {"depth", "深度（前视）"}, {"instance", "实例分割（前视）"},
-      {"lidar", "激光雷达点云（俯视）"}, {"radar", "毫米波雷达（俯视）"}};
+  std::vector<std::pair<std::string, std::string>> out;
+  for (const ViewModeDef& m : kViewModes) out.push_back({std::string("cam:") + m.id, std::string("相机 · ") + m.name});
+  for (const auto& e : std::vector<std::pair<std::string, std::string>>{
+           {"semantic", "语义分割（前视）"}, {"depth", "深度（前视）"}, {"instance", "实例分割（前视）"},
+           {"lidar", "激光雷达点云（俯视）"}, {"radar", "毫米波雷达（俯视）"}})
+    out.push_back(e);
   static const char* kTypes[][2] = {{"rgb", "相机"}, {"depth", "深度"}, {"semantic", "语义"}, {"instance", "实例"},
                                     {"lidar", "激光雷达"}, {"radar", "毫米波雷达"}};
   for (const json& s : RigSensors()) {
@@ -1141,6 +1146,29 @@ void App::BuildTour() {
        }, "05d_rig_camera"},
       {kPanelView, [this] { click_target_ = "view:wheel"; },
        [this, idle] { return idle() && view_rig_sensor_.empty() && view_mode_ == "wheel" && views_pending_ == 0 && view_frames_ > 3; }, ""},
+      // The six directions: the four new ones by clicks on the viewport's bar, pictures of each.
+      {kPanelView, [this] { click_target_ = "view:front"; },
+       [this, idle] { return idle() && view_mode_ == "front" && views_pending_ == 0 && view_frames_ > 3; }, "05e_view_front"},
+      {kPanelView, [this] { click_target_ = "view:left"; },
+       [this, idle] { return idle() && view_mode_ == "left" && views_pending_ == 0 && view_frames_ > 3; }, "05f_view_left"},
+      {kPanelView, [this] { click_target_ = "view:right"; },
+       [this, idle] { return idle() && view_mode_ == "right" && views_pending_ == 0 && view_frames_ > 3; }, "05g_view_right"},
+      {kPanelView, [this] { click_target_ = "view:iso"; },
+       [this, idle] { return idle() && view_mode_ == "iso" && views_pending_ == 0 && view_frames_ > 3; }, "05h_view_iso"},
+      {kPanelView, [this] { click_target_ = "view:wheel"; },
+       [this, idle] { return idle() && view_mode_ == "wheel" && views_pending_ == 0 && view_frames_ > 3; }, ""},
+      // The Chrono BMW in place of CarSim, by clicks: ticking it unticks 模拟 CarSim and shows its speed; back.
+      {kPanelCoSim, [this] { tour_kept_["carsim"] = cfg_["carsim"]; cfg_["carsim"]["mock"] = true; cfg_["carsim"]["chrono"] = false; },
+       [] { return ui::TargetShown("cosim:chrono"); }, ""},
+      {kPanelCoSim, [this] { click_target_ = "cosim:chrono"; }, [this] {
+         return click_target_.empty() && cfg_["carsim"].value("chrono", false) && !cfg_["carsim"].value("mock", true) &&
+                ui::TargetShown("cosim:chrono_speed");
+       }, "08e_chrono"},
+      {kPanelCoSim, [this] { click_target_ = "cosim:mock"; }, [this] {
+         return click_target_.empty() && cfg_["carsim"].value("mock", false) && !cfg_["carsim"].value("chrono", true) &&
+                !ui::TargetShown("cosim:chrono_speed");
+       }, ""},
+      {kPanelCoSim, [this] { cfg_["carsim"] = tour_kept_["carsim"]; }, [this] { return cfg_["carsim"] == tour_kept_["carsim"]; }, ""},
       {kPanelTraffic, [this] { traffic_vehicles_ = 12; traffic_walkers_ = 8; SpawnTraffic(); }, idle, "06_traffic"},
       {kPanelDrive, [this] {
          cfg_["drive"]["dynamics"] = "cosim";

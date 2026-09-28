@@ -37,6 +37,7 @@ import traceback
 import carla
 
 import carsim_remote
+import chrono_local
 import collector as coll
 import dataset as dsmod
 import rig as rigmod
@@ -1276,7 +1277,7 @@ class Backend:
             self.server_api = info["server_api"]
         if cosim:
             self._log("联合仿真开始%s：%s，参考点 %s，每帧 %d 个 CarSim 步，驾驶：%s" % (
-                "（模拟 CarSim）" if info["mock"] else "",
+                "（模拟 CarSim）" if info["mock"] else "（Chrono 宝马 E90 代替 CarSim）" if info.get("chrono") else "",
                 "改版 CARLA 接口" if info["external_api"] else "原版兼容模式",
                 info["reference_point"], info["inner_steps"], d["run"]["driver"]))
             if abs(info["frame_dt"] - req_dt) > 1e-9:
@@ -1285,7 +1286,7 @@ class Backend:
                     info["t_step"], req_dt, info["frame_dt"],
                     "；采样周期 %g s → %g s（每 %d 帧）" % (period, every * info["frame_dt"], every)
                     if period > 0 and abs(every * info["frame_dt"] - period) > 1e-9 else ""), "warn")
-            if not info["mock"] and info["t_stop"] > 0:
+            if not info["mock"] and not info.get("chrono") and info["t_stop"] > 0:
                 self._log("这次运行最晚在 CarSim 的结束时间 t = %.1f s 停止（.sim 里设定）" % info["t_stop"])
             for msg in info.get("warnings", []):
                 self._log(msg, "warn")
@@ -1741,6 +1742,7 @@ def serve(port, exit_with_client=False, carsim_port=0):
         faulthandler.register(signal.SIGUSR1, all_threads=True)
     backend = Backend()
     atexit.register(backend.cleanup)
+    atexit.register(chrono_local.stop)  # the Chrono BMW's service process, if one was started
     signal.signal(signal.SIGTERM, lambda *_: backend.exit_now())
     # Ctrl+C in the terminal of a backend started by hand: the same bounded
     # clean exit, never a cleanup on this thread racing the worker.

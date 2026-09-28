@@ -4,7 +4,11 @@ from the original's steady-state bicycle relation), a closed loop on the
 original's own 3DOF plant along a straight into a 250 m arc from 0.5 m off
 the lane centre, the zero-order hold between KMPPI periods, the refusal of a
 frame step that does not divide 0.05 s, and the CarSim service's --chrono
-(no .sim checked, like --mock). About half a minute.
+(no .sim checked, like --mock). The platform's lines (self.draw): to CARLA's
+world from the ego frame, format errors in plain words, the segment limit,
+none while collecting; KMPPI's lines (64 candidates coloured by weight, the
+reference, the weighted mean, the best one bold and last); finding the
+Chrono Python. About half a minute.
 
     python tests/test_offline_kmppi.py
 """
@@ -13,6 +17,7 @@ import math
 import os
 import sys
 import unittest
+import unittest.mock
 
 import numpy as np
 
@@ -134,6 +139,84 @@ class TimingTests(unittest.TestCase):
         e = {"Vx": 60.0, "Vy": 0.0, "AVz": 0.0}
         first = c.control(e, 0.0, 0.05, self.scene())
         self.assertEqual(c.control(e, 0.05, 0.05, {"units": UNITS, "lane": None}), first)
+
+
+class DrawTests(unittest.TestCase):
+    def test_ego_frame_to_carla_world(self):
+        import session
+        # Reference point at (100, 50, 2) facing CARLA yaw 90 (+y): forward is +y, left (CarSim y+) is +x... in CARLA
+        # (y right): left of a car facing +y is -x... checked point by point:
+        segs, cut = session.draw_segments([{"points": [[0, 0], [10, 0], [10, 2]], "color": [1, 2, 3], "width": 0.2}],
+                                          (100.0, 50.0, 2.0, 90.0))
+        self.assertEqual((len(segs), cut), (2, 0))
+        (a, b, w, c), (b2, e, _, _) = segs
+        z = 2.0 + session.DRAW_LIFT_M
+        for got, want in ((a, (100, 50, z)), (b, (100, 60, z)), (e, (102, 60, z))):
+            np.testing.assert_allclose((got.x, got.y, got.z), want, atol=1e-9)
+        self.assertEqual((w, c.r, c.g, c.b), (0.2, 1, 2, 3))
+
+    def test_left_is_left(self):
+        """CarSim y left -> CARLA y right: facing +x (yaw 0), a point to the left has a smaller CARLA y."""
+        import session
+        (seg,), _ = session.draw_segments([{"points": [[0, 0], [0, 1]]}], (0.0, 0.0, 0.0, 0.0))
+        self.assertAlmostEqual(seg[1].y, -1.0)
+        self.assertEqual((seg[2], seg[3].r, seg[3].g, seg[3].b), (0.05, 255, 255, 255))  # defaults
+
+    def test_format_errors_and_the_limit(self):
+        import session
+        with self.assertRaisesRegex(RuntimeError, "self.draw 应是一组线"):
+            session.draw_segments({"points": []}, (0, 0, 0, 0))
+        with self.assertRaisesRegex(RuntimeError, "第 2 条线格式不对"):
+            session.draw_segments([{"points": [[0, 0], [1, 1]]}, {"pts": []}], (0, 0, 0, 0))
+        segs, cut = session.draw_segments([{"points": [[i, 0] for i in range(6001)]}], (0, 0, 0, 0))
+        self.assertEqual((len(segs), cut), (session.MAX_DRAW_SEGMENTS, 6000))
+
+    def test_taken_once_and_not_while_collecting(self):
+        import session
+
+        class Ses:
+            _take_draw = session.CoSimSession._take_draw
+
+        s = Ses()
+        s.driver = type("D", (), {"draw": [{"points": [[0, 0], [1, 0]]}]})()
+        s.scene = type("S", (), {"ref_pose": (0.0, 0.0, 0.0, 0.0)})()
+        s.d = {"collect": {"enabled": False}}
+        self.assertEqual(s._take_draw(), [])
+        self.assertEqual((len(s._draw_segs), s.driver.draw), (1, None))  # taken: the next frames draw the same
+        self.assertEqual(s._take_draw(), [])
+        self.assertEqual(len(s._draw_segs), 1)
+        s.d = {"collect": {"enabled": True}}
+        s.driver.draw = [{"points": [[0, 0], [1, 0]]}]
+        warn = s._take_draw()
+        self.assertEqual(s._draw_segs, [])
+        self.assertIn("采集数据时不画", warn[0])
+        s.driver.draw = [{"points": [[0, 0], [1, 0]]}]
+        self.assertEqual(s._take_draw(), [])  # said once
+
+    def test_kmppi_lines(self):
+        c = load_controller()
+        scene = {"units": UNITS, "lane": {"center_rel": [[2.0 * i, 0.0] for i in range(26)], "offset": 0.0}}
+        c.control({"Vx": 72.0, "Vy": 0.0, "AVz": 0.0}, 0.0, 0.05, scene)
+        lines = c.draw
+        self.assertEqual(len(lines), 64 + 3)
+        cand, ref, mean, best = lines[:64], lines[64], lines[65], lines[66]
+        self.assertEqual((ref["color"], mean["color"], best["color"]), ([40, 230, 90], [255, 215, 0], [255, 30, 30]))
+        self.assertGreater(best["width"], mean["width"])
+        self.assertGreater(mean["width"], cand[0]["width"])
+        self.assertEqual(len(best["points"]), 12)  # 34 states, every 3rd
+        self.assertEqual(best["points"][0], [-c.vehicle.a, 0.0])  # from the centre of gravity
+        self.assertTrue(all(len(l["points"]) == 12 for l in cand))
+        # The bold one is the highest weight: the same as the reddest candidate (drawn last among them).
+        self.assertEqual(best["points"], cand[-1]["points"])
+        self.assertEqual(cand[-1]["color"], [255, 60, 40])
+
+    def test_find_chrono_python(self):
+        import chrono_local
+        with self.assertRaisesRegex(ValueError, "找不到装了 PyChrono 的 Python"):
+            with unittest.mock.patch.dict(os.environ, {"CHRONO_PYTHON": ""}), \
+                    unittest.mock.patch("os.path.isfile", return_value=False):
+                chrono_local.find_python("")
+        self.assertEqual(chrono_local.find_python(sys.executable), sys.executable)
 
 
 class ServiceTests(unittest.TestCase):

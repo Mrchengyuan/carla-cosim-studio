@@ -86,11 +86,11 @@ class CarSim:
             from chrono_bmw.chrono_carsim_env import ChronoCarSimEnv
             c, dur = self._cfg(carsim, duration)["carsim"], float(duration)
             self.env = ChronoCarSimEnv(c["export_names"], t_stop=dur + 1.0 if dur > 0 else 1e9, units=c["units"],
-                                       init_speed=self.chrono)
+                                       init_speed=float(c.get("chrono_init_speed", self.chrono)))
         else:
             self.env = make_env(self._cfg(carsim, duration), service=True)
         sim = str(getattr(self.env, "sim_path", "") or "")
-        print("运行开始：%s" % (sim or ("Chrono 宝马 E90（初速 %g m/s）" % self.chrono if self.chrono is not None
+        print("运行开始：%s" % (sim or ("Chrono 宝马 E90（初速 %g m/s）" % self.env.init_speed if self.chrono is not None
                                        else "模拟 CarSim")), flush=True)
         return {"config": self.env.config, "sim_path": sim}
 

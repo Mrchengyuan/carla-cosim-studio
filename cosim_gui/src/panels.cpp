@@ -5,6 +5,7 @@
 #include <map>
 #include <utility>
 
+#include "view_modes.h"
 #include "app.h"
 #include "imgui.h"
 #include "implot.h"
@@ -1376,11 +1377,29 @@ void App::DrawPanelCoSim() {
   ui::BeginCard(ICON_FA_FOLDER_OPEN, "CarSim 模型");
   bool mock = cs.value("mock", false);
   ui::Row("模拟 CarSim", "不需要 CarSim 许可证，用一个简单车辆模型代替，用来测试整条链路");
-  if (ImGui::Checkbox("##mock", &mock)) cs["mock"] = mock;
+  if (ImGui::Checkbox("##mock", &mock)) {
+    cs["mock"] = mock;
+    if (mock) cs["chrono"] = false;
+  }
   ui::RecordTarget("cosim:mock");
+  // The PyChrono BMW E90 on the backend's machine (chrono_local.py): the backend starts it.
+  bool chrono = !mock && cs.value("chrono", false);
+  ui::Row("Chrono 宝马（服务器）", "没有 CarSim 时，用后端所在电脑上的 PyChrono 宝马 E90 多体整车模型代替："
+                                  "后端自己在 conda 环境 chrono 里启动它。导入量是 [纵向加速度 m/s², 前轮转角 rad]（配 KMPPI 算法）");
+  if (ImGui::Checkbox("##chrono", &chrono)) {
+    cs["chrono"] = chrono;
+    if (chrono) cs["mock"] = mock = false;
+  }
+  ui::RecordTarget("cosim:chrono");
+  if (chrono) {
+    ui::Row("初始车速 m/s", "Chrono 宝马起步时的车速（先直线稳定 1 s，再从出生点开始）");
+    EditDouble(cs, "chrono_init_speed", 1.0, "%.1f", 0.0, 60.0);
+    ui::RecordTarget("cosim:chrono_speed");
+  }
+  const bool other_model = mock || chrono;  // no CarSim: no .sim, no python_carsim_env
   // Remote: real CarSim runs in the CarSim service on this computer, connected to
   // the server's backend; the two paths below are this computer's (checked here).
-  const bool service = Remote() && !mock;
+  const bool service = Remote() && !other_model;
   if (service) {
     const json& svc = carsim_service_;
     const bool up = svc.is_object() && svc.value("connected", false);
@@ -1397,17 +1416,17 @@ void App::DrawPanelCoSim() {
     ImGui::SetCursorPosX(ui::LabelWidth());
     ImGui::TextColored(p.text_dim, "（这台 Windows 电脑上的路径）");
   };
-  ImGui::BeginDisabled(mock);
+  ImGui::BeginDisabled(other_model);
   std::string pick_err;
   ui::Row(".sim 文件");
   EditPath(cs, "sim_path", false, "选择 CarSim 的 .sim 文件", "pick:sim", pick_err);
   here();
   const std::string sim_res = UserPath(cs.value("sim_path", std::string()));
-  if (!mock) PathStatus(sim_res);
+  if (!other_model) PathStatus(sim_res);
   ui::Row("python_carsim_env 目录", "一般不用填：.sim 在 python_carsim_env 文件夹（或它的子文件夹）里时会自动找到");
   EditPath(cs, "repo_path", true, "选择 python_carsim_env 文件夹", "pick:repo", pick_err);
   here();
-  if (!mock) {
+  if (!other_model) {
     const std::string repo_res = UserPath(cs.value("repo_path", std::string()));
     const std::string found = FindCarsimRepo(repo_res, sim_res);
     if (!found.empty() && found != repo_res) {  // not the given folder: found from the .sim
@@ -1747,15 +1766,16 @@ void App::DrawPanelView() {
   const ui::Palette& p = ui::Colors();
   const float fs = ImGui::GetFontSize();
   ui::BeginCard(ICON_FA_VIDEO, "主车相机画面");
-  const char* modes[] = {"chase", "hood", "wheel", "top"};
-  const char* names[] = {"跟车", "车头", "前轮特写", "俯视"};
-  ui::Row("视角", "前轮特写可以直接看到转向、车轮转动和悬架跳动");
-  for (int i = 0; i < 4; ++i) {
-    if (i) ImGui::SameLine();
-    if (ImGui::RadioButton(names[i], view_rig_sensor_.empty() && view_mode_ == modes[i])) {
-      view_mode_ = modes[i];
+  ui::Row("视角", "前、后、左、右、俯视、斜上方六个方向，加车头和前轮特写；视口左上角的按钮也能切换");
+  for (int i = 0; i < kViewModeCount; ++i) {
+    const ViewModeDef& m = kViewModes[i];
+    if (i % 4) ImGui::SameLine();
+    else if (i) ImGui::SetCursorPosX(ui::LabelWidth());
+    if (ImGui::RadioButton(m.name, view_rig_sensor_.empty() && view_mode_ == m.id)) {
+      view_mode_ = m.id;
       if (view_on_) StartView();
     }
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", m.tip);
   }
   // Preview any camera of the current rig through its exact mount.
   std::vector<std::string> cams;

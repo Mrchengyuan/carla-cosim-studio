@@ -35,8 +35,11 @@ def default_dict():
         "carla": {"host": "localhost", "port": 2000,
                   "vehicle": "vehicle.tesla.model3", "spawn_index": 0},
         # remote: CarSim runs on the user's Windows computer (carsim_service.py), and
-        # sim_path / repo_path are paths there; mock goes first.
+        # sim_path / repo_path are paths there; mock goes first. chrono: the PyChrono BMW
+        # E90 on this machine instead (chrono_local.py; imports [ax m/s^2, front wheel
+        # angle rad], starting at chrono_init_speed m/s; chrono_python "" = found).
         "carsim": {"sim_path": "", "repo_path": "../python_carsim_env", "mock": False, "remote": False,
+                   "chrono": False, "chrono_init_speed": 20.0, "chrono_python": "",
                    "export_names": list(_defaults.EXPORT_NAMES),
                    "units": dict(_defaults.UNITS)},
         # duration 0 = run until stopped (or until CarSim reaches t_stop).

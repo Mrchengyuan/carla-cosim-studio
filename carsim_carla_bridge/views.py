@@ -22,6 +22,26 @@ CAMERA_MOUNTS = {
     "wheel": carla.Transform(carla.Location(x=3.6, y=-2.6, z=0.9), carla.Rotation(pitch=-8, yaw=145)),
     "top": carla.Transform(carla.Location(z=22.0), carla.Rotation(pitch=-90)),
 }
+
+
+def mode_mount(mode, vehicle=None):
+    """The main camera's preset viewpoint (CARLA vehicle frame): behind (chase),
+    in front, left, right, straight above (top), above at an angle from the
+    rear left (iso); the hood and front-wheel close-ups. front / left / right /
+    iso keep their distance from the car's bounding box (a truck is longer)."""
+    e = vehicle.bounding_box.extent if vehicle is not None else carla.Vector3D(2.4, 1.0, 0.75)
+    T, L, R = carla.Transform, carla.Location, carla.Rotation
+    if mode == "front":
+        return T(L(x=e.x + 5.5, z=2.6), R(pitch=-12, yaw=180))
+    if mode == "left":   # CARLA y is to the right: the left side is -y
+        return T(L(y=-(e.y + 6.5), z=2.4), R(pitch=-12, yaw=90))
+    if mode == "right":
+        return T(L(y=e.y + 6.5, z=2.4), R(pitch=-12, yaw=-90))
+    if mode == "iso":
+        return T(L(x=-(e.x + 6.0), y=-(e.y + 6.0), z=2 * e.z + 7.0), R(pitch=-35, yaw=45))
+    return CAMERA_MOUNTS.get(mode, CAMERA_MOUNTS["chase"])
+
+
 CAMERA_KINDS = ("rgb", "depth", "semantic", "instance")
 VIEW_KINDS = CAMERA_KINDS + ("lidar", "radar")  # sensors that can be shown as an image
 
@@ -152,7 +172,7 @@ class ViewStreamer:
             attrs["image_size_x"], attrs["image_size_y"] = w, h
             if not mount and "fov" not in (spec.get("attrs") or {}):
                 attrs["fov"] = 60 if spec.get("mode") == "wheel" else 90
-            tf = _transform(mount, vehicle) if mount else CAMERA_MOUNTS.get(spec.get("mode", "chase"), CAMERA_MOUNTS["chase"])
+            tf = _transform(mount, vehicle) if mount else mode_mount(spec.get("mode", "chase"), vehicle)
         else:
             if kind == "lidar":
                 attrs.setdefault("rotation_frequency", 10.0)

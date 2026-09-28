@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <cmath>
 
+#include "view_modes.h"
 #include "app.h"
 #include "imgui.h"
 #include "imgui_internal.h"
@@ -712,7 +713,9 @@ void App::DrawNav() {
       case kPanelVehicle: return cfg_.contains("carla") ? ShortName(cfg_["carla"].value("vehicle", std::string())) : "";
       case kPanelRig: return Fmt("%d", static_cast<int>(RigSensors().size()));
       case kPanelDrive: return cosim ? "CarSim" : "CARLA";
-      case kPanelCoSim: return cosim && cfg_.contains("carsim") && cfg_["carsim"].value("mock", false) ? "模拟" : "";
+      case kPanelCoSim:
+        if (!cosim || !cfg_.contains("carsim")) return "";
+        return cfg_["carsim"].value("mock", false) ? "模拟" : cfg_["carsim"].value("chrono", false) ? "Chrono" : "";
       case kPanelScene: {
         const std::string c = cfg_.contains("scene") ? cfg_["scene"].value("collision", std::string("log")) : "";
         return c == "stop" ? "撞停" : c == "log" ? "记录" : c == "off" ? "" : "";
@@ -923,9 +926,6 @@ void App::DrawViewport(float w, float h) {
     ImGui::PushStyleColor(ImGuiCol_Border, kHudBorder);
     ImGui::PushStyleColor(ImGuiCol_Text, kHudText);
     ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 0.0f);
-    static const char* kModes[] = {"chase", "hood", "wheel", "top"};
-    static const char* kIcons[] = {ICON_FA_CAR_REAR, ICON_FA_EYE, ICON_FA_CIRCLE_DOT, ICON_FA_ARROWS_TO_EYE};
-    static const char* kTexts[] = {"跟车", "车头", "前轮", "俯视"};
     static const char* kLayoutIcons[] = {ICON_FA_SQUARE, ICON_FA_TABLE_COLUMNS, ICON_FA_TABLE_CELLS_LARGE};
     static const char* kLayoutTexts[] = {"单画面", "1+3", "2×2"};
     // The bar must stay inside the main pane: over a side pane it would cover
@@ -933,22 +933,23 @@ void App::DrawViewport(float w, float h) {
     // full labels do not fit; the names show as tooltips.
     const float pad = ImGui::GetStyle().FramePadding.x * 2 + ImGui::GetStyle().ItemSpacing.x;
     float full = bar_h + fs * 1.3f;  // close button and gaps
-    for (int i = 0; i < 4; ++i) full += ImGui::CalcTextSize(Fmt("%s %s", kIcons[i], kTexts[i]).c_str()).x + pad;
+    for (const ViewModeDef& m : kViewModes) full += ImGui::CalcTextSize(Fmt("%s %s", m.icon, m.text).c_str()).x + pad;
     for (int i = 0; i < 3; ++i) full += ImGui::CalcTextSize(Fmt("%s %s", kLayoutIcons[i], kLayoutTexts[i]).c_str()).x + pad;
     const bool compact = full > mw - fs * 1.2f;
     auto label = [&](const char* icon, const char* text, const char* id) {
       return compact ? Fmt("%s##%s", icon, id) : Fmt("%s %s##%s", icon, text, id);
     };
-    for (int i = 0; i < 4; ++i) {
-      if (i) ImGui::SameLine();
-      const bool on = view_on_ && view_rig_sensor_.empty() && view_mode_ == kModes[i];
+    for (int i = 0; i < kViewModeCount; ++i) {
+      const ViewModeDef& m = kViewModes[i];
+      if (i) ImGui::SameLine(0, i == 6 ? fs * (compact ? 0.4f : 0.8f) : -1.0f);  // the close-ups apart from the directions
+      const bool on = view_on_ && view_rig_sensor_.empty() && view_mode_ == m.id;
       if (on) ImGui::PushStyleColor(ImGuiCol_Button, ui::WithAlpha(p.accent, 0.85f));
       ImGui::BeginDisabled(!busy_.empty());
-      const bool pressed = ImGui::Button(label(kIcons[i], kTexts[i], kModes[i]).c_str(), ImVec2(compact ? bar_h : 0, bar_h));
-      if (compact && ImGui::IsItemHovered()) ImGui::SetTooltip("%s", kTexts[i]);
-      ui::RecordTarget(std::string("view:") + kModes[i]);
+      const bool pressed = ImGui::Button(label(m.icon, m.text, m.id).c_str(), ImVec2(compact ? bar_h : 0, bar_h));
+      if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", m.tip);
+      ui::RecordTarget(std::string("view:") + m.id);
       if (pressed) {
-        view_mode_ = kModes[i];
+        view_mode_ = m.id;
         view_auto_ = true;
         StartView();
       }

@@ -45,6 +45,7 @@ CarSim 负责全部车辆动力学计算，CARLA 负责场景、渲染和传感�
 | `views.py` | 界面视口的实时画面 |
 | `controllers/` | 控制算法示例；`controllers/kmppi/`：KMPPI 路径跟踪（移植的算法文件原样，`lane_reference.py` 以车道中心线作参考，`controller.py` 接到平台） |
 | `mock_carsim.py` | 没有 CarSim 时用的替身（运动学自行车模型），接口与 `CarSimEnv` 相同 |
+| `chrono_local.py` | “CarSim 动力学”页勾选“Chrono 宝马（服务器）”（`carsim.chrono`）时：后端自己在 conda 环境 `chrono` 里启动 `carsim_service.py --chrono`，经一条自己的服务连接（本机随机端口）运行，和远程模式的 CarSim 服务互不影响；后端退出时它也退出 |
 | `chrono_bmw/` | 没有 CarSim 时的高保真替身：PyChrono 宝马 E90（`chrono_plant.py` 来自 kmppi_chrono，`chrono_carsim_env.py` 给它加上 `CarSimEnv` 的接口，导入 `[ax, 前轮转角]`）；用 `carsim_service.py --chrono` 在装了 PyChrono 的 conda 环境里运行 |
 | `tests/test_coords.py` | 坐标换算单元测试（与 `carla.Transform.get_matrix()` 对照） |
 | `tests/check_wheels.py` | 用车轮骨骼姿态实测转向 / 转角的正负号 |

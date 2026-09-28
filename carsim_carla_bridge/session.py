@@ -20,6 +20,7 @@ import traceback
 import carla
 
 import carsim_remote
+import chrono_local
 import rig as rigmod
 import scenario as scenariomod
 import settings as st
@@ -79,6 +80,37 @@ def check_scenario(d):
         sc["closures"] = scenariomod.check_closures(sc.get("closures"))
 
 
+MAX_DRAW_SEGMENTS = 5000
+DRAW_LIFT_M = 0.3  # m above the reference point (ground level at the front axle): on the road, not in it
+
+
+def draw_segments(lines, ref_pose):
+    """control's self.draw -> ([(carla.Location a, b, thickness, carla.Color)], segments over the
+    limit). lines: [{"points": [[x, y], ...] (m, ego frame: x forward, y left, origin at the
+    reference point), "color": [r, g, b] (0~255, default white), "width": m (default 0.05)}, ...];
+    ref_pose: (x, y, z, yaw deg) of the reference point in CARLA's world."""
+    if not isinstance(lines, (list, tuple)):
+        raise RuntimeError("控制算法的 self.draw 应是一组线：[{\"points\": [[x, y], ...], \"color\": [r, g, b], \"width\": 0.05}, ...]")
+    X, Y, Z, yaw = ref_pose
+    c, s = math.cos(math.radians(yaw)), math.sin(math.radians(yaw))
+    out, total = [], 0
+    for i, ln in enumerate(lines, 1):
+        try:
+            pts = [(float(p[0]), float(p[1])) for p in ln["points"]]
+            col = [int(max(0, min(255, v))) for v in ln.get("color", (255, 255, 255))][:3]
+            width = float(ln.get("width", 0.05))
+            color = carla.Color(*col)
+        except (TypeError, KeyError, IndexError, ValueError, AttributeError):
+            raise RuntimeError("控制算法的 self.draw 第 %d 条线格式不对：要 {\"points\": [[x, y], ...], \"color\": [r, g, b], "
+                               "\"width\": 0.05}（x 向前、y 向左，m）" % i)
+        world = [carla.Location(X + c * x + s * y, Y + s * x - c * y, Z + DRAW_LIFT_M) for x, y in pts]  # y left -> CARLA y right
+        for a, b in zip(world, world[1:]):
+            total += 1
+            if len(out) < MAX_DRAW_SEGMENTS:
+                out.append((a, b, width, color))
+    return out, (total if total > MAX_DRAW_SEGMENTS else 0)
+
+
 def check_run_files(d):
     """The files a CarSim run needs, checked before the world changes (a
     start that fails later has already respawned the ego)."""
@@ -89,6 +121,9 @@ def check_run_files(d):
         if not os.path.isfile(path):
             raise ValueError("控制算法文件不存在：%s" % path)
     if d["carsim"]["mock"]:
+        return
+    if d["carsim"].get("chrono"):  # the PyChrono BMW here: started now, before the world changes
+        chrono_local.link(d)
         return
     if d["carsim"].get("remote"):  # the .sim and python_carsim_env are on the Windows computer: its service checks them
         carsim_remote.check(d)
@@ -102,6 +137,8 @@ def make_env(d):
     c = d["carsim"]
     if c["mock"]:
         return mock_env(d)
+    if c.get("chrono"):
+        return carsim_remote.RemoteCarSimEnv(d, link=chrono_local.link(d))
     if c.get("remote"):
         return carsim_remote.RemoteCarSimEnv(d)
     return open_carsim(*check_carsim(d))
@@ -539,6 +576,13 @@ def load_controller(d, ex, n_imports=None, scene=None, output=None):
                 t0 = time.perf_counter()
                 out = obj(*args)
                 control.ms = (time.perf_counter() - t0) * 1000.0  # the algorithm's own time (GUI: 算法耗时)
+            # Lines to show in CARLA (self.draw, or a module-level draw for a function
+            # entry): taken once, in the ego frame of this call (Session.step draws them).
+            holder = inst if inst is not None else mod
+            lines = getattr(holder, "draw", None)
+            if lines is not None:
+                control.draw = lines
+                setattr(holder, "draw", None)
         except KeyError as e:
             k = e.args[0] if len(e.args) == 1 and isinstance(e.args[0], str) else None
             no_export = "导出变量里没有 %r（导出变量在“CarSim 动力学”页设置，现有：%s）" % (
@@ -579,7 +623,7 @@ def load_controller(d, ex, n_imports=None, scene=None, output=None):
         def fin(reason):  # what finish() prints, and its traceback, to the output like control()'s
             with cap:
                 user_finish(reason)
-    control.path, control.running, control.ms = path, None, None
+    control.path, control.running, control.ms, control.draw = path, None, None, None
     control.finish = fin if callable(fin) else None
     return control
 
@@ -729,7 +773,7 @@ def _run_json(ses, end=None, reason=None):
     d, kpi = ses.d, ses.kpi
     cosim = d["drive"]["dynamics"] == "cosim"
     sim = None
-    if cosim and not d["carsim"]["mock"]:  # carsim.remote: on the Windows computer, as its CarSim service found it
+    if cosim and not d["carsim"]["mock"] and not d["carsim"].get("chrono"):  # remote: as its CarSim service found it
         sim = getattr(ses.env, "sim_path", None) if d["carsim"].get("remote") else os.path.abspath(d["carsim"]["sim_path"])
     name = getattr(getattr(ses.scene, "map", None), "name", None)
     return {"map": name.split("/")[-1] if isinstance(name, str) else None,
@@ -744,6 +788,7 @@ def _run_json(ses, end=None, reason=None):
             "external_api": bool(getattr(getattr(ses, "sync", None), "external_api", False)),
             "carsim_sim": sim,
             "carsim_mock": cosim and bool(d["carsim"]["mock"]),
+            "carsim_chrono": cosim and not d["carsim"]["mock"] and bool(d["carsim"].get("chrono")),
             "t_start": kpi.t_start if kpi else None, "t_end": kpi.t_end if kpi else None,
             "end": end, "end_reason": reason,
             "kpi": kpi.result() if kpi and kpi.samples else None,
@@ -1005,6 +1050,7 @@ class CoSimSession:
                 "reference_point": [round(float(x), 3) for x in self.sync.ref_local],
                 "t_step": t_step, "inner_steps": self.inner, "frame_dt": frame_dt,
                 "t_stop": float(self.env.config.get("t_stop") or 0.0), "mock": bool(d["carsim"]["mock"]),
+                "chrono": not d["carsim"]["mock"] and bool(d["carsim"].get("chrono")),
                 "warnings": self.warnings, "t": t0, "collisions": tel0["collisions"], "warning": tel0.get("warning", ""),
                 "record_dir": self.record_dir}
 
@@ -1055,6 +1101,7 @@ class CoSimSession:
         if not all(math.isfinite(a) for a in action):
             raise RuntimeError("控制算法输出了无效数值（NaN / 无穷大）：%s" % list(action))
         self.last_action = [float(a) for a in action]
+        draw_warn = self._take_draw()
         prev, t_prev = self.obs, env.t_current
         self.obs, _, done, info = env.control_step(action, self.inner)
         # A non-zero return without a model stop is an error, with or without a message.
@@ -1071,6 +1118,7 @@ class CoSimSession:
         if not self.export_check.done and env.t_current - self._t0 >= 1.0:
             warnings = self.export_check(self.obs, prev, env.t_current - t_prev)
         state = self.state = self.sync.sync(self.obs, env.t_current, frame_dt)
+        draw_n = self._paint(frame_dt)
         world_frame = self.world.tick()
         self.frame += 1
         # CarSim's velocity: the original CARLA reports 0 for the teleported car.
@@ -1095,11 +1143,44 @@ class CoSimSession:
             "wheel_suspension_mm": [x * 1000.0 for x in state.wheel_suspension],
             "action": [float(a) for a in action],
             **({"ctrl_ms": ms, "ctrl_ms_max": self.ctrl_ms_max} if ms is not None else {}),
-            "warnings": warnings,
+            **({"draw_n": draw_n} if draw_n else {}),
+            "warnings": warnings + draw_warn,
             "world_frame": world_frame,
             "dynamics": "CarSim",
             "done": self.done,
         }
+
+    def _take_draw(self):
+        """The algorithm's new lines (control.draw), to CARLA world segments in
+        the ego frame it computed them in: kept and drawn every frame until
+        the next ones. Warnings for the output, once each."""
+        new = getattr(self.driver, "draw", None)
+        if new is None:
+            return []
+        self.driver.draw = None
+        warn = []
+        if self.d["collect"].get("enabled"):
+            if not getattr(self, "_draw_told", False):
+                self._draw_told = True
+                warn.append("采集数据时不画控制算法的线（self.draw）：相机会把它们拍进图像")
+            self._draw_segs = []
+            return warn
+        self._draw_segs, cut = draw_segments(new, self.scene.ref_pose)
+        if cut and not getattr(self, "_draw_cut_told", False):
+            self._draw_cut_told = True
+            warn.append("控制算法要画的线段太多（%d 段），只画前 %d 段" % (cut, MAX_DRAW_SEGMENTS))
+        return warn
+
+    def _paint(self, frame_dt):
+        """Draws the kept segments for the next frame only (CARLA counts a
+        shape's life in simulation time: 1.5 frames shows it in one)."""
+        segs = getattr(self, "_draw_segs", None)
+        if not segs:
+            return 0
+        dbg, life = self.world.debug, 1.5 * frame_dt
+        for a, b, w, c in segs:
+            dbg.draw_line(a, b, thickness=w, color=c, life_time=life)
+        return len(segs)
 
     def _check_exports(self, obs, at_start=False):
         """Never hand NaN / inf to CARLA as a pose; stop with a clear reason."""

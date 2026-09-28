@@ -17,6 +17,11 @@
            由 Chrono 宝马替身里原样的命令适配层变成四轮扭矩和转向输入（chrono_bmw/chrono_plant.py）。
     周期   KMPPI 每 0.05 s 算一次（原工程的控制周期），中间各帧保持上一次的输出（零阶保持）。
            仿真步长要能整除 0.05 s（0.05、0.025、0.01 s ...；推荐 0.05 s：每帧算一次）。
+    画线   每次计算后把候选轨迹画进 CARLA 画面（self.draw，平台每帧画出来；采集数据时不画）：
+           从 K 条推演里挑 DRAW_CANDIDATES 条（权重最高的一半 + 其余随机一半），颜色按权重
+           从蓝（低）到红（高）；最好的一条（代价最低、权重最高）加粗画成亮红色；黄色粗线是按权重
+           平均的轨迹（实际执行的就是它的第一步）；绿色是参考轨迹。都是质心的轨迹。
+           推演的状态由包在预测模型外面的一层记下来（_Recorder），算法本身不动。
 单位跟随“CarSim 动力学”页（scene["units"]）。
 """
 import math
@@ -31,6 +36,27 @@ from prediction_model import BicycleModel
 
 REF_SPEED = 20.0     # m/s，参考车速（原工程 20 m/s）
 PRINT_EVERY = 5.0    # s，每隔多久在“输出”页打印一行状态
+DRAW_CANDIDATES = 64  # 每次画多少条候选轨迹（0 = 不画）
+DRAW_EVERY = 3       # 每隔几步取一个点（T = 33 步 → 12 个点）
+
+
+class _Recorder:
+    """包在预测模型 step 外面：on 时记下每一步 K 条推演的位置 (K, 2)。"""
+
+    def __init__(self, step):
+        self.step, self.on, self.xy = step, False, []
+
+    def __call__(self, state, action):
+        nxt = self.step(state, action)
+        if self.on:
+            self.xy.append(nxt[:, :2].copy())
+        return nxt
+
+
+def _color(u):
+    """0 → 蓝，0.5 → 品红，1 → 红（u 为按权重的相对位置）。"""
+    u = min(1.0, max(0.0, u))
+    return [int(40 + 215 * u), 60, int(255 - 215 * u)]
 
 
 class Controller:
@@ -41,7 +67,10 @@ class Controller:
         self.vehicle = cfg.resolved_vehicle()
         model = BicycleModel(self.vehicle, cfg.dt, cfg.ax_max, cfg.delta_max)
         self.ref_box = ReferenceBox(cfg.T)
-        self.ctrl = build_kmppi(cfg, model.step, self.ref_box, np.random.default_rng(cfg.rng_seed))
+        self.rec = _Recorder(model.step)
+        self.ctrl = build_kmppi(cfg, self.rec, self.ref_box, np.random.default_rng(cfg.rng_seed))
+        self.pick_rng = np.random.default_rng(1)   # 挑画哪几条（和算法的随机数分开，不影响结果）
+        self.draw = None
         self.ref = LaneReference(cfg, self.vehicle)
         self.every = None           # 每隔几帧算一次（第一帧时按帧步长定）
         self.frame = 0
@@ -93,9 +122,13 @@ class Controller:
         self.ref_box.t_now = t
         self.ref_box.val = self.ref.horizon(pts, (-a, 0.0))
         for i in range(self.cfg.num_refinement_steps):
-            act = self.ctrl.command(state, shift_horizon=(i == 0),
-                                    commit_action=(i == self.cfg.num_refinement_steps - 1))
+            last = i == self.cfg.num_refinement_steps - 1
+            self.rec.on, self.rec.xy = last and DRAW_CANDIDATES > 0, []
+            act = self.ctrl.command(state, shift_horizon=(i == 0), commit_action=last)
+        self.rec.on = False
         spent = time.perf_counter() - t0
+        if DRAW_CANDIDATES > 0 and self.rec.xy:
+            self.draw = self._lines(state)
         self.action = [float(act[0]), float(act[1])]
 
         self.n_calls += 1
@@ -112,6 +145,31 @@ class Controller:
                 t, vx, REF_SPEED, "%.3f m" % off if off is not None else "—", self.action[0], self.action[1],
                 self.ctrl.last_effective_sample_size, spent * 1000))
         return list(self.action)
+
+    def _lines(self, state):
+        """这一次的候选轨迹、加权平均轨迹和参考轨迹，画线格式（自车坐标，m）。"""
+        xy = np.stack(self.rec.xy, axis=1)                    # (K, T, 2)
+        w = np.asarray(self.ctrl.last_weights, dtype=float)
+        start = np.repeat(state[None, None, :2], xy.shape[0], axis=0)
+        xy = np.concatenate([start, xy], axis=1)[:, ::DRAW_EVERY]
+        if (self.cfg.T % DRAW_EVERY) != 0:
+            xy = np.concatenate([xy, np.concatenate([start, np.stack(self.rec.xy, axis=1)], axis=1)[:, -1:]], axis=1)
+        n = min(DRAW_CANDIDATES, len(w))
+        order = np.argsort(-w)
+        top = order[: n // 2][::-1]                         # 权重从低到高：最高的最后画（在上层）
+        rest = self.pick_rng.choice(order[n // 2:], n - len(top), replace=False)
+        pick = np.concatenate([rest, top])
+        lw = np.log(np.maximum(w[pick], 1e-300))
+        lo, hi = float(lw.min()), float(lw.max())
+        lines = [{"points": xy[k].tolist(), "color": _color((lw[j] - lo) / (hi - lo) if hi > lo else 1.0), "width": 0.03}
+                 for j, k in enumerate(pick)]
+        ref = np.vstack([state[None, :2], self.ref_box.val[:, :2]])
+        lines.append({"points": ref.tolist(), "color": [40, 230, 90], "width": 0.06})
+        mean = np.einsum("k,ktd->td", w, xy)
+        lines.append({"points": mean.tolist(), "color": [255, 215, 0], "width": 0.09})
+        best = int(order[0])                                # 代价最低、权重最高的一条：加粗，画在最上层
+        lines.append({"points": xy[best].tolist(), "color": [255, 30, 30], "width": 0.12})
+        return lines
 
     def finish(self, reason):
         if not self.n_calls:

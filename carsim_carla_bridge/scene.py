@@ -212,6 +212,7 @@ class SceneProvider:
         ev = ego_velocity if ego_velocity is not None else \
             es.get_velocity() if es is not None else self.ego.get_velocity()
         rw = etf.transform(carla.Location(*map(float, self.ref_local)))  # reference point, world
+        self.ref_pose = (rw.x, rw.y, rw.z, etf.rotation.yaw)  # CARLA world: the algorithm's ego frame (draw_lines)
         EX, EY, EZ = self._global(rw.x, rw.y, rw.z)
         eyaw = self._global_yaw(etf.rotation.yaw)
         # Continuous like CarSim's Yaw export (it keeps counting past +-180).

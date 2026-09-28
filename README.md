@@ -346,6 +346,23 @@ def control(self, exports, t, dt, scene):
 - `lane_reference.py`：参考轨迹从八字换成 CARLA 的车道中心线（`scene["lane"]["center_rel"]`，默认就给算法），恒速 20 m/s；参考的 vy、r 仍按原工程的稳态自行车关系由曲率求得。
 - `controller.py`：接到平台上的一层。把参考点（前轴中心）的导出量换算到质心，每 0.05 s 算一次、中间各帧保持。输出 `[纵向加速度 ax (m/s²), 前轮转角 δ (rad，左为正)]`，就是原工程被控对象的输入。
 
+**KMPPI 用了哪些信息做控制**：场景里只用 **车道中心线** `scene["lane"]["center_rel"]`，再加上 CarSim 导出的三个自车量。周围的车、行人、锥桶（`scene["objects"]`）都没有用，所以它只沿车道中心线跟踪、**不避障**（原工程的代价里也没有障碍物项）。
+
+| 输入 | 来源 | 在 KMPPI 里的用途 |
+|---|---|---|
+| `Vx` | CarSim 导出变量 | 纵向车速 vx |
+| `Vy` | CarSim 导出变量 | 侧向速度：导出的是参考点（前轴中心）的，换到质心 vy = Vy − a·r |
+| `AVz` | CarSim 导出变量 | 横摆角速度 r |
+| `center_rel` | 场景信息 → 车道 | 参考轨迹（见下） |
+| `scene["units"]` | CarSim 动力学页的单位设置 | 把 km/h、deg/s 换成 m/s、rad/s |
+
+- **状态**：每个控制周期都在当前的自车坐标系里重新算，质心放在 (−a, 0)，航向记为 0，状态为 [X, Y, yaw, vx, vy, r] = [−a, 0, 0, vx, vy, r]。所以不需要全局位置和航向（Xo / Yo / Yaw）。
+- **参考轨迹**（`lane_reference.py`）：`center_rel` 是自车坐标系里前方约 50 m 的车道中心线点（x 向前、y 向左，原点在前轴中心，每 2 m 一个点）。先把质心投影到中心线上得到弧长 s0，未来第 k 步（k = 1…33）的参考点取在 s0 + 20 m/s × 0.05 s × k 处，也就是每步沿中心线前进 1 m，共 33 m。每个参考点给出 6 个量：中心线上的位置 x、y，切线方向 yaw，参考车速 vx = 20 m/s（`REF_SPEED`）；再由该处曲率按原工程的动态自行车稳态关系算出 vy 和 r（r = v·曲率）。
+- **代价**：预测轨迹与这 33 个参考点的偏差（权重 Q：x、y 各 200，yaw 700，vx 50，vy 40，r 500），加上控制量 [ax, δ] 和它们变化率的代价。
+- **只用于显示和统计、不参与控制**：`scene["lane"]["offset"]`（车道偏差，打印和结束时的均方根）。`OUTPUT = "carsim"` 时还读 `Steer_SW`、`Steer_L1`、`Steer_R1`，只用来在线修正方向盘传动比，把前轮转角换成方向盘转角。
+- **没有车道信息时**（不在行车道上，`center_rel` 少于 2 个点）：ax 置 0，前轮转角保持上一次的值。
+- 所以“场景信息”页里 **给算法的车道量要勾选 `center_rel`**（默认已勾选）；其他场景量勾不勾对 KMPPI 没有影响。
+
 使用：**驾驶模式** 页算法文件选 `controllers/kmppi/controller.py`（入口 `Controller`）；仿真步长不用改：`controller.py` 开头写了 `FRAME_DT = 0.05`，平台运行时自动用 0.05 s（输出窗口会说明）；出生点用 **测试场景** 页的“切到 Town04 高速起点”。KMPPI 只跟踪路径、不避障：代价里没有障碍物项（原工程就是这样）。
 
 **没有 CarSim 时：Chrono 宝马 E90 替身**（`chrono_bmw/`）。它包装 `kmppi_chrono` 的 `chrono_plant.py`：命令适配原样，四轮加扭矩、转向按标定表；对外接口与 CarSim 相同，导出变量按 CarSim 的名字、坐标和单位给出。前轮转角已扣除 E90 约 1.26° 的静态前束。需要装了 PyChrono 10.0（projectchrono 频道）的 conda 环境 `chrono`（服务器上已装好）。在界面里用：**CarSim 动力学** 页勾选 **Chrono 宝马（服务器）**，后端运行时会自己启动它（`chrono_local.py`，在后台运行 `carsim_service.py --chrono`），不用开终端；“初始车速”默认 20 m/s。

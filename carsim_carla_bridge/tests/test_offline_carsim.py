@@ -495,7 +495,7 @@ class FakeSolverTests(SessionCase):
             msg = str(cm.exception)
             self.assertIn("无法加载 CarSim 求解器", msg)
             self.assertNotIn("WinDLL", msg)
-            self.assertTrue("ELF" in msg or "too short" in msg, msg)
+            self.assertTrue("ELF" in msg or "too short" in msg or "文件过短" in msg, msg)  # dlerror follows the locale
 
     def test_missing_solver_function_is_named(self):
         with tempfile.TemporaryDirectory() as tmp:

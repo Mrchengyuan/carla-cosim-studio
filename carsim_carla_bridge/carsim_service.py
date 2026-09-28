@@ -6,10 +6,14 @@ launcher opens: 127.0.0.1:57121 here is the server's 127.0.0.1:57121; this
 computer never listens), and then runs the CarSim steps the backend asks
 for, one round trip per CARLA frame. It reconnects by itself; Ctrl+C ends it.
 
-    python carsim_service.py [--host 127.0.0.1] [--port 57121] [--mock]
+    python carsim_service.py [--host 127.0.0.1] [--port 57121] [--mock | --chrono [--init-speed 20]]
 
 --mock: the simple built-in vehicle model instead of CarSim, whatever the
 run's config says (tests).
+--chrono: the PyChrono BMW E90 (chrono_bmw/chrono_carsim_env.py) instead of
+CarSim, e.g. on the server itself when there is no CarSim: imports [ax m/s^2,
+front wheel angle rad] (the KMPPI project's plant), starting at --init-speed
+m/s. Needs a Python with pychrono (the "chrono" conda env).
 
 Messages (JSON, one per line, UTF-8; floats that are not finite are null):
   service -> backend  {"type": "hello", "role": "carsim", "protocol": 2, "platform", "host", "python"}
@@ -60,12 +64,13 @@ def state(line):
 class CarSim:
     """CarSim of the backend's current run; stays open between its requests."""
 
-    def __init__(self, mock):
+    def __init__(self, mock, chrono=None):
         self.mock, self.env = mock, None
+        self.chrono = chrono  # --chrono: its initial speed, m/s
 
     def _cfg(self, carsim, duration):
-        """The run's config for carsim_local (--mock: the mock, whatever the run says)."""
-        return {"carsim": dict(carsim, mock=bool(carsim.get("mock")) or self.mock),
+        """The run's config for carsim_local (--mock / --chrono: no CarSim, whatever the run says)."""
+        return {"carsim": dict(carsim, mock=bool(carsim.get("mock")) or self.mock or self.chrono is not None),
                 "sync": {"duration": float(duration)}}
 
     def check(self, carsim, duration):
@@ -77,9 +82,16 @@ class CarSim:
 
     def open(self, carsim, duration):
         self.close()
-        self.env = make_env(self._cfg(carsim, duration), service=True)
+        if self.chrono is not None:
+            from chrono_bmw.chrono_carsim_env import ChronoCarSimEnv
+            c, dur = self._cfg(carsim, duration)["carsim"], float(duration)
+            self.env = ChronoCarSimEnv(c["export_names"], t_stop=dur + 1.0 if dur > 0 else 1e9, units=c["units"],
+                                       init_speed=self.chrono)
+        else:
+            self.env = make_env(self._cfg(carsim, duration), service=True)
         sim = str(getattr(self.env, "sim_path", "") or "")
-        print("运行开始：%s" % (sim or "模拟 CarSim"), flush=True)
+        print("运行开始：%s" % (sim or ("Chrono 宝马 E90（初速 %g m/s）" % self.chrono if self.chrono is not None
+                                       else "模拟 CarSim")), flush=True)
         return {"config": self.env.config, "sim_path": sim}
 
     def reset(self):
@@ -162,9 +174,9 @@ def serve(lines, carsim, where):
             return True
 
 
-def run(host, port, mock):
+def run(host, port, mock, chrono=None):
     """Connect, serve, reconnect, until Ctrl+C."""
-    carsim = CarSim(mock)
+    carsim = CarSim(mock, chrono)
     state("正在连接云端…")
     while True:
         try:
@@ -198,9 +210,11 @@ def main():
     ap.add_argument("--host", default="127.0.0.1", help="the backend (through the SSH tunnel: 127.0.0.1)")
     ap.add_argument("--port", type=int, default=57121, help="the backend's CarSim service port")
     ap.add_argument("--mock", action="store_true", help="the built-in vehicle model instead of CarSim")
+    ap.add_argument("--chrono", action="store_true", help="the PyChrono BMW E90 instead of CarSim (needs pychrono)")
+    ap.add_argument("--init-speed", type=float, default=20.0, help="--chrono: initial speed, m/s")
     a = ap.parse_args()
     try:
-        run(a.host, a.port, a.mock)
+        run(a.host, a.port, a.mock, a.init_speed if a.chrono else None)
     except KeyboardInterrupt:
         print("已退出", flush=True)
 

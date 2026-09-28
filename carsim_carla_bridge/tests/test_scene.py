@@ -136,7 +136,7 @@ def main():
             f.write(CIRCLE)
         cfg = c.call("default_config")
         check("scene selection in the config", cfg["scene"]["collision"] == "log" and "rel_x" in cfg["scene"]["objects"]
-              and set(cfg["scene"]["object_types"]) == {"vehicle", "walker", "parked"})
+              and set(cfg["scene"]["object_types"]) == {"vehicle", "walker", "parked", "static"})
         cfg["carsim"]["mock"] = True
         cfg["run"]["log_path"] = ""
         cfg["carla"]["spawn_index"] = sp

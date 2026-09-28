@@ -1130,7 +1130,8 @@ class Backend:
         if self.cosim_state in ("running", "paused"):
             raise RuntimeError("已经有仿真在运行")
         d = st.load_dict(None, config or {})
-        check_run_config(d)
+        for note in check_run_config(d):
+            self._log(note)
         c = d["carla"]
         col_cfg = dict(d["collect"])
         col_cfg["frame_dt"] = d["sync"]["frame_dt"]

@@ -231,6 +231,56 @@ class DrawTests(unittest.TestCase):
         self.assertEqual(chrono_local.find_python(sys.executable), sys.executable)
 
 
+class FrameDtTests(unittest.TestCase):
+    """FRAME_DT in an algorithm file: the run's frame step (read with ast, never run)."""
+
+    def setUp(self):
+        import tempfile
+        self.tmp = tempfile.mkdtemp(prefix="cc_framedt_")
+        self.addCleanup(__import__("shutil").rmtree, self.tmp, True)
+
+    def cfg(self, text, dt=0.02, dynamics="cosim"):
+        import settings
+        path = os.path.join(self.tmp, "algo.py")
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(text)
+        d = settings.default_dict()
+        d["run"].update(driver="custom", controller={"path": path, "entry": "Controller"})
+        d["drive"]["dynamics"] = dynamics
+        d["sync"]["frame_dt"] = dt
+        return d
+
+    def test_the_file_sets_the_step_and_says_so(self):
+        import session
+        d = self.cfg("import os\nFRAME_DT = 0.05\nopen('never_run', 'w')\n")
+        notes = session.check_run_config(d)
+        self.assertEqual(d["sync"]["frame_dt"], 0.05)
+        self.assertEqual(notes, ["仿真步长按控制算法 algo.py 里的 FRAME_DT 用 0.05 s（界面上设的是 0.02 s）"])
+        self.assertFalse(os.path.exists("never_run"))
+        d = self.cfg("FRAME_DT = 0.05\n", dt=0.05)
+        self.assertEqual(session.check_run_config(d), [])  # the same: nothing to say
+
+    def test_without_it_the_page_setting(self):
+        import session
+        for text in ("x = 1\n", "def f():\n    FRAME_DT = 0.05\n", "class C:\n    FRAME_DT = 0.05\n"):
+            d = self.cfg(text)
+            self.assertEqual((session.check_run_config(d), d["sync"]["frame_dt"]), ([], 0.02), text)
+        d = self.cfg("FRAME_DT = 0.05\n", dynamics="carla")  # CARLA dynamics: no algorithm runs
+        session.check_run_config(d)
+        self.assertEqual(d["sync"]["frame_dt"], 0.02)
+
+    def test_plain_words_for_a_bad_value(self):
+        import session
+        with self.assertRaisesRegex(ValueError, "第 2 行的 FRAME_DT 要直接写成数字"):
+            session.check_run_config(self.cfg("DT = 0.05\nFRAME_DT = DT\n"))
+        with self.assertRaisesRegex(ValueError, "FRAME_DT = 0.5 s 超出范围"):
+            session.check_run_config(self.cfg("FRAME_DT = 0.5\n"))
+
+    def test_kmppi_asks_for_its_period(self):
+        import session
+        self.assertEqual(session.algorithm_frame_dt(os.path.join(KDIR, "controller.py")), 0.05)
+
+
 class ServiceTests(unittest.TestCase):
     def test_chrono_needs_no_sim(self):
         import carsim_service

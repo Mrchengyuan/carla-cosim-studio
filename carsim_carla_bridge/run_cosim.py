@@ -72,7 +72,8 @@ def main():
         ap.error("--sim (or carsim.sim_path in --config) is required unless --mock is given")
     try:
         # The GUI backend's pre-flight, before CARLA is touched.
-        check_run_config(d)
+        for note in check_run_config(d):
+            print(note)
         check_run_files(d)
     except (ValueError, RuntimeError) as e:
         ap.error(str(e))

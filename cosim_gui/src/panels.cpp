@@ -736,7 +736,8 @@ void App::DrawPanelDrive() {
   ui::BeginCard(ICON_FA_CLOCK, "运行设置");
   ImGui::BeginDisabled(Running());  // the running session keeps the config it started with
   ui::Row("仿真步长 s", "CARLA 每帧的仿真时间，最大 0.1 s。CarSim 每帧内部积分 步长 / t_step 步；"
-                        "不是 t_step 的整数倍时，运行时自动对齐到最近的整数倍", fs * 8);
+                        "不是 t_step 的整数倍时，运行时自动对齐到最近的整数倍。控制算法文件里写了 FRAME_DT（例如 KMPPI 的 0.05）时，"
+                        "运行用它，输出窗口会说明", fs * 8);
   EditDouble(cfg_["sync"], "frame_dt", 0.005, "%.3f", 0.001, 0.1);
   ui::Row("运行时长 s", "0 = 直到点“停止”，或 CarSim 到达 .sim 的结束时间（默认）。设了时长，到时会自动结束并停车", fs * 8);
   EditDouble(cfg_["sync"], "duration", 1.0, "%.1f", 0.0, 1e6);

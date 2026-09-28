@@ -16,7 +16,8 @@
     输出   [纵向加速度 ax (m/s²), 前轮转角 delta (rad，左为正)] —— 原工程被控对象的输入，
            由 Chrono 宝马替身里原样的命令适配层变成四轮扭矩和转向输入（chrono_bmw/chrono_plant.py）。
     周期   KMPPI 每 0.05 s 算一次（原工程的控制周期），中间各帧保持上一次的输出（零阶保持）。
-           仿真步长要能整除 0.05 s（0.05、0.025、0.01 s ...；推荐 0.05 s：每帧算一次）。
+           下面的 FRAME_DT 让平台自动把仿真步长设为 0.05 s（每帧算一次），不用在界面上改；
+           去掉它时，仿真步长要能整除 0.05 s（0.05、0.025、0.01 s ...）。
     画线   每次计算后把候选轨迹画进 CARLA 画面（self.draw，平台每帧画出来；采集数据时不画）：
            从 K 条推演里挑 DRAW_CANDIDATES 条（权重最高的一半 + 其余随机一半），颜色按权重
            从蓝（低）到红（高），末端各有一个同色的点（看得出末端怎么分布）；最好的一条（代价最低、权重最高）加粗画成亮红色；黄色粗线是按权重
@@ -34,6 +35,7 @@ from kmppi_controller import ReferenceBox, build_kmppi
 from lane_reference import LaneReference
 from prediction_model import BicycleModel
 
+FRAME_DT = 0.05      # s，这个算法要的仿真步长：平台运行时自动使用（界面上的设置不用改）
 REF_SPEED = 20.0     # m/s，参考车速（原工程 20 m/s）
 PRINT_EVERY = 5.0    # s，每隔多久在“输出”页打印一行状态
 DRAW_CANDIDATES = 64  # 每次画多少条候选轨迹（0 = 不画）

@@ -47,13 +47,46 @@ def demo_driver(t):
 MAX_FRAME_DT = 0.1
 
 
+def algorithm_frame_dt(path):
+    """FRAME_DT = <number> at the top level of an algorithm file (read with ast,
+    never run): the frame step it needs (e.g. KMPPI: its 0.05 s control
+    period), else None. ValueError in plain words when it is not a number."""
+    try:
+        with open(path, "rb") as f:
+            tree = ast.parse(f.read(4 * 1024 * 1024), filename=path)
+    except (OSError, ValueError, SyntaxError):
+        return None  # loading it says what is wrong
+    for node in tree.body:
+        if isinstance(node, ast.Assign) and any(isinstance(t, ast.Name) and t.id == "FRAME_DT" for t in node.targets):
+            v = node.value
+            if not (isinstance(v, ast.Constant) and isinstance(v.value, (int, float)) and not isinstance(v.value, bool)):
+                raise ValueError("控制算法 %s 第 %d 行的 FRAME_DT 要直接写成数字（秒），例如 FRAME_DT = 0.05"
+                                 % (os.path.basename(path), node.lineno))
+            return float(v.value)
+    return None
+
+
 def check_run_config(d):
-    """Refuse a run config in plain words before anything in the world changes."""
+    """Refuse a run config in plain words before anything in the world changes.
+    Returns notes for the output (e.g. the frame step the algorithm asks for)."""
     s = d["sync"]
+    notes = []
     try:
         s["frame_dt"] = float(s["frame_dt"])
     except (TypeError, ValueError):
         raise ValueError("仿真步长不是数字：%r" % (s["frame_dt"],))
+    # The control algorithm's own frame step (FRAME_DT in its file) wins over the page's.
+    if d["drive"]["dynamics"] == "cosim" and d["run"]["driver"] == "custom":
+        path = os.path.abspath(d["run"]["controller"]["path"])
+        want = algorithm_frame_dt(path) if os.path.isfile(path) else None
+        if want is not None:
+            if not 0 < want <= MAX_FRAME_DT:
+                raise ValueError("控制算法 %s 的 FRAME_DT = %g s 超出范围：要大于 0、不超过 %g s"
+                                 % (os.path.basename(path), want, MAX_FRAME_DT))
+            if abs(want - s["frame_dt"]) > 1e-12:
+                notes.append("仿真步长按控制算法 %s 里的 FRAME_DT 用 %g s（界面上设的是 %g s）"
+                             % (os.path.basename(path), want, s["frame_dt"]))
+            s["frame_dt"] = want
     if not 0 < s["frame_dt"] <= MAX_FRAME_DT:
         raise ValueError("仿真步长 %g s 超出范围：要大于 0、不超过 %g s（CARLA 的物理每帧最多算 %g s）"
                          % (s["frame_dt"], MAX_FRAME_DT, MAX_FRAME_DT))
@@ -62,7 +95,7 @@ def check_run_config(d):
         if d["drive"]["carla_driver"] not in ("route", "autopilot", "manual"):
             raise ValueError("未知的驾驶方式 %r（CARLA 物理下可选 route、autopilot、manual）" % d["drive"]["carla_driver"])
         check_scenario(d)
-        return
+        return notes
     if dyn != "cosim":
         raise ValueError("未知的动力学 %r（可选 cosim = CarSim 联合仿真、carla = CARLA 物理）" % dyn)
     if d["run"]["driver"] not in ("custom", "demo", "route", "manual"):
@@ -71,6 +104,7 @@ def check_run_config(d):
     if missing:
         raise ValueError("导出变量里缺少必需的 %s（“CarSim 动力学”页）" % "、".join(missing))
     check_scenario(d)
+    return notes
 
 
 def check_scenario(d):

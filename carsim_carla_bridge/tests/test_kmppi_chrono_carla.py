@@ -14,8 +14,8 @@ car follows the Chrono car (the front wheel angles reach CARLA); KMPPI's
 candidate trajectories are drawn in CARLA every frame (self.draw: 64
 candidates with end dots, the reference, the weighted mean, the best one)
 and reach the GUI's 轨迹 tab with the telemetry; a
-frame step that does not divide 0.05 s ends the run with the algorithm's
-plain message. Starts its own backend (port 57145); deletes its temp files.
+the page's 0.02 s frame step: the run goes at the algorithm's FRAME_DT
+(0.05 s) and says so. Starts its own backend (port 57145); deletes its temp files.
 
     python tests/test_kmppi_chrono_carla.py [--port 2000] [--chrono-python PATH] [--shot DIR]
 
@@ -169,14 +169,16 @@ def main():
                     img.save_to_disk(os.path.join(out, "kmppi_t%02d.png" % round(t)))
             print("INFO pictures in %s" % out)
 
-        # A frame step that does not divide KMPPI's 0.05 s: the algorithm says so and the run ends.
+        # The page says 0.02 s: the run goes at the algorithm's FRAME_DT (0.05 s) and says so.
         cfg["sync"].update(frame_dt=0.02, duration=2.0)
         c.events.clear()
-        c.call("cosim_start", config=cfg, timeout=300)
+        info = c.call("cosim_start", config=cfg, timeout=300)
         st = c.wait_event(lambda e: e.get("event") == "cosim_state" and e["state"] in ("finished", "error", "stopped"), 300)
-        text = " ".join(e["msg"] for e in c.events if e.get("event") == "log") + " " + str(st.get("detail"))
-        check("frame step 0.02 s: refused in plain words", st["state"] == "error" and "仿真步长 0.020 s 不能整除" in text,
-              (st, text[-300:]))
+        logs = [e["msg"] for e in c.events if e.get("event") == "log"]
+        check("the page's 0.02 s: the run uses KMPPI's FRAME_DT 0.05 s and says so",
+              st["state"] == "finished" and abs(info.get("frame_dt", 0) - 0.05) < 1e-9 and
+              "仿真步长按控制算法 controller.py 里的 FRAME_DT 用 0.05 s（界面上设的是 0.02 s）" in logs,
+              (st, info.get("frame_dt"), [m for m in logs if "FRAME_DT" in m or "步长" in m][:3]))
         c.call("destroy_ego")
     finally:
         if cam is not None:

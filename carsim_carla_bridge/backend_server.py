@@ -41,6 +41,7 @@ import numpy as np
 import carsim_remote
 import batch_report
 import runs as runsmod
+import simcheck
 import templates
 import vehicle_ident
 import chrono_local
@@ -1531,6 +1532,12 @@ class Backend:
     def cmd_runs_list(self, path=""):
         """The run records in a record dir (relative: the bridge dir), newest first (runs.list_runs)."""
         return runsmod.list_runs(path or "runs")
+
+    def cmd_check_sim(self, config=None):
+        """检查 .sim: CarSim (or its stand-in) started once, its settings against the page's (simcheck.py)."""
+        if self.cosim_state in ("running", "paused"):
+            raise RuntimeError("仿真运行中不能检查：先停止运行")
+        return simcheck.check(st.load_dict(None, config or {}))
 
     def cmd_templates_list(self):
         """文件 → 从模板新建: the templates (templates.py)."""

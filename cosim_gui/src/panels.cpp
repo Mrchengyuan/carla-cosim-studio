@@ -1700,6 +1700,34 @@ void App::DrawPanelCoSim() {
   }
   if (!pick_err.empty()) Log(pick_err, "warn");
   ImGui::EndDisabled();
+  // 检查 .sim: CarSim started once (as a run would), its settings against this page's.
+  ImGui::Dummy(ImVec2(0, fs * 0.2f));
+  ImGui::BeginDisabled(Running() || !be_.Connected() || simcheck_pending_);
+  if (ui::Button(ICON_FA_LIST_CHECK, simcheck_pending_ ? "检查中…" : "检查 .sim")) {
+    simcheck_pending_ = true;
+    simcheck_ = json();
+    be_.Request("check_sim", {{"config", cfg_}}, [this](bool ok, const json& r, const std::string& err) {
+      simcheck_pending_ = false;
+      simcheck_ = ok ? r : json{{"items", json::array({{{"level", "error"}, {"text", err}}})}, {"ok", false}};
+      if (ok) Log(r.value("ok", false) ? "检查 .sim：没有发现问题" : "检查 .sim：有问题，见“CarSim 动力学”页", r.value("ok", false) ? "info" : "warn");
+    });
+  }
+  ui::RecordTarget("cosim:simcheck");
+  ImGui::EndDisabled();
+  ImGui::SameLine();
+  ui::DimWrapped("运行前把 CarSim（或模拟 CarSim、Chrono 宝马）试启动一次，核对导出 / 导入变量个数、t_step、结束时间、"
+                 "初始车速和 t = 0 的导出变量。不需要 CARLA。");
+  if (simcheck_.is_object()) {
+    for (const json& it : simcheck_.value("items", json::array())) {
+      const std::string lv = it.value("level", std::string());
+      const ImVec4 col = lv == "error" ? p.danger : lv == "warn" ? p.warning : p.success;
+      const char* icon = lv == "error" ? ICON_FA_CIRCLE_XMARK : lv == "warn" ? ICON_FA_TRIANGLE_EXCLAMATION : ICON_FA_CIRCLE_CHECK;
+      ImGui::PushTextWrapPos(0.0f);
+      ImGui::TextColored(col, "%s  %s", icon, it.value("text", std::string()).c_str());
+      ImGui::PopTextWrapPos();
+    }
+    ui::RecordTarget("cosim:simcheck_result");
+  }
   ui::EndCard();
 
   ui::BeginCard(ICON_FA_LIST, "导出变量（顺序必须与 .sim 一致）");

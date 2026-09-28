@@ -1283,6 +1283,11 @@ void App::BuildTour() {
          cfg_["sync"]["duration"] = 0.0;  // stopped below with the toolbar button
          cfg_["run"]["log_path"] = "";
        }, idle, "08_cosim_config"},
+      // 检查 .sim (the mock here): CarSim started once, what it gives against the page, by a click.
+      {kPanelCoSim, [this] { click_target_ = "cosim:simcheck"; }, [this] {
+         return click_target_.empty() && !simcheck_pending_ && simcheck_.value("ok", false) &&
+                ui::TargetShown("cosim:simcheck_result");
+       }, "08g_simcheck"},
       // “浏览…” for the .sim and the python_carsim_env folder (the system dialog answers with a test path);
       // an empty python_carsim_env folder is found from the .sim's folder.
       {kPanelCoSim, [this] {

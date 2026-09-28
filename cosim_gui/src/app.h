@@ -312,6 +312,9 @@ class App {
   bool compare_play_ = false, compare_carla_ = false, compare_replay_pending_ = false;
   // 车辆参数辨识 (运行对比 page): the last result (for run ident_folder_), a request out.
   json ident_result_;
+  // 检查 .sim (CarSim 动力学 page): the backend's check_sim result, a request out.
+  json simcheck_;
+  bool simcheck_pending_ = false;
   // 运行对比: run A's 输出 (output.txt) in a window.
   json run_out_;
   std::string run_out_folder_;

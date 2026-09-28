@@ -1207,6 +1207,22 @@ json Closure(double dist, int lane, double taper, double length, const char* kin
 }
 }  // namespace
 
+void App::UseScenarioStart() {
+  const json st = world_.value("scenario_start", json());
+  if (!st.is_object()) {
+    Log("测试场景：地图 " + world_.value("map", std::string()) + " 上没有找到单向 4 车道、车在左数第 2 条的出生点", "warn");
+    return;
+  }
+  cfg_["carla"]["spawn_index"] = st.value("index", 0);
+  Log(Fmt("测试场景：出生点设为 %d（单向 4 车道，车在左数第 2 条，前方约 %d m 没有路口）", st.value("index", 0),
+          st.value("free_m", 0)));
+}
+
+void App::UseTown04Start() {
+  if (world_.value("scenario_start", json()).is_object()) UseScenarioStart();
+  else LoadMap("Town04_Opt", [this] { UseScenarioStart(); });  // the map's start is known once it is loaded
+}
+
 const std::vector<TestScenePreset>& TestScenePresets() {
   static const std::vector<TestScenePreset> kPresets = {
       {"scn:preset:0", "封闭本车道（锥桶）", "前方 250 m 起封闭车所在的车道，要向左或向右换道绕开",
@@ -1261,16 +1277,7 @@ void App::DrawPanelTestScene() {
   const json start = world_.value("scenario_start", json());
   const bool has_start = start.is_object();
   const int start_index = has_start ? start.value("index", -1) : -1;
-  auto use_start = [this] {
-    const json st = world_.value("scenario_start", json());
-    if (!st.is_object()) {
-      Log("测试场景：地图 " + world_.value("map", std::string()) + " 上没有找到单向 4 车道、车在左数第 2 条的出生点", "warn");
-      return;
-    }
-    cfg_["carla"]["spawn_index"] = st.value("index", 0);
-    Log(Fmt("测试场景：出生点设为 %d（单向 4 车道，车在左数第 2 条，前方约 %d m 没有路口）", st.value("index", 0),
-            st.value("free_m", 0)));
-  };
+  auto use_start = [this] { UseScenarioStart(); };
   if (has_start && spawn == start_index) {
     ImGui::PushTextWrapPos(0.0f);
     ImGui::TextColored(p.success, ICON_FA_CIRCLE_CHECK "  %s，出生点 %d：单向 4 车道，车在左数第 2 条，前方约 %d m 没有路口",
@@ -1826,7 +1833,33 @@ void App::DrawPanelCoSim() {
   if (ui::Button(ICON_FA_ROTATE_LEFT, "默认")) reset_ask_ = true;  // resets every page: asks first
   ui::RecordTarget("cfg:default");
   ImGui::EndDisabled();
-  ui::DimWrapped("同一个 JSON 也能给命令行和强化学习训练用：python run_cosim.py --config <文件>");
+  const json recent = prefs_.value("recent_configs", json::array());
+  if (!recent.empty()) {
+    namespace fs = std::filesystem;
+    ui::SectionCaption("最近打开");
+    ImGui::BeginDisabled(Running());
+    for (size_t i = 0; i < recent.size() && i < 5; ++i) {
+      const std::string r = recent[i].is_string() ? recent[i].get<std::string>() : std::string();
+      const bool cur = r == cfg_path_;
+      if (ImGui::Selectable(Fmt("%s  %s##recent%d", cur ? ICON_FA_CIRCLE_CHECK : ICON_FA_FILE,
+                                fs::u8path(r).filename().u8string().c_str(), static_cast<int>(i)).c_str(), false)) {
+        if (fs::exists(fs::u8path(UserPath(r)))) {
+          path = r;
+          LoadConfig(r);
+        } else {
+          Log("配置文件不在了，已从“最近打开”里去掉：" + r, "warn");
+          json keep = json::array();
+          for (const json& x : recent) if (x != recent[i]) keep.push_back(x);
+          prefs_["recent_configs"] = keep;
+          SavePrefs();
+        }
+      }
+      ui::RecordTarget(Fmt("cfg:recent:%d", static_cast<int>(i)));
+      if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", UserPath(r).c_str());
+    }
+    ImGui::EndDisabled();
+  }
+  ui::DimWrapped("新建工程：菜单“文件 → 从模板新建”。同一个 JSON 也能给命令行和强化学习训练用：python run_cosim.py --config <文件>");
   ui::EndCard();
 }
 

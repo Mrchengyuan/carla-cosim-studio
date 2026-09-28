@@ -911,8 +911,36 @@ void App::LoadConfig(const std::string& user_path) {
   if (carla_connected_) RefreshVehicles();  // a run uses the selected vehicle: select the file's
   cfg_path_ = path;
   prefs_["last_config"] = path;
+  AddRecent(path);
   SavePrefs();
   Log("已载入配置 " + path);
+}
+
+void App::AddRecent(const std::string& path) {
+  json list = json::array({path});
+  for (const json& p : prefs_.value("recent_configs", json::array()))
+    if (p.is_string() && p.get<std::string>() != path && list.size() < 8) list.push_back(p);
+  prefs_["recent_configs"] = list;
+}
+
+void App::ApplyTemplate(const std::string& id) {
+  json t;
+  for (const json& x : templates_.is_array() ? templates_ : json::array())
+    if (x.value("id", std::string()) == id) t = x;
+  Call("template_config", {{"id", id}, {"current", cfg_}}, [this, t, id](const json& r) {
+    cfg_ = r;
+    ConformConfig();
+    // Its own file next to the open one (never over an existing file): saved with Ctrl+S / 保存.
+    std::string name = id + ".json";
+    for (int k = 2; fs::exists(fs::u8path(UserPath(name))); ++k) name = id + Fmt("_%d.json", k);
+    cfg_path_ = name;
+    saved_cfg_ = json::object();  // not saved yet
+    Log("已按模板“" + t.value("name", id) + "”新建（CARLA 车型、CarSim 路径等本机设置保留），保存时写到 " + UserPath(name));
+    if (t.value("town04_start", false)) {
+      if (carla_connected_) UseTown04Start();
+      else Log("连接 CARLA 后在“测试场景”页点“切到 Town04 高速起点”", "warn");
+    }
+  });
 }
 
 void App::SaveConfig(const std::string& user_path) {
@@ -926,6 +954,7 @@ void App::SaveConfig(const std::string& user_path) {
   cfg_path_ = path;
   saved_cfg_ = cfg_;
   prefs_["last_config"] = path;
+  AddRecent(path);
   SavePrefs();
   Log("配置已保存到 " + path);
 }
@@ -1545,6 +1574,34 @@ void App::BuildTour() {
        }, ""},
       {kPanelActors, [this] { ClearTraffic(); RefreshActors(); }, idle, "13_actors"},
       {kPanelRecorder, [] {}, idle, "14_recorder"},
+      // 文件 → 从模板新建 (KMPPI on the Chrono BMW): its dialog, 新建 by a click: the template's config in a new
+      // file, the Town04 start; 最近打开 (the 配置文件 card) by a click loads the tour's config back; then as it was.
+      {kPanelTestScene, [this] {
+         tour_kept_["cfg"] = cfg_;
+         tour_kept_["cfg_path"] = cfg_path_;
+         tour_kept_["saved_cfg"] = saved_cfg_;
+         Call("templates_list", json::object(), [this](const json& r) { templates_ = r; template_ask_ = "kmppi_chrono"; });
+       }, [] { return ui::TargetShown("tpl:ok"); }, "14a_template_ask"},
+      {kPanelTestScene, [this] { click_target_ = "tpl:ok"; }, [this, idle] {
+         const json st = world_.value("scenario_start", json());
+         return idle() && cfg_["run"]["controller"].value("path", std::string()) == "controllers/kmppi/controller.py" &&
+                cfg_["carsim"].value("chrono", false) && world_.value("map", "") == "Town04_Opt" && st.is_object() &&
+                cfg_["carla"]["spawn_index"] == st["index"] && ConfigDirty() && cfg_path_.rfind("kmppi_chrono", 0) == 0 &&
+                ui::TargetShown("scn:start_ok");
+       }, "14a2_template_new"},
+      {kPanelCoSim, [this] { props_scroll_end_ = true; }, [this, cfg_file] {
+         const json rec = prefs_.value("recent_configs", json::array());
+         return !rec.empty() && rec[0] == cfg_file && ui::TargetShown("cfg:recent:0");
+       }, "14a3_recent"},
+      {kPanelCoSim, [this] { click_target_ = "cfg:recent:0"; }, [this, cfg_file] {
+         return cfg_path_ == cfg_file && !ConfigDirty() &&
+                cfg_["run"]["controller"].value("path", std::string()) != "controllers/kmppi/controller.py";
+       }, ""},
+      {kPanelCoSim, [this] {
+         cfg_ = tour_kept_["cfg"];
+         cfg_path_ = tour_kept_["cfg_path"].get<std::string>();
+         saved_cfg_ = tour_kept_["saved_cfg"];
+       }, [this] { return cfg_ == tour_kept_["cfg"]; }, ""},
       {kPanelTestScene, [this] { tour_kept_["spawn"] = cfg_["carla"]["spawn_index"]; click_target_ = "scn:town04"; },
        [this, idle] {
          const json st = world_.value("scenario_start", json());

@@ -3,6 +3,7 @@
 // the centre with instrument / minimap overlays, a tabbed dock below it
 // (plots, vehicle state, output), the properties of the selected page on the
 // right, status bar at the bottom. Every divider can be dragged.
+#include <filesystem>
 #include <algorithm>
 #include <cmath>
 
@@ -454,6 +455,35 @@ void App::HandleShortcuts() {
 }
 
 // --------------------------------------------------------------------------
+void App::DrawRecentMenu() {
+  namespace fs = std::filesystem;
+  const json recent = prefs_.value("recent_configs", json::array());
+  if (!ImGui::BeginMenu(ICON_FA_CLOCK_ROTATE_LEFT "  最近打开", !recent.empty() && !Running())) return;
+  for (const json& r : recent) {
+    if (!r.is_string()) continue;
+    const std::string path = r.get<std::string>();
+    if (ImGui::MenuItem(fs::u8path(path).filename().u8string().c_str(), nullptr, path == cfg_path_)) {
+      if (fs::exists(fs::u8path(UserPath(path)))) {
+        LoadConfig(path);
+      } else {
+        Log("配置文件不在了，已从“最近打开”里去掉：" + path, "warn");
+        json keep = json::array();
+        for (const json& x : recent) if (x != r) keep.push_back(x);
+        prefs_["recent_configs"] = keep;
+        SavePrefs();
+        break;
+      }
+    }
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", UserPath(path).c_str());
+  }
+  ImGui::Separator();
+  if (ImGui::MenuItem("清空列表")) {
+    prefs_["recent_configs"] = json::array();
+    SavePrefs();
+  }
+  ImGui::EndMenu();
+}
+
 void App::DrawMenuBar() {
   if (!ImGui::BeginMenuBar()) return;
   ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(8, 6));
@@ -461,6 +491,23 @@ void App::DrawMenuBar() {
   if (ImGui::BeginMenu("文件")) {
     if (ImGui::MenuItem(ICON_FA_FLOPPY_DISK "  保存配置", "Ctrl+S")) SaveConfig(cfg);
     if (ImGui::MenuItem(ICON_FA_FOLDER_OPEN "  配置文件 ...")) { panel_ = kPanelCoSim; monitor_open_ = true; }
+    DrawRecentMenu();
+    if (ImGui::BeginMenu(ICON_FA_FILE_CIRCLE_PLUS "  从模板新建", be_.Connected() && !Running())) {
+      if (!templates_.is_array() && !templates_pending_) {
+        templates_pending_ = true;
+        be_.Request("templates_list", json::object(), [this](bool ok, const json& r, const std::string& err) {
+          templates_pending_ = false;
+          if (ok) templates_ = r;
+          else Log("读不到工程模板：" + err, "warn");
+        });
+      }
+      if (!templates_.is_array()) ImGui::TextDisabled("读取中 ...");
+      for (const json& t : templates_.is_array() ? templates_ : json::array()) {
+        if (ImGui::MenuItem(t.value("name", std::string()).c_str())) template_ask_ = t.value("id", std::string());
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", t.value("desc", std::string()).c_str());
+      }
+      ImGui::EndMenu();
+    }
     ImGui::Separator();
     if (ImGui::MenuItem(ICON_FA_POWER_OFF "  退出")) AskQuit();
     ui::RecordTarget("menu:退出");
@@ -583,6 +630,12 @@ void App::DrawConfirmDialogs() {
     ImGui::OpenPopup("恢复默认配置");
     reset_ask_ = false;
   }
+  static std::string tpl_id;
+  if (!template_ask_.empty()) {
+    tpl_id = template_ask_;
+    template_ask_.clear();
+    ImGui::OpenPopup("从模板新建");
+  }
   const ImVec2 c = ImGui::GetMainViewport()->GetCenter();
   const ImVec2 bsize(fs * 7, 0);
   ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(16, 14));
@@ -636,6 +689,28 @@ void App::DrawConfirmDialogs() {
     ImGui::SameLine();
     if (ui::Button("", "取消", ui::Kind::Secondary, bsize)) ImGui::CloseCurrentPopup();
     ui::RecordTarget("reset:cancel");
+    ImGui::EndPopup();
+  }
+  ImGui::SetNextWindowPos(c, ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
+  if (ImGui::BeginPopupModal("从模板新建", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+    json t;
+    for (const json& x : templates_.is_array() ? templates_ : json::array())
+      if (x.value("id", std::string()) == tpl_id) t = x;
+    ImGui::TextUnformatted(t.value("name", tpl_id).c_str());
+    ImGui::PushTextWrapPos(fs * 32);
+    ImGui::TextColored(p.text_dim, "%s", t.value("desc", std::string()).c_str());
+    ImGui::TextColored(p.text_dim, "CARLA 车型、出生点、CarSim 路径和导出变量保留；存成新的配置文件，当前的文件不动。");
+    if (ConfigDirty()) ImGui::TextColored(p.warning, ICON_FA_TRIANGLE_EXCLAMATION "  当前配置有未保存的更改，新建后就丢了（先按 Ctrl+S 保存）");
+    ImGui::PopTextWrapPos();
+    ImGui::BeginDisabled(Running() || !t.is_object());
+    if (ui::Button(ICON_FA_FILE_CIRCLE_PLUS, "新建", ui::Kind::Primary, bsize)) {
+      ApplyTemplate(tpl_id);
+      ImGui::CloseCurrentPopup();
+    }
+    ui::RecordTarget("tpl:ok");
+    ImGui::EndDisabled();
+    ImGui::SameLine();
+    if (ui::Button("", "取消", ui::Kind::Secondary, bsize)) ImGui::CloseCurrentPopup();
     ImGui::EndPopup();
   }
   ImGui::PopStyleVar(2);

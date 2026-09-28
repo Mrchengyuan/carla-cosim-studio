@@ -312,6 +312,15 @@ class App {
   bool compare_play_ = false, compare_carla_ = false, compare_replay_pending_ = false;
   // 车辆参数辨识 (运行对比 page): the last result (for run ident_folder_), a request out.
   json ident_result_;
+  // 文件 → 从模板新建 (the backend's templates_list) / 最近打开 (prefs "recent_configs").
+  json templates_;
+  bool templates_pending_ = false;
+  std::string template_ask_;  // a template's id: its confirmation dialog next frame
+  void AddRecent(const std::string& path);
+  void DrawRecentMenu();
+  void ApplyTemplate(const std::string& id);
+  void UseScenarioStart();    // the map's 测试场景 start as the spawn point (world_ scenario_start)
+  void UseTown04Start();      // that, loading Town04 first when this map has none
   std::string ident_folder_;
   bool ident_pending_ = false;
   int draw_mag_ = 0;                 // 轨迹 tab's lateral magnification: 0 = fit the lane

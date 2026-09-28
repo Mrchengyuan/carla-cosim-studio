@@ -1056,6 +1056,186 @@ void App::DrawAlgoBrowser(json& ctl) {
   ImGui::EndPopup();
 }
 
+// --------------------------------------------------------------------------
+// 测试场景: lane closures with cones or barriers, placed by the backend at a run's
+// start along the road from the spawn point (scenario.py). Presets for the Town04
+// highway start (spawn point 41: four lanes one way, the car in the second from
+// the left, about 850 m without a junction ahead), each value editable.
+namespace {
+json Closure(double dist, int lane, double taper, double length, const char* kind) {
+  return {{"distance_m", dist}, {"lane", lane}, {"taper_m", taper}, {"length_m", length}, {"kind", kind}};
+}
+}  // namespace
+
+void App::DrawPanelTestScene() {
+  if (!cfg_.contains("scenario") || !cfg_["scenario"].is_object()) {
+    ImGui::TextDisabled("等待后端返回配置 ...");
+    return;
+  }
+  const ui::Palette& p = ui::Colors();
+  const float fs = ImGui::GetFontSize();
+  json& sc = cfg_["scenario"];
+  if (!sc.contains("closures") || !sc["closures"].is_array()) sc["closures"] = json::array();
+  json& list = sc["closures"];
+  constexpr int kTown04Start = 41;
+  ImGui::BeginDisabled(Running());  // a run keeps the scenario it started with
+
+  ui::BeginCard(ICON_FA_MAP, "地图和起点");
+  // The backend finds the start on the map (scenario.find_start): its spawn point
+  // number differs between CARLA builds (Town04: 41 in the release, 39 built from source).
+  const std::string map = world_.value("map", std::string());
+  const int spawn = cfg_.contains("carla") ? cfg_["carla"].value("spawn_index", 0) : 0;
+  const json start = world_.value("scenario_start", json());
+  const bool has_start = start.is_object();
+  const int start_index = has_start ? start.value("index", -1) : -1;
+  auto use_start = [this] {
+    const json st = world_.value("scenario_start", json());
+    if (!st.is_object()) {
+      Log("测试场景：地图 " + world_.value("map", std::string()) + " 上没有找到单向 4 车道、车在左数第 2 条的出生点", "warn");
+      return;
+    }
+    cfg_["carla"]["spawn_index"] = st.value("index", 0);
+    Log(Fmt("测试场景：出生点设为 %d（单向 4 车道，车在左数第 2 条，前方约 %d m 没有路口）", st.value("index", 0),
+            st.value("free_m", 0)));
+  };
+  if (has_start && spawn == start_index) {
+    ImGui::PushTextWrapPos(0.0f);
+    ImGui::TextColored(p.success, ICON_FA_CIRCLE_CHECK "  %s，出生点 %d：单向 4 车道，车在左数第 2 条，前方约 %d m 没有路口",
+                       map.c_str(), spawn, start.value("free_m", 0));
+    ImGui::PopTextWrapPos();
+    ui::RecordTarget("scn:start_ok");
+  } else {
+    ImGui::PushTextWrapPos(0.0f);
+    if (has_start)
+      ImGui::TextColored(p.warning, ICON_FA_TRIANGLE_EXCLAMATION "  预设按单向 4 车道、车在左数第 2 条的起点设计：这张地图（%s）上是出生点 %d"
+                         "（前方约 %d m 没有路口），现在是出生点 %d", map.c_str(), start_index, start.value("free_m", 0), spawn);
+    else
+      ImGui::TextColored(p.warning, ICON_FA_TRIANGLE_EXCLAMATION "  预设按 Town04 高速的起点设计（单向 4 车道，车在左数第 2 条，前方约 850 m 没有路口）。"
+                         "现在：%s", map.empty() ? "未连接 CARLA" : ("地图 " + map + " 上没有这样的出生点").c_str());
+    ImGui::PopTextWrapPos();
+    ImGui::BeginDisabled(!carla_connected_ || !busy_.empty());
+    if (has_start ? ui::Button(ICON_FA_LOCATION_DOT, Fmt("用出生点 %d 作起点", start_index).c_str(), ui::Kind::Primary)
+                  : ui::Button(ICON_FA_ROAD, "切到 Town04 高速起点", ui::Kind::Primary)) {
+      if (has_start)
+        use_start();
+      else
+        LoadMap("Town04_Opt", use_start);  // the map's start is known once it is loaded
+    }
+    ImGui::EndDisabled();
+    ui::RecordTarget("scn:town04");
+    ui::DimWrapped("在别的地图、别的出生点也能用：距离和车道都相对出生点算，只是那里要有对应的车道和足够长的路。");
+  }
+  ui::EndCard();
+
+  ui::BeginCard(ICON_FA_ROAD_BARRIER, "施工封道");
+  bool on = sc.value("enabled", false);
+  if (ImGui::Checkbox("运行时摆放封道", &on)) sc["enabled"] = on;
+  ui::RecordTarget("scn:enabled");
+  ui::DimWrapped("点“运行”时按下表摆好锥桶或护栏，下一次运行开始时清掉重摆，所以每次运行的场景都一样。");
+  ImGui::Dummy(ImVec2(0, fs * 0.2f));
+  ui::SectionCaption("预设（点一下替换下表）");
+  struct Preset {
+    const char* id;
+    const char* name;
+    const char* tip;
+    json closures;
+  };
+  static const Preset kPresets[] = {
+      {"scn:preset:0", "封闭本车道（锥桶）", "前方 250 m 起封闭车所在的车道，要向左或向右换道绕开",
+       json::array({Closure(250, 0, 40, 100, "cones")})},
+      {"scn:preset:1", "封闭左侧车道（护栏）", "前方 250 m 起用护栏封闭左边一条车道：车道本身不用让，考验不误判",
+       json::array({Closure(250, -1, 30, 120, "barrier")})},
+      {"scn:preset:2", "连续两处封道", "250 m 处封闭本车道，550 m 处封闭左侧车道：往左绕开的要再换回来",
+       json::array({Closure(250, 0, 40, 80, "cones"), Closure(550, -1, 40, 80, "cones")})},
+      {"scn:preset:3", "只剩一条车道", "300 m 处封闭本车道和右边两条，只剩最左一条能走：要连续向左并线",
+       json::array({Closure(300, 0, 40, 100, "cones"), Closure(300, 1, 40, 100, "cones"), Closure(300, 2, 40, 100, "cones")})},
+  };
+  for (int i = 0; i < 4; ++i) {
+    if (i) ImGui::SameLine();
+    if (ui::Button("", kPresets[i].name)) {
+      list = kPresets[i].closures;
+      sc["enabled"] = true;
+    }
+    ui::RecordTarget(kPresets[i].id);
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", kPresets[i].tip);
+  }
+  ImGui::Dummy(ImVec2(0, fs * 0.2f));
+  ui::SectionCaption("封道（距离从出生点沿道路算；车道相对出生时所在的车道）");
+  static const char* kLanes[] = {"左侧第 3 条", "左侧第 2 条", "左侧第 1 条", "本车道", "右侧第 1 条", "右侧第 2 条", "右侧第 3 条"};
+  int remove = -1;
+  // Stretched to the panel's width (fixed widths pushed 类型 and the delete button out of a narrow panel).
+  if (ImGui::BeginTable("##closures", 7, ImGuiTableFlags_BordersInnerH | ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingStretchProp)) {
+    ImGui::TableSetupColumn("#", ImGuiTableColumnFlags_WidthFixed, fs * 1.2f);
+    ImGui::TableSetupColumn("距离 m", ImGuiTableColumnFlags_WidthStretch, 5.0f);
+    ImGui::TableSetupColumn("车道", ImGuiTableColumnFlags_WidthStretch, 7.0f);
+    ImGui::TableSetupColumn("渐变段 m", ImGuiTableColumnFlags_WidthStretch, 5.0f);
+    ImGui::TableSetupColumn("封闭长度 m", ImGuiTableColumnFlags_WidthStretch, 5.5f);
+    ImGui::TableSetupColumn("类型", ImGuiTableColumnFlags_WidthStretch, 4.5f);
+    ImGui::TableSetupColumn("", ImGuiTableColumnFlags_WidthFixed, fs * 1.8f);
+    ImGui::TableHeadersRow();
+    for (size_t i = 0; i < list.size(); ++i) {
+      json& c = list[i];
+      if (!c.is_object()) c = Closure(250, 0, 40, 100, "cones");
+      ImGui::PushID(static_cast<int>(i));
+      ImGui::TableNextRow();
+      ImGui::TableNextColumn();
+      ImGui::AlignTextToFramePadding();
+      ImGui::Text("%d", static_cast<int>(i + 1));
+      auto num = [&](const char* id, const char* key, double lo, double hi) {
+        ImGui::TableNextColumn();
+        double v = c.value(key, 0.0);
+        ImGui::SetNextItemWidth(-FLT_MIN);
+        if (ImGui::InputDouble(id, &v, 0.0, 0.0, "%.0f")) c[key] = std::max(lo, std::min(hi, v));
+      };
+      num("##dist", "distance_m", 1, 5000);
+      ImGui::TableNextColumn();
+      int lane = std::max(-3, std::min(3, c.value("lane", 0)));
+      int idx = lane + 3;
+      ImGui::SetNextItemWidth(-FLT_MIN);
+      if (ImGui::Combo("##lane", &idx, kLanes, 7)) c["lane"] = idx - 3;
+      num("##taper", "taper_m", 0, 300);
+      num("##len", "length_m", 1, 3000);
+      ImGui::TableNextColumn();
+      int kind = c.value("kind", std::string("cones")) == "barrier" ? 1 : 0;
+      static const char* kKinds[] = {"锥桶", "护栏"};
+      ImGui::SetNextItemWidth(-FLT_MIN);
+      if (ImGui::Combo("##kind", &kind, kKinds, 2)) c["kind"] = kind ? "barrier" : "cones";
+      ImGui::TableNextColumn();
+      if (ui::IconButton(ICON_FA_TRASH_CAN, "删除这一处", "del")) remove = static_cast<int>(i);
+      ui::RecordTarget("scn:del:" + std::to_string(i));
+      ImGui::PopID();
+    }
+    ImGui::EndTable();
+  }
+  if (remove >= 0) list.erase(list.begin() + remove);
+  if (list.empty()) ImGui::TextDisabled("还没有封道：点上面的预设，或点“添加一处封道”");
+  if (ui::Button(ICON_FA_PLUS, "添加一处封道")) {
+    double next = 250;
+    for (const json& c : list)
+      if (c.is_object()) next = std::max(next, c.value("distance_m", 0.0) + c.value("taper_m", 0.0) + c.value("length_m", 0.0) + 100);
+    list.push_back(Closure(next, 0, 40, 100, "cones"));
+    sc["enabled"] = true;
+  }
+  ui::RecordTarget("scn:add");
+  ui::DimWrapped("一处封道 = 渐变段（锥桶 / 护栏斜着把车道收窄：本车道和右侧的从右往左，左侧的从左往右）+ 封闭段（两侧有车道的边各摆一排）"
+                 "+ 渐变段后面一块箭头导向牌。锥桶渐变段每 3 m 一个、封闭段每 6 m 一个；护栏首尾相接。");
+  ui::EndCard();
+
+  ui::BeginCard(ICON_FA_CODE, "在控制算法里");
+  const json types = cfg_.contains("scene") ? cfg_["scene"].value("object_types", json::array()) : json::array();
+  bool gets = false;
+  for (const json& t : types) gets = gets || t == "static";
+  if (!gets) {
+    ImGui::TextColored(p.warning, ICON_FA_TRIANGLE_EXCLAMATION "  “场景信息”页障碍物没有勾选“施工锥桶 / 护栏”：算法收不到它们");
+    if (ui::Button(ICON_FA_CHECK, "勾选")) cfg_["scene"]["object_types"].push_back("static");
+    ui::RecordTarget("scn:types");
+  }
+  ui::DimWrapped("锥桶、护栏和导向牌作为 type = \"static\" 的目标出现在 scene[\"objects\"] 里（按距离从近到远），和车辆一样有 rel_x、rel_y（自车坐标，左为正）、"
+                 "length、width 和 gap（到自车包围盒的最近距离）。撞上会按“场景信息”页的碰撞设置记录或停止运行；run.json 里记下这次摆了哪些封道。");
+  ui::EndCard();
+  ImGui::EndDisabled();
+}
+
 void App::DrawPanelScene() {
   if (!cfg_.contains("scene")) { ImGui::TextDisabled("等待后端返回配置 ..."); return; }
   const ui::Palette& p = ui::Colors();
@@ -1078,14 +1258,15 @@ void App::DrawPanelScene() {
   ImGui::BeginDisabled(Running());
   ui::BeginCard(ICON_FA_CAR, "障碍物（自车 50 m 内，由近到远）");
   json& types = sc["object_types"];
-  static const KeyDef kTypes[] = {{"vehicle", "行驶的车辆"}, {"walker", "行人"}, {"parked", "地图里的停放车辆"}};
+  static const KeyDef kTypes[] = {{"vehicle", "行驶的车辆"}, {"walker", "行人"}, {"parked", "地图里的停放车辆"},
+                                  {"static", "施工锥桶 / 护栏（测试场景）"}};
   for (const auto& t : kTypes) {
     bool on = InList(types, t.key);
     if (ImGui::Checkbox(t.desc, &on)) SetInList(types, t.key, on);
     ImGui::SameLine(0, fs * 1.2f);
   }
   ImGui::NewLine();
-  ui::DimWrapped("每个障碍物始终带 id（整次运行不变）和 type（vehicle / walker）。");
+  ui::DimWrapped("每个障碍物始终带 id（整次运行不变）和 type（vehicle / walker / static：测试场景的锥桶、护栏、导向牌）。");
   KeyChecklist("objects", sc["objects"], rec["objects"], kObjectKeys, sizeof(kObjectKeys) / sizeof(kObjectKeys[0]));
   ui::EndCard();
 

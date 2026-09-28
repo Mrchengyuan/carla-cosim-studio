@@ -10,8 +10,9 @@ Everything follows CarSim (docs/场景与数据接口.md has the full table):
   * units = the CarSim export units set on the "CarSim 动力学" page
     (speeds km/h or m/s, angles deg or rad); lengths m.
 
-Obstacles are CARLA vehicles and walkers, plus the parked cars that are part
-of the map, within RANGE_M of the ego. The algorithm gets the keys selected
+Obstacles are CARLA vehicles and walkers, the parked cars that are part of
+the map, and props placed as obstacles (type "static": the 测试场景 cones and
+barriers, any static.prop actor), within RANGE_M of the ego. The algorithm gets the keys selected
 in "scene" (ego / objects / lane), the records keep the ones in
 "scene" -> "record" (two separate lists).
 """
@@ -252,7 +253,7 @@ class SceneProvider:
                          "rel_x": x, "rel_y": y, "rel_yaw": ryaw * au, "rel_vx": rvx * su, "rel_vy": rvy * su,
                          "dist": dist, "gap": gap, "_z0": Z - ext[2] - EZ, "_z1": Z + ext[2] - EZ})
 
-        if types & {"vehicle", "walker"}:
+        if types & {"vehicle", "walker", "static"}:
             for a in snap:
                 if a.id == self.ego.id:
                     continue
@@ -327,6 +328,8 @@ class SceneProvider:
             return "vehicle", t, a.bounding_box
         if t.startswith("walker.pedestrian"):
             return "walker", t, a.bounding_box
+        if t.startswith("static.prop."):  # placed as an obstacle (测试场景 cones / barriers)
+            return "static", t, a.bounding_box
         return None
 
     def _collisions(self, objs, eh):

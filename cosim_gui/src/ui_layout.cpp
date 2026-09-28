@@ -44,7 +44,9 @@ const std::vector<NavGroup>& Nav() {
       {"仿真", ICON_FA_GEARS,
        {{kPanelDrive, ICON_FA_ROBOT, "驾驶模式", "选择动力学来源和控制算法，设置运行参数。"},
         {kPanelCoSim, ICON_FA_GEARS, "CarSim 动力学", "CarSim 模型、导出变量、单位和坐标对齐。"},
-        {kPanelScene, ICON_FA_CUBES, "场景信息", "每帧交给控制算法的周围目标（车、行人、障碍物）、前方车道和传感器数据；碰撞时怎么处理。"}}},
+        {kPanelScene, ICON_FA_CUBES, "场景信息", "每帧交给控制算法的周围目标（车、行人、障碍物）、前方车道和传感器数据；碰撞时怎么处理。"},
+        {kPanelTestScene, ICON_FA_ROAD_BARRIER, "测试场景",
+         "高速施工封道：在出生点前方指定的车道摆放锥桶或护栏，每次运行都摆在同样的位置，用来测试避障算法。"}}},
       {"数据", ICON_FA_DATABASE,
        {{kPanelCollect, ICON_FA_DATABASE, "数据采集", "同步采集传感器数据、真值标注和车辆状态。"},
         {kPanelRecorder, ICON_FA_FILM, "录制与回放", "用 CARLA 录制器记录整个场景并回放。"},
@@ -689,7 +691,7 @@ void App::DrawToolbar() {
 bool App::PageEnabled(int panel) const {
   switch (panel) {
     case kPanelConnect: return true;
-    case kPanelRig: case kPanelDrive: case kPanelCoSim: case kPanelScene: case kPanelCollect:
+    case kPanelRig: case kPanelDrive: case kPanelCoSim: case kPanelScene: case kPanelTestScene: case kPanelCollect:
       return cfg_defaults_.is_object() || carla_connected_;
     case kPanelDataset: return be_.Connected();
     default: return carla_connected_;
@@ -716,6 +718,11 @@ void App::DrawNav() {
         return c == "stop" ? "撞停" : c == "log" ? "记录" : c == "off" ? "" : "";
       }
       case kPanelCollect: return cfg_.contains("collect") && cfg_["collect"].value("enabled", false) ? "开" : "关";
+      case kPanelTestScene: {
+        const json sc = cfg_.value("scenario", json::object());
+        const size_t n = sc.value("closures", json::array()).size();
+        return sc.value("enabled", false) && n ? Fmt("%d 处", static_cast<int>(n)) : "关";
+      }
       case kPanelRecorder: return recording_ ? "REC" : "";
       case kPanelView: return view_on_ ? "开" : "";
       default: return "";
@@ -798,6 +805,7 @@ void App::DrawProperties() {
     case kPanelRig: DrawPanelRig(); break;
     case kPanelDrive: DrawPanelDrive(); break;
     case kPanelScene: DrawPanelScene(); break;
+    case kPanelTestScene: DrawPanelTestScene(); break;
     case kPanelCoSim: DrawPanelCoSim(); break;
     case kPanelCollect: DrawPanelCollect(); break;
     case kPanelRecorder: DrawPanelRecorder(); break;

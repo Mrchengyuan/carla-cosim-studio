@@ -40,6 +40,7 @@ import carsim_remote
 import collector as coll
 import dataset as dsmod
 import rig as rigmod
+import scenario as scenariomod
 import settings as st
 from carsim_local import json_safe as _json_safe
 from session import (AlgoOutput, CarlaDriveSession, CoSimSession, browse_controllers, check_run_config, check_run_files,
@@ -74,6 +75,8 @@ class Backend:
         self.ego = None
         self.anchor = None
         self.session = None
+        self.scenario_ids = []  # 测试场景 props of the last run (removed when the next one starts)
+        self._scn_start = None  # (map name, scenario.find_start of it)
         self.ending = None         # the session in stop(), for the heartbeat: the algorithm's finish()
         self.cosim_state = "stopped"
         self.spectator_mode = "free"
@@ -385,9 +388,19 @@ class Backend:
             self._try(self.cmd_stop_recorder)
             self.recording = None
         self._try(self.cmd_clear_traffic)
+        self._try(self._clear_scenario)
         self._try(lambda: self.ego.destroy() if self._alive(self.ego) else None)
         self.ego = self.anchor = None
         self.ego_autopilot = False
+
+    def _clear_scenario(self, everywhere=False):
+        """Remove the 测试场景 props of the last run; everywhere: also any other
+        in the world (a backend that crashed or was killed leaves its own)."""
+        ids, self.scenario_ids = self.scenario_ids, []
+        if everywhere and self.world is not None:
+            ids = sorted(set(ids) | {a.id for a in scenariomod.leftovers(self.world)})
+        if ids and self.world is not None:
+            scenariomod.remove(self.client, ids)
 
     def _run_active(self):
         return self.session is not None and self.cosim_state in ("running", "paused")
@@ -499,19 +512,27 @@ class Backend:
         self._try(self.client.stop_recorder)  # nothing happens when none is running
         acts = [a for a in self.world.get_actors()
                 if (a.type_id.startswith("vehicle.") and a.attributes.get("role_name") in ("hero", "autopilot", PROBE_ROLE))
-                or a.type_id.startswith(("walker.pedestrian.", "controller.ai.walker", "sensor."))]
+                or a.type_id.startswith(("walker.pedestrian.", "controller.ai.walker", "sensor."))
+                or (a.type_id.startswith("static.prop.") and a.attributes.get("role_name") == scenariomod.ROLE)]
         for a in acts:
             if a.type_id.startswith("controller."):
                 self._try(a.stop)
         if acts:
             self.client.apply_batch_sync([carla.command.DestroyActor(a.id) for a in acts], False)
-            self._log("已清理上一次后端留在 CARLA 里的 %d 个对象（主车、交通、行人、传感器）" % len(acts), "warn")
+            self._log("已清理上一次后端留在 CARLA 里的 %d 个对象（主车、交通、行人、传感器、测试场景的锥桶 / 护栏）" % len(acts), "warn")
+
+    def _scenario_start(self, cmap):
+        """scenario.find_start of this map, once per map."""
+        if self._scn_start is None or self._scn_start[0] != cmap.name:
+            self._scn_start = (cmap.name, scenariomod.find_start(cmap))
+        return self._scn_start[1]
 
     def cmd_world_info(self):
         w = self._need_world()
         s = w.get_settings()
+        cmap = w.get_map()
         return {
-            "map": w.get_map().name.split("/")[-1],
+            "map": cmap.name.split("/")[-1],
             "synchronous": s.synchronous_mode,
             "frame_dt": s.fixed_delta_seconds or 0.0,
             "no_rendering": s.no_rendering_mode,
@@ -526,6 +547,8 @@ class Backend:
             "recording": self.recording or "",
             # Remote mode (carsim.remote): the CarSim service on the Windows computer.
             "carsim_service": carsim_remote.SERVICE.status(),
+            # 测试场景: the start its presets are made for (Town04: the highway), None if the map has none.
+            "scenario_start": self._scenario_start(cmap),
         }
 
     # ---------------------------------------------------------------- world
@@ -544,6 +567,7 @@ class Backend:
         # the old one, untracked, and blocks its spawn point.
         self._try(lambda: ego.destroy() if self._alive(ego) else None)
         self.replay_before = None  # its actors go with the old world
+        self.scenario_ids = []     # so do the 测试场景 props
         # The traffic manager runs inside this process and keeps its vehicle
         # registry across a world change; load_world() then segfaults in
         # libcarla. Shut it down first (a fresh one starts when needed).
@@ -1119,6 +1143,15 @@ class Backend:
             if est["total_gb"] > di["free_gb"] - coll.DISK_RESERVE_GB:
                 raise RuntimeError("预计需要 %.1f GB，磁盘只剩 %.1f GB" % (est["total_gb"], di["free_gb"]))
         check_run_files(d)  # controller, .sim, python_carsim_env, CarSim solver
+        # 测试场景: planned on the map now (a lane that is not there refuses the run
+        # before anything changes), placed once the ego stands at the spawn point.
+        scenario_plan = None
+        if d["scenario"].get("enabled") and d["scenario"].get("closures"):
+            pts = w.get_map().get_spawn_points()
+            if not pts:
+                raise RuntimeError("当前地图没有出生点")
+            scenario_plan = scenariomod.layout(w.get_map(), pts[int(c["spawn_index"]) % len(pts)],
+                                               d["scenario"]["closures"])
         # Every run starts with a fresh ego at the chosen spawn point, like a
         # CarSim run starts from its initial conditions. A teleported vehicle
         # keeps stale traffic-manager state (autopilot then brakes forever),
@@ -1160,6 +1193,21 @@ class Backend:
             else:
                 self._try(self.cmd_destroy_ego)
             raise
+        # The last run's cones go (and any a killed backend left: each run has exactly its
+        # own); this run's are placed before the world settles (there at t0).
+        self._try(lambda: self._clear_scenario(everywhere=True))
+        if scenario_plan is not None:
+            items, summary = scenario_plan
+            self.scenario_ids = scenariomod.spawn(self.client, w, items)
+            if len(self.scenario_ids) < len(items):
+                self._log("测试场景：%d 个锥桶 / 护栏中有 %d 个没能放下（那里被别的物体占着）"
+                          % (len(items), len(items) - len(self.scenario_ids)), "warn")
+            self._log("测试场景：%s" % "；".join(
+                "第 %d 处，出生点前方 %g m，%s，渐变段 %g m + 封闭 %g m，%d 个%s" % (
+                    c["number"], c["distance_m"], scenariomod.lane_name(c["lane"]), c["taper_m"], c["length_m"],
+                    c["props"], scenariomod.KIND_NAMES[c["kind"]]) for c in summary))
+            if "static" not in (d["scene"].get("object_types") or []):
+                self._log("测试场景的锥桶 / 护栏不会交给控制算法：“场景信息”页障碍物没有勾选“施工锥桶 / 护栏”", "warn")
         self._unsent_tel = None
         self._pre_cosim_settings = w.get_settings()
         try:
@@ -1179,7 +1227,9 @@ class Backend:
                 CarlaDriveSession(w, self.ego, d, self._need_tm() if autopilot else None, self.anchor)
             # For the run record (run.json): the seed of the traffic around the car, if there is any.
             self.session.run_meta = {"traffic_seed": self.traffic_seed if self.traffic["vehicles"] or
-                                     self.traffic["walkers"] else None}
+                                     self.traffic["walkers"] else None,
+                                     "scenario": None if scenario_plan is None else
+                                     {"closures": scenario_plan[1], "placed": len(self.scenario_ids)}}
         except BaseException:
             # Never leave the world in sync mode with nobody ticking it.
             pre, self._pre_cosim_settings = self._pre_cosim_settings, None

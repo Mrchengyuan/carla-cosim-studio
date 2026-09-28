@@ -27,6 +27,7 @@ enum Panel {
   kPanelView,
   kPanelDataset,
   kPanelScene,
+  kPanelTestScene,
   kPanelCount
 };
 
@@ -80,6 +81,7 @@ class App {
   void DrawPanelActors();
   void DrawPanelVehicle();
   void DrawPanelDrive();
+  void DrawPanelTestScene();
   void DrawPanelScene();
   void DrawPanelCoSim();
   void DrawPanelCollect();
@@ -111,7 +113,7 @@ class App {
   void ConnectCarla(bool recover = false);
   void RefreshWorld();
   void RefreshAfterMapChange();
-  void LoadMap(const std::string& name);
+  void LoadMap(const std::string& name, std::function<void()> then = nullptr);  // then: once it is loaded
   void ApplyWeatherPreset(const std::string& preset);
   void ApplyWeatherParams();
   void ApplyWorldSettings();

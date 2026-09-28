@@ -475,7 +475,7 @@ class BackendTests(unittest.TestCase):
             with mock.patch("backend_server.CoSimSession", Session), \
                     mock.patch("backend_server.rigmod.spec_of", lambda v: {}):
                 info = b.cmd_cosim_start({"carsim": {"mock": True}, "run": {"driver": "demo"}})
-            self.assertEqual(seen[-1], {"traffic_seed": want})
+            self.assertEqual(seen[-1], {"traffic_seed": want, "scenario": None})  # no 测试场景
             self.assertEqual(info["record_dir"], "/data/runs/x")  # for the 驾驶模式 page
 
 

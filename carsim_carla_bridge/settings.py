@@ -57,6 +57,11 @@ def default_dict():
         "drive": {"dynamics": "cosim", "carla_driver": "route", "target_speed_kmh": 40.0,
                   "destination_index": -1, "brake_scale": 1.0,
                   "tm_speed_diff_pct": 0.0, "tm_ignore_lights": False},
+        # 测试场景 (scenario.py): lane closures with cones / barriers, placed at a run's
+        # start along the road from the spawn point: [{"distance_m", "lane" (0 = the start
+        # lane, -1 / 1 the first to the left / right), "taper_m", "length_m", "kind"
+        # ("cones" | "barrier")}].
+        "scenario": {"enabled": False, "closures": []},
         # Sensor mounts in CarSim's vehicle frame (origin = the reference
         # point, y left; rig.py). "carla" = an older config (car centre, y right).
         "rig": {"preset": "front_camera", "sensors": [], "frame": "carsim"},
@@ -73,7 +78,7 @@ def default_dict():
         # and go on, "stop" = end the run, "off" = no check. sensors: rig
         # sensor names handed to the algorithm; the algorithm always gets all
         # CarSim exports.
-        "scene": {"collision": "log", "object_types": ["vehicle", "walker", "parked"],
+        "scene": {"collision": "log", "object_types": ["vehicle", "walker", "parked", "static"],
                   "ego": ["X", "Y", "Z", "Yaw", "Vx_global", "Vy_global", "Speed", "length", "width", "height"],
                   "objects": ["id", "type", "rel_x", "rel_y", "rel_vx", "rel_vy", "dist", "gap"],
                   "lane": ["width", "offset", "heading_err", "center_rel"],

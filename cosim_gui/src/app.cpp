@@ -519,9 +519,9 @@ void App::RefreshDisk() {
   Call("disk_info", {{"path", dir}}, [this](const json& r) { disk_ = r; });
 }
 
-void App::LoadMap(const std::string& name) {
+void App::LoadMap(const std::string& name, std::function<void()> then) {
   busy_ = "正在加载地图 " + name + " ...";
-  be_.Request("load_map", {{"name", name}}, [this](bool ok, const json& r, const std::string& err) {
+  be_.Request("load_map", {{"name", name}}, [this, then](bool ok, const json& r, const std::string& err) {
     busy_.clear();
     if (!ok) {
       Log(err, "error");
@@ -534,6 +534,7 @@ void App::LoadMap(const std::string& name) {
     map_choice_ = r.value("map", std::string());
     Log("地图已切换为 " + r.value("map", std::string()));
     RefreshAfterMapChange();
+    if (then) then();
   });
 }
 
@@ -1348,6 +1349,13 @@ void App::BuildTour() {
        [this, idle] { return idle() && !ds_exporting_ && ds_export_result_.value("ok", false); }, "12c_dataset_export"},
       {kPanelActors, [this] { ClearTraffic(); RefreshActors(); }, idle, "13_actors"},
       {kPanelRecorder, [] {}, idle, "14_recorder"},
+      {kPanelTestScene, [this] { tour_kept_["spawn"] = cfg_["carla"]["spawn_index"]; click_target_ = "scn:town04"; },
+       [this, idle] {
+         const json st = world_.value("scenario_start", json());
+         return idle() && world_.value("map", "") == "Town04_Opt" && st.is_object() &&
+                cfg_["carla"]["spawn_index"] == st["index"] && ui::TargetShown("scn:start_ok");
+       }, "14b_test_scene_town04"},
+      {kPanelTestScene, [this] { cfg_["carla"]["spawn_index"] = tour_kept_["spawn"]; }, idle, ""},
       {kPanelWorld, [this] { LoadMap("Town03"); }, [this, idle] { return idle() && world_.value("map", "") == "Town03" && run_note_.empty(); },
        "15_map_town03"},  // the "ego parked" banner of the last run is gone with the ego
       {kPanelWorld, [this] { dark_ = false; theme_changed_ = true; }, idle, "16_light_theme"},
@@ -1364,6 +1372,22 @@ void App::BuildTour() {
                                ui::TargetShown("cosim:service");
                       }, "17_remote"});
     tour_->push_back({kPanelCoSim, [this] { cfg_["carsim"]["mock"] = tour_kept_["mock"]; }, idle, ""});
+  }
+  // 测试场景: a preset fills the table, a closure is added and deleted with real clicks.
+  {
+    std::vector<TourStep> scn = {
+        {kPanelTestScene, [this] { tour_kept_["scenario"] = cfg_["scenario"]; click_target_ = "scn:preset:3"; },
+         [this] { return cfg_["scenario"].value("enabled", false) && cfg_["scenario"]["closures"].size() == 3; }, ""},
+        {kPanelTestScene, [this] { click_target_ = "scn:add"; },
+         [this] { return cfg_["scenario"]["closures"].size() == 4 &&
+                         cfg_["scenario"]["closures"][3].value("distance_m", 0.0) == 540.0; }, "07d_test_scene"},
+        {kPanelTestScene, [this] { click_target_ = "scn:del:3"; },
+         [this] { return cfg_["scenario"]["closures"].size() == 3; }, ""},
+        {kPanelTestScene, [this] { cfg_["scenario"] = tour_kept_["scenario"]; },
+         [this] { return cfg_["scenario"] == tour_kept_["scenario"]; }, ""},
+    };
+    auto at = std::find_if(tour_->begin(), tour_->end(), [](const TourStep& t) { return t.shot == "07b_scene_config"; });
+    if (at != tour_->end()) tour_->insert(at + 1, scn.begin(), scn.end());
   }
   // “浏览…” for the algorithm file: the system's dialog (answering with a test path) when the backend is
   // here; with it on a server a list of the server's files, clicked through (up, into controllers and

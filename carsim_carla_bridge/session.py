@@ -21,6 +21,7 @@ import carla
 
 import carsim_remote
 import rig as rigmod
+import scenario as scenariomod
 import settings as st
 from bridge import REQUIRED_EXPORTS, CarlaVehicleSync, ExportCheck, front_axle_local
 # CarSim on this computer, shared with the CarSim service (remote mode). Called
@@ -59,6 +60,7 @@ def check_run_config(d):
     if dyn == "carla":
         if d["drive"]["carla_driver"] not in ("route", "autopilot", "manual"):
             raise ValueError("未知的驾驶方式 %r（CARLA 物理下可选 route、autopilot、manual）" % d["drive"]["carla_driver"])
+        check_scenario(d)
         return
     if dyn != "cosim":
         raise ValueError("未知的动力学 %r（可选 cosim = CarSim 联合仿真、carla = CARLA 物理）" % dyn)
@@ -67,6 +69,14 @@ def check_run_config(d):
     missing = [n for n in REQUIRED_EXPORTS if n not in d["carsim"]["export_names"]]
     if missing:
         raise ValueError("导出变量里缺少必需的 %s（“CarSim 动力学”页）" % "、".join(missing))
+    check_scenario(d)
+
+
+def check_scenario(d):
+    """The 测试场景 settings in plain words (their place on the map is checked at the start)."""
+    sc = d.get("scenario") or {}
+    if sc.get("enabled"):
+        sc["closures"] = scenariomod.check_closures(sc.get("closures"))
 
 
 def check_run_files(d):
@@ -725,6 +735,8 @@ def _run_json(ses, end=None, reason=None):
     return {"map": name.split("/")[-1] if isinstance(name, str) else None,
             "spawn_index": d["carla"]["spawn_index"],
             "traffic_seed": (getattr(ses, "run_meta", None) or {}).get("traffic_seed"),  # None: no traffic
+            # 测试场景: the closures placed for this run and how many props each got (None: off)
+            "scenario": (getattr(ses, "run_meta", None) or {}).get("scenario"),
             "dynamics": d["drive"]["dynamics"],
             "driver": d["run"]["driver"] if cosim else d["drive"]["carla_driver"],
             "controller": _controller_file(d),

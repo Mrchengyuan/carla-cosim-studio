@@ -651,15 +651,18 @@ void App::DrawPanelDrive() {
       json& ctl = cfg_["run"]["controller"];
       ImGui::Dummy(ImVec2(0, fs * 0.2f));
       ImGui::BeginDisabled(Running());  // a run keeps the algorithm it started with
-      ui::Row("算法文件 .py", "相对路径以 carsim_carla_bridge 目录为准。每次点“运行”都会重新加载，改完代码直接再点运行", fs * 30);
-      EditString(ctl, "path");
+      ui::Row("算法文件 .py", "相对路径以 carsim_carla_bridge 目录为准（远程模式：云服务器上的）。点右边的文件夹图标“浏览…”"
+              "选择文件，入口会自动填好。每次点“运行”都会重新加载，改完代码直接再点运行", fs * 30);
+      EditAlgoPath(ctl);
       BackendPathStatus(ctl.value("path", std::string()));
       ui::Row("入口", "文件里的类名（带 control 方法）或函数名", fs * 8);
       EditString(ctl, "entry");
       ImGui::EndDisabled();
+      DrawAlgoBrowser(ctl);
       ui::DimWrapped("接口：control(exports, t, dt) -> [油门, 制动, 方向盘角]，exports 是按变量名取值的 CarSim 导出变量");
       ui::DimWrapped("要用周围的车、行人、障碍物和车道：写成 control(exports, t, dt, scene)，见“场景信息”页");
-      ui::DimWrapped("示例：controllers/example_controller.py（定速 + 蛇形），controllers/scene_controller.py（沿车道跟车 / 停车），"
+      ui::DimWrapped("示例：controllers/path_follower.py（沿车道路径跟踪），controllers/examples/（《控制算法编写指南》的 5 个例子），"
+                     "controllers/example_controller.py（定速 + 蛇形），controllers/scene_controller.py（沿车道跟车 / 停车），"
                      "controllers/simple_path_follower.py（SimplePathFollower）");
     }
     ImGui::Dummy(ImVec2(0, fs * 0.3f));
@@ -848,6 +851,210 @@ void KeyChecklist(const char* id, json& algo, json& rec, const KeyDef* defs, siz
 }
 
 }  // namespace
+
+// --------------------------------------------------------------------------
+// 控制算法 “浏览…”: the system's dialog when the backend runs on this computer; with
+// the backend on a server (remote) that dialog cannot see its files, so a list of the
+// server's folders and .py files (controller_browse). Either way the backend reads the
+// file's entries (never runs it) and they fill “入口”.
+namespace {
+std::string PreferEntry(const json& entries, const std::string& cur) {
+  if (!entries.is_array() || entries.empty()) return cur;
+  for (const json& e : entries)
+    if (e == cur) return cur;
+  for (const json& e : entries)
+    if (e == "Controller") return "Controller";
+  return entries[0].get<std::string>();
+}
+}  // namespace
+
+void App::EditAlgoPath(json& ctl) {
+  const float bw = ImGui::GetFrameHeight() + ImGui::GetStyle().FramePadding.x * 2;
+  ImGui::SetNextItemWidth(std::max(ImGui::GetFontSize() * 6, ImGui::GetContentRegionAvail().x - bw - ImGui::GetStyle().ItemSpacing.x));
+  EditString(ctl, "path");
+  ImGui::SameLine();
+  const bool click = ui::IconButton(ICON_FA_FOLDER_OPEN, Remote() ? "浏览…（云服务器上的算法文件）" : "浏览…（选择 .py 文件）",
+                                    "algo:browse");
+  ui::RecordTarget("algo:browse");
+  if (!click) return;
+  if (Remote()) {
+    algo_browser_open_ = true;
+    algo_sel_ = json();
+    algo_browse_ = json::object();
+    AlgoBrowse(ctl.value("path", std::string()));
+    return;
+  }
+  std::string picked, err;
+  if (!plat::PickFile("选择控制算法（.py 文件）", "py", picked, err)) {
+    if (!err.empty()) Log(err, "warn");
+    return;
+  }
+  ctl["path"] = picked;
+  // The backend writes it the config's way (relative inside the bridge folder) and reads the entries.
+  be_.Request("controller_browse", {{"path", picked}}, [this, picked](bool ok, const json& r, const std::string&) {
+    json& c = cfg_["run"]["controller"];
+    if (!ok || !r.is_object() || Running() || c.value("path", std::string()) != picked) return;
+    const std::string name = std::filesystem::u8path(picked).filename().u8string();
+    for (const json& f : r.value("files", json::array()))
+      if (f.value("name", std::string()) == name) {
+        c["path"] = f.value("path", picked);
+        c["entry"] = PreferEntry(f.value("entries", json::array()), c.value("entry", std::string("Controller")));
+      }
+  });
+}
+
+void App::AlgoBrowse(const std::string& path) {
+  algo_browse_pending_ = true;
+  algo_browse_err_.clear();
+  be_.Request("controller_browse", {{"path", path}}, [this](bool ok, const json& r, const std::string& err) {
+    algo_browse_pending_ = false;
+    if (ok && r.is_object()) {
+      algo_browse_ = r;
+    } else {
+      algo_browse_err_ = err.find("未知命令") != std::string::npos
+                             ? "云服务器上的后端版本较旧，不能浏览：请更新服务器上的仓库，或直接输入路径"
+                             : (err.empty() ? std::string("没能读取这个文件夹") : err);
+    }
+  });
+}
+
+void App::DrawAlgoBrowser(json& ctl) {
+  const char* kTitle = "选择控制算法（云服务器上的文件）";
+  if (algo_browser_open_) {
+    ImGui::OpenPopup(kTitle);
+    algo_browser_open_ = false;
+  }
+  ImGui::SetNextWindowPos(ImGui::GetMainViewport()->GetCenter(), ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
+  if (!ImGui::BeginPopupModal(kTitle, nullptr, ImGuiWindowFlags_AlwaysAutoResize)) return;
+  const ui::Palette& p = ui::Colors();
+  const float fs = ImGui::GetFontSize();
+  const json& b = algo_browse_;
+  const std::string folder = b.value("folder", std::string());
+  ui::DimWrapped("云服务器上的文件夹和 .py 文件。点文件夹进入，点文件选中（双击直接选定），入口自动填好。");
+  // Up, controllers, where we are.
+  const bool top = !b.contains("parent") || b["parent"].is_null();
+  ImGui::BeginDisabled(algo_browse_pending_ || top);
+  if (ui::Button(ICON_FA_ARROW_UP, "上一级")) {
+    algo_sel_ = json();
+    AlgoBrowse(b["parent"].get<std::string>());
+  }
+  ImGui::EndDisabled();
+  ui::RecordTarget("algo:up");
+  ImGui::SameLine();
+  ImGui::BeginDisabled(algo_browse_pending_);
+  if (ui::Button(ICON_FA_HOUSE, "controllers")) {
+    algo_sel_ = json();
+    AlgoBrowse("controllers");
+  }
+  ImGui::EndDisabled();
+  ui::RecordTarget("algo:home");
+  ImGui::SameLine();
+  ImGui::AlignTextToFramePadding();
+  ImGui::TextColored(p.accent, ICON_FA_FOLDER_OPEN);
+  ImGui::SameLine();
+  ImGui::TextUnformatted(folder.empty() ? "…" : b.value("shown", folder).c_str());
+  if (!b.value("note", std::string()).empty()) ImGui::TextColored(p.warning, "%s", b.value("note", std::string()).c_str());
+
+  // The folder's sub-folders and .py files.
+  const float w = fs * 46, row1 = fs * 1.7f, row2 = fs * 2.7f;
+  ImGui::BeginChild("##algo_list", ImVec2(w, fs * 20), ImGuiChildFlags_Borders);
+  ImDrawList* dl = ImGui::GetWindowDrawList();
+  bool choose = false;
+  if (!algo_browse_err_.empty()) {
+    ImGui::PushTextWrapPos(0.0f);
+    ImGui::TextColored(p.danger, "%s", algo_browse_err_.c_str());
+    ImGui::PopTextWrapPos();
+  } else if (folder.empty()) {
+    ImGui::TextDisabled("正在读取 ...");
+  } else {
+    for (const json& d : b.value("dirs", json::array())) {
+      const std::string name = d.get<std::string>();
+      ImGui::PushID(("d:" + name).c_str());
+      if (ImGui::Selectable("##dir", false, 0, ImVec2(0, row1)) && !algo_browse_pending_) {
+        algo_sel_ = json();
+        AlgoBrowse(folder + "/" + name);
+      }
+      ui::RecordTarget("algo:dir:" + name);
+      const ImVec2 a = ImGui::GetItemRectMin();
+      dl->AddText(ImVec2(a.x + fs * 0.4f, a.y + (row1 - fs) * 0.5f), ImGui::GetColorU32(p.warning), ICON_FA_FOLDER);
+      dl->AddText(ImVec2(a.x + fs * 2.0f, a.y + (row1 - fs) * 0.5f), ImGui::GetColorU32(p.text), name.c_str());
+      ImGui::PopID();
+    }
+    const json files = b.value("files", json::array());
+    for (const json& f : files) {
+      const std::string name = f.value("name", std::string()), path = f.value("path", std::string());
+      const json entries = f.value("entries", json::array());
+      const std::string err = f.value("error", std::string()), doc = f.value("doc", std::string());
+      ImGui::PushID(("f:" + name).c_str());
+      const bool sel = algo_sel_.is_object() && algo_sel_.value("path", std::string()) == path;
+      if (ImGui::Selectable("##file", sel, ImGuiSelectableFlags_AllowDoubleClick, ImVec2(0, row2))) {
+        algo_sel_ = f;
+        algo_sel_entry_ = PreferEntry(entries, ctl.value("entry", std::string("Controller")));
+        if (ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) choose = true;
+      }
+      ui::RecordTarget("algo:file:" + name);
+      const ImVec2 a = ImGui::GetItemRectMin(), z = ImGui::GetItemRectMax();
+      dl->PushClipRect(a, z, true);
+      dl->AddText(ImVec2(a.x + fs * 0.4f, a.y + fs * 0.25f), ImGui::GetColorU32(p.accent), ICON_FA_FILE_CODE);
+      dl->AddText(ImVec2(a.x + fs * 2.0f, a.y + fs * 0.25f), ImGui::GetColorU32(p.text), name.c_str());
+      std::string tag;
+      for (const json& e : entries) tag += (tag.empty() ? "入口 " : "、") + e.get<std::string>();
+      if (!tag.empty()) {
+        const float tw = ImGui::CalcTextSize(tag.c_str()).x;
+        dl->AddText(ImVec2(z.x - tw - fs * 0.6f, a.y + fs * 0.25f), ImGui::GetColorU32(p.success), tag.c_str());
+      }
+      const std::string line2 = !err.empty() ? err : !doc.empty() ? doc : entries.empty() ? "（没有找到带 control() 的类或 control 函数）" : "";
+      dl->AddText(ImGui::GetFont(), fs * 0.9f, ImVec2(a.x + fs * 2.0f, a.y + fs * 1.35f),
+                  ImGui::GetColorU32(!err.empty() ? p.danger : p.text_dim), line2.c_str());
+      dl->PopClipRect();
+      ImGui::PopID();
+    }
+    if (files.empty() && b.value("dirs", json::array()).empty()) ImGui::TextDisabled("这个文件夹是空的");
+    else if (files.empty()) ImGui::TextDisabled("这个文件夹里没有 .py 文件");
+  }
+  ImGui::EndChild();
+
+  // The file picked, its entry.
+  if (algo_sel_.is_object()) {
+    const json entries = algo_sel_.value("entries", json::array());
+    ImGui::Text("已选：%s", algo_sel_.value("path", std::string()).c_str());
+    if (!algo_sel_.value("error", std::string()).empty()) {
+      ImGui::TextColored(p.danger, "这个文件现在读不了（运行时会报同样的错误），仍可以选");
+    } else if (entries.empty()) {
+      ImGui::TextColored(p.warning, "没有找到带 control() 的类或 control 函数：“入口”保持 %s", ctl.value("entry", std::string()).c_str());
+    } else if (entries.size() > 1) {
+      ImGui::AlignTextToFramePadding();
+      ImGui::TextUnformatted("入口：");
+      ImGui::SameLine();
+      ImGui::SetNextItemWidth(fs * 12);
+      if (ImGui::BeginCombo("##algo_entry", algo_sel_entry_.c_str())) {
+        for (const json& e : entries) {
+          const std::string n = e.get<std::string>();
+          if (ImGui::Selectable(n.c_str(), n == algo_sel_entry_)) algo_sel_entry_ = n;
+        }
+        ImGui::EndCombo();
+      }
+    } else {
+      ImGui::Text("入口：%s", algo_sel_entry_.c_str());
+    }
+  } else {
+    ImGui::TextDisabled("还没有选中文件");
+  }
+  const ImVec2 bsize(fs * 7, 0);
+  ImGui::BeginDisabled(!algo_sel_.is_object());
+  if (ui::Button(ICON_FA_CHECK, "选择", ui::Kind::Primary, bsize)) choose = true;
+  ImGui::EndDisabled();
+  ui::RecordTarget("algo:choose");
+  ImGui::SameLine();
+  if (ui::Button("", "取消", ui::Kind::Secondary, bsize) || ImGui::IsKeyPressed(ImGuiKey_Escape)) ImGui::CloseCurrentPopup();
+  ui::RecordTarget("algo:cancel");
+  if (choose && algo_sel_.is_object()) {
+    ctl["path"] = algo_sel_.value("path", std::string());
+    if (!algo_sel_.value("entries", json::array()).empty()) ctl["entry"] = algo_sel_entry_;
+    ImGui::CloseCurrentPopup();
+  }
+  ImGui::EndPopup();
+}
 
 void App::DrawPanelScene() {
   if (!cfg_.contains("scene")) { ImGui::TextDisabled("等待后端返回配置 ..."); return; }

@@ -146,7 +146,7 @@ std::string RunErrorNote(const std::string& why) { return "运行出错已停止
 
 // PROTOCOL of backend_server.py this GUI was built for (its "hello"): raise both
 // together whenever a command, event or config field the GUI relies on changes.
-constexpr int kBackendProtocol = 2;
+constexpr int kBackendProtocol = 3;
 
 const char* const kStoppingBackend = "正在停止后端（清理 CARLA 中的主车、传感器和交通）...";
 
@@ -1364,6 +1364,44 @@ void App::BuildTour() {
                                ui::TargetShown("cosim:service");
                       }, "17_remote"});
     tour_->push_back({kPanelCoSim, [this] { cfg_["carsim"]["mock"] = tour_kept_["mock"]; }, idle, ""});
+  }
+  // “浏览…” for the algorithm file: the system's dialog (answering with a test path) when the backend is
+  // here; with it on a server a list of the server's files, clicked through (up, into controllers and
+  // examples, a file, 选择). Either way the entry comes from the file: ex4_function.py has control().
+  {
+    auto picked = [this] {
+      const json& c = cfg_["run"]["controller"];
+      return c.value("path", std::string()) == "controllers/examples/ex4_function.py" &&
+             c.value("entry", std::string()) == "control";
+    };
+    std::vector<TourStep> algo;
+    if (Remote()) {
+      algo = {
+          {kPanelDrive, [this] { tour_kept_["controller"] = cfg_["run"]["controller"]; click_target_ = "algo:browse"; },
+           [] { return ui::TargetShown("algo:dir:examples"); }, ""},
+          {kPanelDrive, [this] { click_target_ = "algo:up"; }, [] { return ui::TargetShown("algo:dir:controllers"); }, ""},
+          {kPanelDrive, [this] { click_target_ = "algo:dir:controllers"; }, [] { return ui::TargetShown("algo:dir:examples"); }, ""},
+          {kPanelDrive, [this] { click_target_ = "algo:dir:examples"; },
+           [] { return ui::TargetShown("algo:file:ex4_function.py"); }, ""},
+          {kPanelDrive, [this] { click_target_ = "algo:file:ex4_function.py"; },
+           [this] { return algo_sel_.is_object() && algo_sel_.value("name", std::string()) == "ex4_function.py"; },
+           "07a_algo_browser"},
+          {kPanelDrive, [this] { click_target_ = "algo:choose"; },
+           [this, picked] { return picked() && !ui::TargetShown("algo:choose"); }, ""},
+      };
+    } else {
+      algo = {{kPanelDrive, [this] {
+                 tour_kept_["controller"] = cfg_["run"]["controller"];
+                 plat::SetTestPick(UserPath("controllers/examples/ex4_function.py"));
+                 click_target_ = "algo:browse";
+               }, [picked] { return picked(); }, "07a_algo_pick"}};
+    }
+    algo.push_back({kPanelDrive, [this] {
+                      plat::SetTestPick("");
+                      cfg_["run"]["controller"] = tour_kept_["controller"];
+                    }, [this] { return cfg_["run"]["controller"] == tour_kept_["controller"]; }, ""});
+    auto at = std::find_if(tour_->begin(), tour_->end(), [](const TourStep& t) { return t.shot == "07_drive"; });
+    if (at != tour_->end()) tour_->insert(at + 1, algo.begin(), algo.end());
   }
 }
 

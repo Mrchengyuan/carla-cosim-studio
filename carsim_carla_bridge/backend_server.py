@@ -42,7 +42,8 @@ import dataset as dsmod
 import rig as rigmod
 import settings as st
 from carsim_local import json_safe as _json_safe
-from session import AlgoOutput, CarlaDriveSession, CoSimSession, check_run_config, check_run_files, control_busy
+from session import (AlgoOutput, CarlaDriveSession, CoSimSession, browse_controllers, check_run_config, check_run_files,
+                     control_busy)
 from views import ViewStreamer, encode_jpeg
 
 WEATHER_PRESETS = [n for n in dir(carla.WeatherParameters)
@@ -59,11 +60,11 @@ PROBE_ROLE = "cosim_probe"  # cars vehicle_specs spawns to measure a vehicle mod
 # space, estimates): served by their own thread, so a dataset playback or
 # deleting a large dataset never holds up a run's frames on the worker.
 IO_CMDS = {"dataset_list", "dataset_info", "dataset_frame", "dataset_export", "dataset_delete",
-           "disk_info", "rig_estimate", "path_status", "carsim_service"}
+           "disk_info", "rig_estimate", "path_status", "carsim_service", "controller_browse"}
 # What "hello" reports; the GUI (kBackendProtocol in cosim_gui/src/app.cpp) warns
 # when it was built for another one. Raise both together whenever a command,
 # event or config field the GUI relies on changes.
-PROTOCOL = 2
+PROTOCOL = 3
 
 
 class Backend:
@@ -1323,6 +1324,12 @@ class Backend:
             r = os.path.abspath(p) if p else ""
             out[p] = {"resolved": r, "exists": os.path.exists(r), "is_file": os.path.isfile(r)}
         return out
+
+    def cmd_controller_browse(self, path=""):
+        """The GUI's “浏览…” for the control algorithm when it runs on another
+        computer (remote_backend): this machine's folders and .py files, each
+        file with its entries and docstring (never run). See session.browse_controllers."""
+        return browse_controllers(path)
 
     def _pause_clock(self, paused):
         """The real-time factor counts running time only."""

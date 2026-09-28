@@ -580,6 +580,68 @@ IMU_STOCK_WARNING = ("原版 CARLA（兼容模式）下 IMU 的陀螺仪 gyro �
                      "AVx / AVy / AVz、Ax / Ay，要真实的 IMU 读数请用改版 CARLA")
 
 
+def controller_entries(path):
+    """(first line of the docstring, entries, error) of an algorithm file, read
+    with ast, never run: the entries are its classes with a control() method
+    and a control() function, in file order."""
+    try:
+        with open(path, "rb") as f:
+            tree = ast.parse(f.read(4 * 1024 * 1024), filename=path)
+    except SyntaxError as e:
+        return "", [], "第 %s 行有语法错误：%s" % (e.lineno, e.msg)
+    except (OSError, ValueError) as e:  # unreadable, NUL bytes
+        return "", [], str(e)
+    doc = (ast.get_docstring(tree) or "").strip().splitlines()
+    entries = []
+    for node in tree.body:
+        if isinstance(node, ast.ClassDef) and any(
+                isinstance(b, (ast.FunctionDef, ast.AsyncFunctionDef)) and b.name == "control" for b in node.body):
+            entries.append(node.name)
+        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == "control":
+            entries.append("control")
+    return (doc[0].strip() if doc else ""), entries, ""
+
+
+def browse_controllers(path="", base=None):
+    """The GUI's “浏览…” for the control algorithm (a GUI on another computer
+    cannot open a dialog here): the folder path (or a file's folder) with its
+    sub-folders and .py files. Relative paths from base (the bridge directory,
+    where runs resolve them); empty, or not there: base/controllers. Each file
+    comes with the path to write into the config (relative inside base, "/"
+    separators, else absolute) and controller_entries()."""
+    base = os.path.abspath(base or os.getcwd())
+
+    def shown(p):
+        rel = os.path.relpath(p, base)
+        return p if rel == ".." or rel.startswith(".." + os.sep) else rel.replace(os.sep, "/")
+
+    home = os.path.join(base, "controllers")
+    target = os.path.abspath(os.path.join(base, path)) if path else home
+    note = ""
+    if os.path.isfile(target):
+        target = os.path.dirname(target)
+    elif not os.path.isdir(target):
+        note = "%s 不存在，显示的是 %s" % (path, shown(home) if os.path.isdir(home) else base)
+        target = home if os.path.isdir(home) else base
+    try:
+        names = sorted(os.listdir(target), key=str.lower)
+    except OSError as e:
+        raise RuntimeError("打不开文件夹 %s：%s" % (target, e.strerror or e))
+    dirs, files = [], []
+    for n in names:
+        p = os.path.join(target, n)
+        if n.startswith(".") or n == "__pycache__":
+            continue
+        if os.path.isdir(p):
+            dirs.append(n)
+        elif n.endswith(".py") and os.path.isfile(p) and len(files) < 300:
+            doc, entries, err = controller_entries(p)
+            files.append({"name": n, "path": shown(p), "doc": doc, "entries": entries, "error": err})
+    parent = os.path.dirname(target)
+    return {"folder": target, "shown": shown(target) if target != base else ".", "base": base,
+            "parent": parent if parent != target else None, "dirs": dirs[:300], "files": files, "note": note}
+
+
 def call_finish(driver, reason):
     """The algorithm's finish(reason), once, when the run ends. Its error is
     returned for the output, never raised: the run is over and everything

@@ -3,7 +3,10 @@ a GUI whose hello asks for JPEG (remote_backend: through an SSH tunnel) gets
 its live view frames as JPEG of quality 80 (decoded back: same size, nearly
 the same pixels, a fraction of the bytes), any other GUI raw RGB as before;
 "path_status" checks paths on the backend's machine on the IO thread,
-relative ones from the bridge directory like a run; "restart_backend" is
+relative ones from the bridge directory like a run; "controller_browse"
+(the 控制算法 “浏览…” of a GUI on another computer) lists a folder there with
+its .py files, their entries and docstrings, read with ast and never run;
+"restart_backend" is
 answered by the socket thread (also while the worker is busy), which then
 ends the backend with exit code 3 (real backend processes on a free port, no
 CARLA). The GUI's JPEG decoding (cosim_gui/src/jpeg_decode.cpp, stb_image)
@@ -36,7 +39,7 @@ sys.path.insert(0, BRIDGE)
 import backend_server  # noqa: E402
 import settings as st  # noqa: E402
 from backend_server import Backend  # noqa: E402
-from session import check_run_files  # noqa: E402
+from session import browse_controllers, check_run_files  # noqa: E402
 
 
 def camera_image(w=320, h=180):
@@ -121,6 +124,90 @@ class PathStatusTests(unittest.TestCase):
         self.assertEqual(r["missing.py"], {"resolved": os.path.join(here, "missing.py"), "exists": False, "is_file": False})
         self.assertEqual(r[""], {"resolved": "", "exists": False, "is_file": False})
         self.assertIn(r["missing.py"]["resolved"], str(cm.exception))
+
+
+class ControllerBrowseTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="cc_browse_")
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        self.base = os.path.join(self.tmp, "bridge")
+        ctl = os.path.join(self.base, "controllers")
+        for d in ("sub", "__pycache__", ".hidden"):
+            os.makedirs(os.path.join(ctl, d))
+        os.makedirs(os.path.join(self.tmp, "elsewhere"))
+        self.marker = os.path.join(self.tmp, "ran.txt")
+        files = {
+            "a_class.py": '"""类写法。\n\n第二行不显示。"""\nclass Controller:\n    def control(self, exports, t, dt):\n'
+                          '        return [0, 0, 0]\n',
+            "b_func.py": "def control(exports, t, dt):\n    return [0, 0, 0]\n",
+            "c_two.py": "class Slow:\n    def control(self, e, t, dt):\n        pass\n\n\n"
+                        "class Fast:\n    def control(self, e, t, dt):\n        pass\n",
+            "d_none.py": "def helper():\n    pass\n",
+            "e_bad.py": "def control(:\n",
+            # Run, it would leave a file behind: listing never runs a file.
+            "f_side.py": "open(%r, 'w').write('ran')\nclass Controller:\n    def control(self, e, t, dt):\n        pass\n"
+                         % self.marker,
+            "notes.txt": "not python\n",
+        }
+        for name, text in files.items():
+            with open(os.path.join(ctl, name), "w", encoding="utf-8") as f:
+                f.write(text)
+        with open(os.path.join(ctl, "g_gbk.py"), "wb") as f:  # Chinese in a string, saved as GBK
+            f.write('class Controller:\n    def control(self, e, t, dt):\n        print("车速")\n'.encode("gbk"))
+        with open(os.path.join(self.tmp, "elsewhere", "far.py"), "w") as f:
+            f.write("def control(e, t, dt):\n    return [0, 0, 0]\n")
+
+    def by_name(self, r):
+        return {f["name"]: f for f in r["files"]}
+
+    def test_the_controllers_folder_its_files_entries_and_docs(self):
+        r = browse_controllers("", base=self.base)
+        self.assertEqual((r["folder"], r["shown"], r["parent"], r["note"]),
+                         (os.path.join(self.base, "controllers"), "controllers", self.base, ""))
+        self.assertEqual(r["dirs"], ["sub"])  # no __pycache__, no hidden folders
+        f = self.by_name(r)
+        self.assertEqual(sorted(f), ["a_class.py", "b_func.py", "c_two.py", "d_none.py", "e_bad.py", "f_side.py",
+                                     "g_gbk.py"])  # .py files only
+        self.assertEqual({n: v["entries"] for n, v in f.items()},
+                         {"a_class.py": ["Controller"], "b_func.py": ["control"], "c_two.py": ["Slow", "Fast"],
+                          "d_none.py": [], "e_bad.py": [], "f_side.py": ["Controller"], "g_gbk.py": []})
+        self.assertEqual(f["a_class.py"]["path"], "controllers/a_class.py")
+        self.assertEqual(f["a_class.py"]["doc"], "类写法。")
+        self.assertIn("第 1 行有语法错误", f["e_bad.py"]["error"])
+        self.assertIn("第 3 行有语法错误", f["g_gbk.py"]["error"])  # what loading it would say too
+        self.assertEqual(f["b_func.py"]["error"], "")
+        self.assertFalse(os.path.exists(self.marker), "a file was run")
+
+    def test_a_file_path_shows_its_folder_and_a_missing_one_the_controllers(self):
+        self.assertEqual(browse_controllers("controllers/b_func.py", base=self.base)["shown"], "controllers")
+        self.assertEqual(browse_controllers("controllers/sub", base=self.base)["shown"], "controllers/sub")
+        r = browse_controllers("nope/x.py", base=self.base)
+        self.assertEqual(r["shown"], "controllers")
+        self.assertIn("nope/x.py 不存在", r["note"])
+
+    def test_up_to_the_bridge_folder_and_out_of_it(self):
+        r = browse_controllers(self.base, base=self.base)
+        self.assertEqual((r["shown"], r["dirs"], r["files"]), (".", ["controllers"], []))
+        far = os.path.join(self.tmp, "elsewhere")
+        r = browse_controllers(far, base=self.base)
+        self.assertEqual(r["shown"], far)  # outside the bridge folder: absolute paths
+        self.assertEqual(self.by_name(r)["far.py"]["path"], os.path.join(far, "far.py"))
+        self.assertIsNone(browse_controllers("/", base=self.base)["parent"])
+
+    def test_on_the_io_thread_and_over_the_socket(self):
+        b = Backend()
+        b.submit({"id": 1, "cmd": "controller_browse", "args": {"path": ""}}, lambda msg: None)
+        self.assertEqual((b.io_requests.qsize(), b.requests.qsize()), (1, 0), "served by the IO thread")
+        be = BackendProcess(lambda port: ["backend_server.py", "--port", str(port)])
+        self.addCleanup(be.close)
+        be.send(1, "hello", jpeg=True)
+        self.assertEqual(be.reply()["result"], {"protocol": backend_server.PROTOCOL})
+        be.send(2, "controller_browse", path="controllers/examples/ex4_function.py")
+        r = be.reply()
+        self.assertTrue(r["ok"], r)
+        f = self.by_name(r["result"])["ex4_function.py"]
+        self.assertEqual((r["result"]["shown"], f["path"], f["entries"]),
+                         ("controllers/examples", "controllers/examples/ex4_function.py", ["control"]))
 
 
 def free_port():

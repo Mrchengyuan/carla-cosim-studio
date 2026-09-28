@@ -87,6 +87,9 @@ class App {
   void DrawPanelView();
   void DrawViewImage(float max_w, float max_h);
   void BackendPathStatus(const std::string& path);  // check / cross under a path the backend reads
+  void EditAlgoPath(json& ctl);                        // 控制算法 file field with its “浏览…”
+  void AlgoBrowse(const std::string& path);            // remote: a folder of the server (controller_browse)
+  void DrawAlgoBrowser(json& ctl);                     // remote: the server's algorithm files to pick from
 
   // ---------------------------------------------------------- rig editor (rig_editor.cpp)
   void DrawPanelRig();
@@ -186,6 +189,10 @@ class App {
   bool hello_ok_ = false;          // the backend answered this connection's hello (remote: an SSH tunnel
                                    // accepts a connection even while no backend listens behind it)
   json server_paths_ = json::object();  // remote: "path_status" answers, path -> {asked, pending, status}
+  // 控制算法 “浏览…” with the backend on a server: the folder shown (controller_browse answer), the file picked
+  bool algo_browser_open_ = false, algo_browse_pending_ = false;
+  json algo_browse_ = json::object(), algo_sel_;
+  std::string algo_browse_err_, algo_sel_entry_;
   bool rig_converting_ = false;   // an old config's rig (CARLA frame) is being converted by the backend,
                                   // or that failed (retried on the next CARLA connection / config load)
   std::string busy_task_;         // what the backend worker has been busy with ("busy" heartbeat)

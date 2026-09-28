@@ -1129,6 +1129,39 @@ class Backend:
     def cmd_default_config(self):
         return st.default_dict()
 
+    def _fix_world(self, d):
+        """world.fixed: the map, weather and traffic of the config before the run (the same
+        surroundings every time); what was done, for the output."""
+        wd = d.get("world") or {}
+        if not wd.get("fixed"):
+            return None
+        want = str(wd.get("map") or "")
+        now = self._need_world().get_map().name.split("/")[-1]
+        done = []
+        if want and want != now:
+            self._log("按配置加载地图 %s（现在是 %s）…" % (want, now))
+            self.cmd_load_map(want)
+            done.append("地图 %s" % want)
+        if wd.get("weather"):
+            self.cmd_set_weather(params=wd["weather"])
+            done.append("天气")
+        # The traffic: cleared now, spawned once the world is synchronous (_fix_world_traffic):
+        # spawned in an asynchronous world it would drive on for however long the start takes.
+        self.cmd_clear_traffic()
+        return done
+
+    def _fix_world_traffic(self, d, done):
+        """world.fixed: the traffic of the config, in the run's synchronous world (from its first
+        frame every step is a tick of the backend: the same positions every run)."""
+        tr = (d.get("world") or {}).get("traffic") or {}
+        nv, nw, seed = int(tr.get("vehicles") or 0), int(tr.get("walkers") or 0), int(tr.get("seed") or 0)
+        if nv or nw:
+            got = self.cmd_spawn_traffic(vehicles=nv, walkers=nw, seed=seed)
+            done.append("交通流 %d 辆车、%d 个行人（种子 %d）" % (got["vehicles"], got["walkers"], seed))
+        else:
+            done.append("没有交通流")
+        self._log("按配置重建世界：%s" % "，".join(done))
+
     def cmd_cosim_start(self, config=None):
         """Start a run: CarSim or CARLA dynamics, any driver, optional collection."""
         w = self._need_world()
@@ -1137,6 +1170,8 @@ class Backend:
         d = st.load_dict(None, config or {})
         for note in check_run_config(d):
             self._log(note)
+        world_done = self._fix_world(d)  # world.fixed: the map and weather of the config first (traffic: below)
+        w = self._need_world()  # (another map: another world)
         c = d["carla"]
         col_cfg = dict(d["collect"])
         col_cfg["frame_dt"] = d["sync"]["frame_dt"]
@@ -1243,6 +1278,8 @@ class Backend:
             s.synchronous_mode, s.fixed_delta_seconds = True, d["sync"]["frame_dt"]
             w.apply_settings(s)
             self._tm_sync(True)
+            if world_done is not None:
+                self._fix_world_traffic(d, world_done)
             # The traffic lights start their cycle again with every run, like
             # the ego, instead of wherever the time before the run left them.
             w.reset_all_traffic_lights()

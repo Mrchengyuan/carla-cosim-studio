@@ -1139,6 +1139,13 @@ void App::BuildTour() {
       {kPanelConnect, [this] { ConnectBackend(); }, [this] { return be_.Connected() && (hello_ok_ || !Remote()); }, ""},
       {kPanelConnect, [this] { ConnectCarla(); }, [this, idle] { return carla_connected_ && idle(); }, "01_connect"},
       {kPanelWorld, [] {}, idle, "02_world"},
+      // 固定世界: 记下当前世界 by a click fills the config's world block from this world; then as it was.
+      {kPanelWorld, [this] { tour_kept_["world"] = cfg_["world"]; click_target_ = "world:capture"; }, [this] {
+         return click_target_.empty() && cfg_["world"].value("fixed", false) &&
+                cfg_["world"].value("map", std::string()) == world_.value("map", std::string()) &&
+                cfg_["world"].value("weather", json::object()) == world_.value("weather", json::object());
+       }, "02b_world_fixed"},
+      {kPanelWorld, [this] { cfg_["world"] = tour_kept_["world"]; }, [this] { return cfg_["world"] == tour_kept_["world"]; }, ""},
       {kPanelVehicle, [this] { FetchVehicleSpecs(false); }, idle, ""},
       {kPanelVehicle, [this] {
          for (size_t i = 0; i < vehicles_.size(); ++i)

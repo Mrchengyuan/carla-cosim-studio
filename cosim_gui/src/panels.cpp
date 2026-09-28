@@ -283,8 +283,43 @@ void App::DrawPanelConnect() {
 }
 
 // --------------------------------------------------------------------------
+// 固定世界: the config's world block (map, weather, traffic with its seed), rebuilt by the backend
+// before every run when on (backend _fix_world): the same surroundings whenever the config runs.
+void App::DrawWorldFixed() {
+  const ui::Palette& p = ui::Colors();
+  if (!cfg_.contains("world") || !cfg_["world"].is_object()) return;  // (a backend that does not have it)
+  json& wd = cfg_["world"];
+  ui::BeginCard(ICON_FA_LOCK, "固定世界（每次运行都一样）");
+  bool on = wd.value("fixed", false);
+  ImGui::BeginDisabled(Running());
+  if (ImGui::Checkbox("每次运行前按配置重建世界", &on)) wd["fixed"] = on;
+  ui::RecordTarget("world:fixed");
+  const json tr = wd.value("traffic", json::object());
+  const std::string map = wd.value("map", std::string());
+  ImGui::TextColored(p.text_dim, "配置里：地图 %s，天气 %s，交通流 %d 辆车、%d 个行人，种子 %d", map.empty() ? "（不换）" : map.c_str(),
+                     wd.value("weather", json::object()).empty() ? "（不改）" : "已记下", tr.value("vehicles", 0), tr.value("walkers", 0),
+                     tr.value("seed", 0));
+  ImGui::BeginDisabled(!carla_connected_);
+  if (ui::Button(ICON_FA_CAMERA, "记下当前世界")) {
+    wd["map"] = world_.value("map", std::string());
+    wd["weather"] = world_.value("weather", json::object());
+    wd["traffic"] = {{"vehicles", traffic_count_.value("vehicles", 0)}, {"walkers", traffic_count_.value("walkers", 0)},
+                     {"seed", traffic_seed_}};
+    wd["fixed"] = true;
+    Log("已把当前的地图、天气和交通流（数量、种子）记进配置：每次运行前按它重建");
+  }
+  ui::RecordTarget("world:capture");
+  ImGui::EndDisabled();
+  ImGui::EndDisabled();
+  ui::DimWrapped("打开后，每次点“运行”都先：地图不对就加载配置里的地图，设好配置里的天气，清掉交通流再按同一个种子重新生成同样数量的车和行人。"
+                 "这样同一个配置文件无论什么时候运行，周围的环境都一样（CARLA 同步模式下，交通按种子走同样的路线）。“记下当前世界”把现在的地图、"
+                 "天气和“交通流”页生成的交通（数量和种子）一次写进配置；记得保存配置。");
+  ui::EndCard();
+}
+
 void App::DrawPanelWorld() {
   const float fs = ImGui::GetFontSize();
+  DrawWorldFixed();
   ui::BeginCard(ICON_FA_MAP, "地图");
   ui::Row("地图", "切换地图会清除主车、交通和传感器；带 _Opt 的是分层地图");
   ComboStr("##map", map_choice_, maps_);

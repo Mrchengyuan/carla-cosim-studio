@@ -939,6 +939,8 @@ def _run_json(ses, end=None, reason=None):
     return {"map": name.split("/")[-1] if isinstance(name, str) else None,
             "spawn_index": d["carla"]["spawn_index"],
             "traffic_seed": (getattr(ses, "run_meta", None) or {}).get("traffic_seed"),  # None: no traffic
+            # world.fixed: the map, weather and traffic were rebuilt from the config before the run
+            "world": d.get("world") if (d.get("world") or {}).get("fixed") else None,
             # 测试场景: the closures placed for this run and how many props each got (None: off)
             "scenario": (getattr(ses, "run_meta", None) or {}).get("scenario"),
             "dynamics": d["drive"]["dynamics"],

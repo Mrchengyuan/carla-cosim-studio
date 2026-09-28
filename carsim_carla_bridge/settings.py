@@ -70,6 +70,10 @@ def default_dict():
         # actors: 动态目标 [{"type": "slow_car" | "lead_brake" | "cut_in" | "pedestrian", "distance_m",
         # "lane", "speed_kmh", "trigger_m", "param" (lead_brake: m/s^2, cut_in: s)}] (scenario.py).
         "scenario": {"enabled": False, "closures": [], "actors": []},
+        # world: with fixed on, every run first rebuilds the CARLA world the config names: the map
+        # (loaded if another one is up), the weather (CARLA weather parameters) and the traffic
+        # (cleared, then vehicles / walkers spawned with seed): the same surroundings every time.
+        "world": {"fixed": False, "map": "", "weather": {}, "traffic": {"vehicles": 0, "walkers": 0, "seed": 0}},
         # Sensor mounts in CarSim's vehicle frame (origin = the reference
         # point, y left; rig.py). "carla" = an older config (car centre, y right).
         "rig": {"preset": "front_camera", "sensors": [], "frame": "carsim"},

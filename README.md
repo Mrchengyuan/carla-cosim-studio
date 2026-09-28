@@ -240,7 +240,7 @@ class Controller:
 - `exports`：全部 CarSim 导出变量，键是导出变量名；`t`：CarSim 时间；`dt`：控制周期（= 仿真步长）。
 - `finish(reason)`：可选，运行结束（到时、碰撞停止、停止、出错）时调用一次，`reason` 与输出窗口里的结束原因相同；入口是函数时写模块级 `finish(reason)`。出错只提示，不影响收尾。
 - 界面里的相对路径以 `carsim_carla_bridge` 目录为准（命令行里以当前目录为准）；每次点“运行”都会重新加载这个文件（连同它从同一目录和子目录 import 的文件），改完代码直接再运行，不用重启界面。
-- 示例：`controllers/example_controller.py`（定速 + 蛇形）、`controllers/path_follower.py`（路径跟踪：纯跟踪沿 CARLA 的车道中心线，弯前降速，路口不跟错车道，见[远程使用指南第 5 节](docs/远程使用指南.md#5-示例控制算法路径跟踪controllerspath_followerpy)）、`controllers/scene_controller.py`（沿车道行驶，前方有车或障碍物就跟车 / 停车）、`controllers/simple_path_follower.py`（python_carsim_env 里的 SimplePathFollower）。
+- 示例：`controllers/example_controller.py`（定速 + 蛇形）、`controllers/path_follower.py`（路径跟踪：纯跟踪沿 CARLA 的车道中心线，弯前降速，路口不跟错车道，见[远程使用指南第 5 节](docs/远程使用指南.md#5-示例控制算法路径跟踪controllerspath_followerpy)）、`controllers/scene_controller.py`（沿车道行驶，前方有车或障碍物就跟车 / 停车）、`controllers/lane_change_avoid.py`（避障：在 path_follower 的基础上，本车道被锥桶、护栏、停着的车挡住就换道绕过去，过去后换回原车道；左右都换不了就减速停车；要在“场景信息”页车道里加勾 `left_lane`、`right_lane`，和 path_follower.py 放在同一个文件夹）、`controllers/simple_path_follower.py`（python_carsim_env 里的 SimplePathFollower）。
 
 **用 CARLA 场景里的信息**：把 `control` 写成 4 个参数，每帧就会多收到一个 `scene`（算法本来就在 Python 后端里运行，场景信息直接从 CARLA 读出来交给它，不经过界面；界面只是把同一份数据显示出来）。只写 3 个参数的算法照旧运行。
 ```python
@@ -307,6 +307,7 @@ python run_cosim.py --mock --duration 20                                        
 | `tests/test_carsim_carla.py` | 在 CARLA 上：配置出错在重新生成主车之前被拒绝、仿真步长对齐 t_step（CARLA 也用它）、日志说明模拟 CarSim、暂停不计入实时倍率、假 CarSim 求解器的运行以正确原因结束 | 18/18（原版 CARLA 两种包、改版 CARLA） |
 | `tests/test_offline_algoerr.py` | 不需要 CARLA：场景里没勾选的键、缺少传感器数据 / 导出变量时指向对应页面，子目录里的辅助文件下次运行重新载入、两个文件夹里的同名辅助文件、与已载入模块重名时拒绝、算法目录排在 python_carsim_env 之前，`sys.exit`、辅助文件里出错时给出两处行号，找不到入口函数时列出候选，`control()` 慢时 busy 心跳指向用户代码行，启动失败 / 工作线程出错时告诉界面原因 | 18/18 |
 | `tests/test_scenario_carla.py` | 测试场景在 Town04 高速上（模拟 CarSim + 路径跟踪算法）：找到高速起点；界面每个预设都摆好、每个物体在计划的位置和车道上；`run.json` 记下封道；算法收到 `static` 目标、记录里也有；开进封闭的本车道算作撞上锥桶；物体留到下一次运行开始才删，不开测试场景的运行不留物体；没有这条车道时拒绝运行、什么都不摆；类型写错被拒绝；后端被杀后下一个后端（“重启后端”）清掉留下的物体；Town10 上没有高速起点 | 全部通过（原版 CARLA 两种包、改版 CARLA） |
+| `tests/test_avoid_carla.py` | 避障示例 `lane_change_avoid.py` 在 Town04 高速上（模拟 CarSim）跑“测试场景”页的 4 个预设和不开封道各 75 s：正常结束、无碰撞、开过封道、封本车道时换道绕开并换回原车道、离锥桶 / 护栏 > 0.3 m；封左侧车道、不开封道时不换道 | 5 种情况全部通过（原版 CARLA；离锥桶最近 0.65 m） |
 | `tests/test_algoerr_carla.py` | 经过界面后端在 CARLA 上：启动失败说明原因（界面横幅）、没勾选的场景键指向“场景信息”页、`control()` 里 `sys.exit()`、辅助文件出错给出两处行号、与已载入模块同名的文件（config.py）被拒绝、子目录里的辅助文件重新载入、`control()` 慢时 busy 心跳指向用户代码行而不是 CARLA 卡住 | 10/10（原版 CARLA 两种包、改版 CARLA） |
 | `tests/test_offline_guimisc.py` | 不需要 CARLA：界面与后端协议版本一致（`hello`）、卡住的后端由套接字线程打印全部线程调用栈（Windows 没有 SIGUSR1）、`world_info` 报告自动驾驶试开、界面的平台代码（连接超时、结束后端进程、退出原因；另用 MinGW 编译 Windows 版） | 7/7（其中 C++ 14/14） |
 | `tests/test_guimisc_carla.py` | 在 CARLA 上经过界面后端：版本一致、运行后自动驾驶试开已取消、运行中打印调用栈不用等工作线程、停止后端时清理主车 | 10/10（原版 CARLA 两种包、改版 CARLA） |

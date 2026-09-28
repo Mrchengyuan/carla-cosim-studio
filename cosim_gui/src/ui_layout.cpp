@@ -52,7 +52,8 @@ const std::vector<NavGroup>& Nav() {
        {{kPanelCollect, ICON_FA_DATABASE, "数据采集", "同步采集传感器数据、真值标注和车辆状态。"},
         {kPanelRecorder, ICON_FA_FILM, "录制与回放", "用 CARLA 录制器记录整个场景并回放。"},
         {kPanelView, ICON_FA_VIDEO, "实时画面", "中间视口的相机设置：视角、套件相机、分辨率。"},
-        {kPanelDataset, ICON_FA_FOLDER_OPEN, "数据浏览", "逐帧查看已采集的数据和真值框，导出为 KITTI / nuScenes，删除不需要的数据集。"}}},
+        {kPanelDataset, ICON_FA_FOLDER_OPEN, "数据浏览", "逐帧查看已采集的数据和真值框，导出为 KITTI / nuScenes，删除不需要的数据集。"},
+        {kPanelRuns, ICON_FA_CODE_COMPARE, "运行对比", "列出每次运行的记录，勾选几次并排比较指标，在“对比”面板叠画轨迹和曲线。"}}},
   };
   return g;
 }
@@ -334,7 +335,7 @@ void App::BuildDefaultLayout(unsigned int dock_id, ImVec2 size, float fs) {
   ImGui::DockBuilderDockWindow("###nav", left);
   ImGui::DockBuilderDockWindow("###props", right);
   ImGui::DockBuilderDockWindow("###viewport", center);
-  for (const char* w : {"###plots", "###vstate", "###scene", "###draw", "###log"}) ImGui::DockBuilderDockWindow(w, bottom);
+  for (const char* w : {"###plots", "###vstate", "###scene", "###draw", "###log", "###compare"}) ImGui::DockBuilderDockWindow(w, bottom);
   ImGui::DockBuilderFinish(dock_id);
   nav_open_ = view_open_ = monitor_open_ = log_open_ = true;
   for (bool& b : bottom_open_) b = true;
@@ -410,6 +411,16 @@ void App::DrawPanels(float fs) {
     }
   }
   dock_tab_select_ = -1;
+  if (compare_open_) {
+    if (panel(ICON_FA_CODE_COMPARE "  对比###compare", &compare_open_, p.panel, ImVec2(fs * 0.5f, fs * 0.3f),
+              ImGuiWindowFlags_NoScrollbar, "dock:compare", compare_focus_)) {
+      ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(7 * ui::Scale(), 6 * ui::Scale()));
+      DrawCompare();
+      ImGui::PopStyleVar();
+    }
+    compare_focus_ = false;
+    ImGui::End();
+  }
   if (monitor_open_) {
     if (panel(ICON_FA_SLIDERS "  属性###props", &monitor_open_, p.bg, no_pad, 0, "dock:props", false)) DrawProperties();
     ImGui::End();
@@ -471,6 +482,7 @@ void App::DrawMenuBar() {
     ImGui::MenuItem(ICON_FA_FOLDER_TREE "  工程", nullptr, &nav_open_);
     ImGui::MenuItem(ICON_FA_VIDEO "  画面", nullptr, &view_open_);
     ImGui::MenuItem(ICON_FA_SLIDERS "  属性面板", nullptr, &monitor_open_);
+    ImGui::MenuItem(ICON_FA_CODE_COMPARE "  运行对比图", nullptr, &compare_open_);
     ImGui::MenuItem(ICON_FA_TABLE_COLUMNS "  底部面板（曲线 / 状态 / 场景 / 轨迹 / 输出）", "Ctrl+L", &log_open_);
     if (ImGui::BeginMenu(ICON_FA_LAYER_GROUP "  底部面板的页签")) {
       static const char* kNames[] = {"曲线", "车辆状态", "输出", "场景", "轨迹"};
@@ -781,7 +793,7 @@ bool App::PageEnabled(int panel) const {
     case kPanelConnect: return true;
     case kPanelRig: case kPanelDrive: case kPanelCoSim: case kPanelScene: case kPanelTestScene: case kPanelCollect:
       return cfg_defaults_.is_object() || carla_connected_;
-    case kPanelDataset: return be_.Connected();
+    case kPanelDataset: case kPanelRuns: return be_.Connected();
     default: return carla_connected_;
   }
 }
@@ -813,6 +825,7 @@ void App::DrawNav() {
         return sc.value("enabled", false) && n ? Fmt("%d 处", static_cast<int>(n)) : "关";
       }
       case kPanelRecorder: return recording_ ? "REC" : "";
+      case kPanelRuns: return runs_sel_.empty() ? "" : Fmt("%d 次", static_cast<int>(runs_sel_.size()));
       case kPanelView: return view_on_ ? "开" : "";
       default: return "";
     }
@@ -899,6 +912,7 @@ void App::DrawProperties() {
     case kPanelRecorder: DrawPanelRecorder(); break;
     case kPanelView: DrawPanelView(); break;
     case kPanelDataset: DrawPanelDataset(); break;
+    case kPanelRuns: DrawPanelRuns(); break;
     default: break;
   }
   if (props_scroll_end_) {

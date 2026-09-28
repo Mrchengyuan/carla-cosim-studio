@@ -184,6 +184,8 @@ git clone https://github.com/Mrchengyuan/python_carsim_env
 | ![多视图 2×2](docs/images/multiview_2x2.jpg) | ![多视图 1+3](docs/images/multiview_1p3.jpg) |
 | **数据浏览：相机 + 3D 真值框 · 激光雷达俯视 · 目标列表 · 导出** | |
 | **界面布局** | 像 Visual Studio、CarMaker 那样的可停靠面板：工程、画面、属性、曲线、车辆状态、场景、轨迹、输出都能拖动页签重新排布、叠成页签、浮动在主窗口里、关闭再打开，分隔条随意调大小；布局自动保存，一键恢复默认 |
+| **算法自己的曲线** | 控制算法写 `self.debug = {名字: 数字}`，“曲线”面板实时画出、运行记录里存成 `log_debug.csv` |
+| **运行对比** | 每次运行的记录列成表（算法、车辆、地图、时长、偏差、碰撞），勾选最多 4 次并排比较指标（最好的标绿），对比面板叠画轨迹、车速、车道偏差、控制输出和算法自己的 `self.debug` 量 |
 | ![数据浏览](docs/images/dataset_browser.jpg) | |
 
 ## 架构
@@ -385,6 +387,7 @@ def control(self, exports, t, dt, scene):
 | `tests/test_offline_examples.py` | 不需要 CARLA：[控制算法编写指南](docs/控制算法编写指南.md) 的 5 个示例（`controllers/examples/`）和文档里的代码一字不差；每个都按运行时的方式（`session.load_controller`）加载，接模拟 CarSim 闭环：定速 30 km/h、沿车道过 40 m 半径弯道偏差 < 0.3 m、跟 20 km/h 的前车停在期望车距、函数入口和它的 finish()、辅助模块和参数文件 | 7/7 |
 | `tests/test_offline_kmppi.py` | 不需要 CARLA 和 Chrono：KMPPI 移植的车道参考（直线上逐步前移、圆弧上航向和 r = v/R、vy 按原工程的稳态关系）；用原工程的 3DOF 被控对象闭环，从偏离 0.5 m 起步，经直道进入 250 m 半径的弯，3 s 后偏差 < 0.1 m、车速保持 20 m/s；两次计算之间保持输出；仿真步长不能整除 0.05 s 时报错；算法文件里的 `FRAME_DT` 决定运行的仿真步长（只解析、不运行文件；和界面不同时说明；不是数字、超出范围时说清原因；CARLA 物理下不用）；没有车道信息时保持上一次的输出；CarSim 服务 `--chrono` 不检查 .sim；平台画线 `self.draw`：自车坐标换算到 CARLA（左为左）、默认颜色和线宽、格式错误说明是第几条、超过 5000 段只画前 5000 段、取走一次后每帧重画、采集数据时不画并提示一次；KMPPI 画的线（64 条候选、参考、加权平均、最好的一条加粗且和最红的候选是同一条）；找 chrono 环境的 Python；`OUTPUT = "carsim"` 的换算（方向盘转角 = 前轮转角 × 传动比、传动比从导出变量学到、加速度 → 油门 / 制动且制动不超过满量程、目标车速不离实际车速太远；`"ax_delta"` 时原样输出） | 22/22 |
 | `tests/test_offline_algo_debug.py` | 不需要 CARLA：控制算法的 `self.debug`（和模块里的 `debug`）：只留有限的数字（numpy 的数、整数、布尔也行），不是数字的名字报出来、不是字典时说清原因、最多 32 个；按运行时的方式加载，每次 control() 后取、一直保留；记录进 `log_debug.csv`，列按第一次给出的名字，之后新出现的名字报出来 | 6/6 |
+| `tests/test_offline_runs_compare.py` | 不需要 CARLA：运行对比的后端：列出运行记录（新的在前；算法、车辆、地图、时长、指标、有没有 debug；没有 run.json 的文件夹不算；目录不存在时说清）、读一次运行的时间序列（按 t 对齐轨迹、车速、车道偏差、控制输出按车辆类型命名、`self.debug` 量；抽稀时保留最后一点；不是运行记录时说清）、两个命令走后端的文件线程 | 6/6 |
 | `tests/test_path_follower_carla.py` | 在 CARLA 上（模拟 CarSim，默认设置和场景信息）：路径跟踪算法从分布在全图的出生点各跑 40 s：按时结束、算法不报错、无碰撞、不离开车道、路口以外车道中心偏差均方根 < 0.25 m、最大 < 0.6 m、一直在走（最高车速 > 30 km/h、40 s 超过 200 m）、航向没有突变 | Town10 原版 12 个出生点、改版 3 个全部通过（均方根 0.05~0.13 m，路口以外最大 0.40 m） |
 | `tests/test_recording_carla.py` | 同上在 CARLA 上：第一次 `control()` 有整数帧号和相机图像、两次运行采样时刻相同、u 列为上一步的控制输出、5 帧小采集（测完自动删除）的 `frames/`、`frames.csv`、`ego/`、`labels/` | 14/14（原版 CARLA 两种包、改版 CARLA） |
 | `tests/test_offline_config.py` | 不需要 CARLA：界面保存的配置用命令行运行时，用文件里的驾驶方式和 CARLA 地址（命令行参数仍优先）；CARLA 物理的配置在连接 CARLA 之前就被拒绝（退出码 2）；默认配置里没有不起作用的 `carla.map` / `carla.weather`。另用系统的 C++ 编译器编译运行界面的配置代码 `cosim_gui/tests/config_file_test.cpp`：载入时以默认配置为底、修正手改的类型（保留“CARLA 接口”和参考点）、保存时写入驾驶方式和 CARLA 地址、先写临时文件再替换（没有编译器时跳过） | 4/4（其中 C++ 23/23） |

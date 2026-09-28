@@ -148,7 +148,7 @@ std::string RunErrorNote(const std::string& why) { return "运行出错已停止
 
 // PROTOCOL of backend_server.py this GUI was built for (its "hello"): raise both
 // together whenever a command, event or config field the GUI relies on changes.
-constexpr int kBackendProtocol = 3;
+constexpr int kBackendProtocol = 4;
 
 const char* const kStoppingBackend = "正在停止后端（清理 CARLA 中的主车、传感器和交通）...";
 
@@ -1426,6 +1426,41 @@ void App::BuildTour() {
       {kPanelDataset, [this] { ds_fmt_ = 0; props_scroll_end_ = true; }, [] { return true; }, ""},
       {kPanelDataset, [this] { click_target_ = "ds:export"; },
        [this, idle] { return idle() && !ds_exporting_ && ds_export_result_.value("ok", false); }, "12c_dataset_export"},
+      // 运行对比: two made-up run records in the tour's folder, both picked by clicks, the key figures
+      // side by side, the 对比 panel's plots.
+      {kPanelRuns, [this, dir] {
+         const fs::path root = dir / "tour_runs";
+         for (int k = 0; k < 2; ++k) {
+           const fs::path f = root / (k ? "20260101_120030_algo_b" : "20260101_120000_algo_a");
+           fs::create_directories(f);
+           std::ofstream(f / "run.json") << "{\"map\": \"Town04\", \"controller\": \"algo_" << (k ? "b" : "a")
+                                         << ".py\", \"dynamics\": \"cosim\", \"carsim_mock\": true, \"t_start\": 0.0, \"t_end\": 9.9, "
+                                         << "\"end\": \"finished\", \"kpi\": {\"lane_offset_rms\": " << (k ? 0.12 : 0.05)
+                                         << ", \"collisions\": 0, \"distance\": " << (k ? 180 : 200) << "}, \"units\": {}}";
+           std::ofstream m(f / "log.csv"), l(f / "log_lane.csv"), d(f / "log_debug.csv");
+           m << "t,frame,ego_X,ego_Y,ego_Speed,u1,u2,u3\n";
+           l << "t,frame,offset,heading_err\n";
+           d << "t,frame,cost\n";
+           for (int i = 0; i < 100; ++i) {
+             const double t = i * 0.1;
+             m << t << "," << i << "," << 20 * t << "," << (k ? 0.3 : 0.1) * std::sin(t) << "," << 72 - k * 5 * std::sin(t) << ","
+               << 0.2 << ",0," << 5 * std::sin(t + k) << "\n";
+             l << t << "," << i << "," << (k ? 0.12 : 0.05) * std::sin(2 * t) << ",0\n";
+             d << t << "," << i << "," << 100 - 8 * t + k * 5 << "\n";
+           }
+         }
+         runs_path_ = root.u8string();
+         runs_list_ = json::object();
+         click_target_ = "runs:refresh";
+       }, [this] { return runs_list_.value("runs", json::array()).size() == 2; }, ""},
+      {kPanelRuns, [this] { click_target_ = "runs:sel:0"; }, [this] { return runs_sel_.size() == 1; }, ""},
+      {kPanelRuns, [this] { click_target_ = "runs:sel:1"; }, [this] {
+         return runs_sel_.size() == 2 && runs_series_.size() >= 2 && runs_pending_ == 0 && ui::TargetShown("runs:kpi");
+       }, "12d_runs_kpi"},
+      {kPanelRuns, [this] { click_target_ = "runs:open"; }, [this] {
+         return compare_open_ && ui::TargetShown("compare:plots") && compare_dbg_ == "cost";
+       }, "12e_runs_compare"},
+      {kPanelRuns, [this] { compare_open_ = false; runs_sel_.clear(); }, [this] { return !ui::TargetShown("compare:plots"); }, ""},
       {kPanelActors, [this] { ClearTraffic(); RefreshActors(); }, idle, "13_actors"},
       {kPanelRecorder, [] {}, idle, "14_recorder"},
       {kPanelTestScene, [this] { tour_kept_["spawn"] = cfg_["carla"]["spawn_index"]; click_target_ = "scn:town04"; },

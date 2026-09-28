@@ -37,6 +37,7 @@ import traceback
 import carla
 
 import carsim_remote
+import runs as runsmod
 import chrono_local
 import collector as coll
 import dataset as dsmod
@@ -62,11 +63,12 @@ PROBE_ROLE = "cosim_probe"  # cars vehicle_specs spawns to measure a vehicle mod
 # space, estimates): served by their own thread, so a dataset playback or
 # deleting a large dataset never holds up a run's frames on the worker.
 IO_CMDS = {"dataset_list", "dataset_info", "dataset_frame", "dataset_export", "dataset_delete",
-           "disk_info", "rig_estimate", "path_status", "carsim_service", "controller_browse"}
+           "disk_info", "rig_estimate", "path_status", "carsim_service", "controller_browse",
+           "runs_list", "run_series"}
 # What "hello" reports; the GUI (kBackendProtocol in cosim_gui/src/app.cpp) warns
 # when it was built for another one. Raise both together whenever a command,
 # event or config field the GUI relies on changes.
-PROTOCOL = 3
+PROTOCOL = 4
 
 
 class Backend:
@@ -1382,6 +1384,14 @@ class Backend:
             r = os.path.abspath(p) if p else ""
             out[p] = {"resolved": r, "exists": os.path.exists(r), "is_file": os.path.isfile(r)}
         return out
+
+    def cmd_runs_list(self, path=""):
+        """The run records in a record dir (relative: the bridge dir), newest first (runs.list_runs)."""
+        return runsmod.list_runs(path or "runs")
+
+    def cmd_run_series(self, folder, max_points=2000):
+        """One run's time series for the GUI's comparison (runs.run_series)."""
+        return runsmod.run_series(folder, int(max_points))
 
     def cmd_controller_browse(self, path=""):
         """The GUI's “浏览…” for the control algorithm when it runs on another

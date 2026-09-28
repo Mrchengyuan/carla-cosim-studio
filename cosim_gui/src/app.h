@@ -3,6 +3,7 @@
 #pragma once
 
 #include <deque>
+#include <map>
 #include <functional>
 #include <string>
 #include <vector>
@@ -28,6 +29,7 @@ enum Panel {
   kPanelDataset,
   kPanelScene,
   kPanelTestScene,
+  kPanelRuns,
   kPanelCount
 };
 
@@ -84,6 +86,10 @@ class App {
   void DrawPanelVehicle();
   void DrawPanelDrive();
   void DrawPanelTestScene();
+  void DrawPanelRuns();
+  void DrawCompare();
+  void RunsRefresh();
+  void RunsToggle(const std::string& folder);
   void DrawPanelScene();
   void DrawPanelCoSim();
   void DrawPanelCollect();
@@ -258,6 +264,14 @@ class App {
   std::string scene_hover_;          // object id under the mouse in the scene table
   bool scene_moving_only_ = false;   // scene tab: hide the parked cars of the map
   json draw_ = json::array();        // the algorithm's lines (self.draw), ego frame: the 轨迹 tab
+  // 运行对比: the run records of a record dir, up to 4 picked, their time series; the 对比 panel.
+  std::string runs_path_;
+  json runs_list_ = json::object();
+  std::vector<std::string> runs_sel_;
+  std::map<std::string, json> runs_series_;
+  int runs_pending_ = 0;
+  bool compare_open_ = false, compare_focus_ = false;
+  std::string compare_dbg_;          // the self.debug value shown in the 对比 panel
   int draw_mag_ = 0;                 // 轨迹 tab's lateral magnification: 0 = fit the lane
   json collect_stats_ = json::object();
   static constexpr int kHist = 900;

@@ -49,6 +49,7 @@ add_executable(carla_cosim_studio
   src/panels.cpp
   src/rig_editor.cpp
   src/dataset_browser.cpp
+  src/runs_compare.cpp
   src/backend_client.cpp
   src/platform.cpp
   src/jpeg_decode.cpp)

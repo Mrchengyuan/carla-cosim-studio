@@ -1383,6 +1383,11 @@ void App::DrawPanelCoSim() {
     if (mock) cs["chrono"] = false;
   }
   ui::RecordTarget("cosim:mock");
+  if (mock) {
+    ui::Row("初始车速 m/s", "模拟 CarSim 在 t = 0 时的车速（像 .sim 里的初始车速）；0 = 从静止起步");
+    EditDouble(cs, "mock_init_speed", 1.0, "%.1f", 0.0, 60.0);
+    ui::RecordTarget("cosim:mock_speed");
+  }
   // The PyChrono BMW E90 on the backend's machine (chrono_local.py): the backend starts it.
   bool chrono = !mock && cs.value("chrono", false);
   ui::Row("Chrono 宝马（服务器）", "没有 CarSim 时，用后端所在电脑上的 PyChrono 宝马 E90 多体整车模型代替："

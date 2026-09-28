@@ -13,8 +13,16 @@
            （前轴中心）的量：在自车坐标里质心在 (-a, 0)，vy_质心 = Vy - a·r（a 为质心到前轴距离）。
            状态和参考都在当前的自车坐标里（每个周期重新取），yaw = 0。
     参考   scene["lane"]["center_rel"]（“场景信息”页默认就勾选了给算法）。
-    输出   [纵向加速度 ax (m/s²), 前轮转角 delta (rad，左为正)] —— 原工程被控对象的输入，
+    输出   OUTPUT = "ax_delta"：[纵向加速度 ax (m/s²), 前轮转角 delta (rad，左为正)] —— 原工程被控对象的输入，
            由 Chrono 宝马替身里原样的命令适配层变成四轮扭矩和转向输入（chrono_bmw/chrono_plant.py）。
+           OUTPUT = "carsim"：真实 CarSim 的导入 [油门 0~1, 制动（主缸压力 MPa）, 方向盘转角 deg]，
+           换算层和原工程 14DOF 的适配层同一思路（加速度 → 驱动 / 制动，前轮转角 → 方向盘角）：
+             转向  方向盘转角 = 前轮转角 × 传动比；传动比从 STEER_RATIO_INIT 起，运行中用 CarSim 导出的
+                   Steer_SW ÷ 前轮平均转角（Steer_L1、Steer_R1）自动修正（和 path_follower.py 一样）。
+             纵向  KMPPI 的 ax 积分成目标车速，PI（按 km/h 调）加 ax 前馈 → 油门或制动；制动满量程 BRAKE_MAX。
+           每帧都换算（KMPPI 两次计算之间 ax、delta 保持，油门、制动随实际车速更新）。
+           注意预测模型的车辆参数还是 Chrono 宝马 E90 的（kmppi_config.py / bmw_e90_identified.json），
+           换成你的 CarSim 车时要按那台车重新标定（质量、惯量、前后轴距、轮胎比例因子）。
     周期   KMPPI 每 0.05 s 算一次（原工程的控制周期），中间各帧保持上一次的输出（零阶保持）。
            下面的 FRAME_DT 让平台自动把仿真步长设为 0.05 s（每帧算一次），不用在界面上改；
            去掉它时，仿真步长要能整除 0.05 s（0.05、0.025、0.01 s ...）。
@@ -38,6 +46,13 @@ from lane_reference import LaneReference
 from prediction_model import BicycleModel
 
 FRAME_DT = 0.05      # s，这个算法要的仿真步长：平台运行时自动使用（界面上的设置不用改）
+OUTPUT = "ax_delta"  # "ax_delta"：Chrono 宝马（[ax, 前轮转角]）；"carsim"：真实 CarSim（[油门, 制动, 方向盘转角]）
+# OUTPUT = "carsim" 时的换算（已按当前的 CarSim 车辆设好，换车时改）：
+STEER_RATIO_INIT = 19.0   # 方向盘 / 前轮 传动比初值（运行中用导出变量自动修正）
+BRAKE_MAX = 8.0           # 导入变量 2 满量程：主缸压力 MPa（制动踏板 0~1 时改成 1）
+ACCEL_FF = 0.1            # 每 m/s² 的加速度前馈（油门为正，制动为负，按车调）
+KP, KI = 0.08, 0.02       # 车速 PI（按 km/h 调的，和 path_follower.py 一样）
+V_TARGET_SLACK = 2.0      # m/s，目标车速最多比实际车速快 / 慢这么多（执行器饱和时不越积越多）
 REF_SPEED = 20.0     # m/s，参考车速（原工程 20 m/s）
 PRINT_EVERY = 5.0    # s，每隔多久在“输出”页打印一行状态
 DRAW_CANDIDATES = 64  # 每次画多少条候选轨迹（0 = 不画）
@@ -81,6 +96,7 @@ class Controller:
         self.frame = 0
         self.action = [0.0, 0.0]
         self.told_no_lane = False
+        self.told_slow = False
         self.next_print = 0.0
         self.n_calls = 0
         self.compute_s = 0.0
@@ -88,6 +104,9 @@ class Controller:
         self.offsets = []
         self.speeds = []
         self.ess = []
+        self.ratio = STEER_RATIO_INIT   # OUTPUT = "carsim"
+        self.v_target = None
+        self.integral = 0.0
 
     def _units(self, scene):
         u = scene.get("units") or {}
@@ -105,10 +124,10 @@ class Controller:
             self.every = n
         k = self.frame
         self.frame += 1
+        deg, kmh, dps = self._units(scene)
         if k % self.every:
-            return list(self.action)            # 两次计算之间保持（零阶保持）
+            return self._output(exports, dt, deg, kmh)   # 两次计算之间 ax、delta 保持（零阶保持）
 
-        _, kmh, dps = self._units(scene)
         a = self.vehicle.a
         vx = exports["Vx"] * kmh / 3.6
         r = math.radians(exports["AVz"] * dps)
@@ -117,11 +136,19 @@ class Controller:
         pts = (lane or {}).get("center_rel") or []
         if len(pts) < 2:
             if not self.told_no_lane:
-                print("t = %.1f s：没有车道信息（不在行车道上），保持上一次的输出" % t)
+                print("t = %.1f s：没有车道信息（不在行车道上）：前轮转角保持、ax 归零（保持车速，不再加速）" % t)
                 self.told_no_lane = True
-            return list(self.action)
+            self.action = [0.0, self.action[1]]
+            return self._output(exports, dt, deg, kmh)
         self.told_no_lane = False
 
+        if not self.told_slow and vx < 0.5 * REF_SPEED:
+            # Like the original project (it starts at the reference speed): the prediction model's slip
+            # angles are meaningless near standstill.
+            print("t = %.1f s：车速 %.1f m/s 离参考车速 %.0f m/s 太远。KMPPI（和原工程一样）要从接近参考车速起步，"
+                  "低速时预测模型的侧偏角不可信、会乱打方向：CarSim 的 .sim 里把初始车速设为 %.0f km/h"
+                  "（模拟 CarSim / Chrono 宝马：“CarSim 动力学”页的初始车速）" % (t, vx, REF_SPEED, REF_SPEED * 3.6))
+            self.told_slow = True
         state = np.array([-a, 0.0, 0.0, vx, vy, r])
         t0 = time.perf_counter()
         self.ref_box.t_now = t
@@ -153,7 +180,33 @@ class Controller:
             print("t = %.1f s  车速 %.2f m/s（参考 %.1f）  横向偏差 %s  ax %+.2f m/s²  前轮转角 %+.4f rad  ESS %.1f  计算 %.0f ms" % (
                 t, vx, REF_SPEED, "%.3f m" % off if off is not None else "—", self.action[0], self.action[1],
                 self.ctrl.last_effective_sample_size, spent * 1000))
-        return list(self.action)
+        return self._output(exports, dt, deg, kmh)
+
+    def _output(self, exports, dt, deg, kmh):
+        """这一帧的输出：OUTPUT = "ax_delta" 时就是 [ax, delta]；"carsim" 时换算成 [油门, 制动, 方向盘转角 deg]。"""
+        if OUTPUT != "carsim":
+            return list(self.action)
+        ax, delta = self.action
+        # 传动比：方向盘转角 ÷ 前轮平均转角，只在前轮转角够大、同号时更新（一阶滤波）
+        try:
+            sw = exports["Steer_SW"] * deg
+            wheel = 0.5 * (exports["Steer_L1"] + exports["Steer_R1"]) * deg
+            if abs(wheel) > 0.5 and sw * wheel > 0 and 5.0 < sw / wheel < 40.0:
+                self.ratio += 0.02 * (sw / wheel - self.ratio)
+        except KeyError:
+            pass
+        # 纵向：ax 积分成目标车速，PI + 前馈；执行器饱和时不再累积积分
+        v = exports["Vx"] * kmh / 3.6
+        if self.v_target is None:
+            self.v_target = v
+        self.v_target = min(v + V_TARGET_SLACK, max(v - V_TARGET_SLACK, self.v_target + ax * dt))
+        err = (self.v_target - v) * 3.6
+        u = ACCEL_FF * ax + KP * err + KI * self.integral
+        if 0.0 < u < 1.0 or (u >= 1.0 and err < 0) or (u <= 0.0 and err > 0):
+            self.integral = max(-100.0, min(100.0, self.integral + err * dt))
+        throttle = max(0.0, min(1.0, u))
+        brake = max(0.0, min(1.0, -u)) * BRAKE_MAX
+        return [throttle, brake, math.degrees(delta) * self.ratio]
 
     def _lines(self, state):
         """这一次的候选轨迹、加权平均轨迹和参考轨迹，画线格式（自车坐标，m）。"""

@@ -19,8 +19,9 @@ class MockCarSimEnv:
     WHEEL_RADIUS = 0.35  # m
     STEER_RATIO = 16.0   # steering wheel deg / road wheel deg
 
-    def __init__(self, export_names, t_step=0.001, t_stop=60.0, units=None):
+    def __init__(self, export_names, t_step=0.001, t_stop=60.0, units=None, init_speed=0.0):
         self.export_names = list(export_names)
+        self.init_speed = float(init_speed)  # m/s at t = 0 (like a .sim's initial speed)
         self.config = {"t_start": 0.0, "t_stop": t_stop, "t_step": t_step,
                        "n_import": 3, "n_export": len(self.export_names)}
         self.t_step = t_step
@@ -41,7 +42,7 @@ class MockCarSimEnv:
     def reset(self):
         self.t_current = 0.0
         self.x = self.y = self.psi = 0.0
-        self.v = 0.0
+        self.v = self.init_speed
         self.ax = self.ay = 0.0
         self.roll = self.pitch = 0.0
         self.prev_roll = self.prev_pitch = 0.0

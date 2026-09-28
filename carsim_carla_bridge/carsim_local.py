@@ -118,7 +118,8 @@ def mock_env(d):
     """The stand-in for CarSim (carsim.mock), in the units of the CarSim page."""
     from mock_carsim import MockCarSimEnv
     c, dur = d["carsim"], d["sync"]["duration"]
-    return MockCarSimEnv(c["export_names"], t_stop=dur + 1.0 if dur > 0 else 1e9, units=c["units"])
+    return MockCarSimEnv(c["export_names"], t_stop=dur + 1.0 if dur > 0 else 1e9, units=c["units"],
+                         init_speed=float(c.get("mock_init_speed") or 0.0))
 
 
 def open_carsim(sim, carsim_env):

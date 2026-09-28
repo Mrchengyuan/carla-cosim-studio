@@ -134,11 +134,13 @@ class TimingTests(unittest.TestCase):
             c.control({"Vx": 72.0, "Vy": 0.0, "AVz": 0.0}, 0.0, 0.02, self.scene())
         self.assertIn("仿真步长 0.020 s 不能整除", str(cm.exception))
 
-    def test_no_lane_keeps_the_last_output(self):
+    def test_no_lane_keeps_the_steering_and_the_speed(self):
+        """No lane: the front wheel angle held, ax 0 (not speeding up off the road)."""
         c = load_controller()
         e = {"Vx": 60.0, "Vy": 0.0, "AVz": 0.0}
         first = c.control(e, 0.0, 0.05, self.scene())
-        self.assertEqual(c.control(e, 0.05, 0.05, {"units": UNITS, "lane": None}), first)
+        self.assertGreater(first[0], 0.0)  # 16.7 m/s: speeding up towards 20
+        self.assertEqual(c.control(e, 0.05, 0.05, {"units": UNITS, "lane": None}), [0.0, first[1]])
 
 
 class DrawTests(unittest.TestCase):
@@ -279,6 +281,51 @@ class FrameDtTests(unittest.TestCase):
     def test_kmppi_asks_for_its_period(self):
         import session
         self.assertEqual(session.algorithm_frame_dt(os.path.join(KDIR, "controller.py")), 0.05)
+
+
+class CarSimOutputTests(unittest.TestCase):
+    """OUTPUT = "carsim": [油门, 制动 MPa, 方向盘转角 deg] from KMPPI's [ax, delta] (the adapter, not the algorithm)."""
+
+    def ctrl(self):
+        spec = importlib.util.spec_from_file_location("kmppi_carsim_out", os.path.join(KDIR, "controller.py"))
+        m = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(m)
+        m.OUTPUT = "carsim"
+        c = m.Controller()
+        c.reset()
+        return m, c
+
+    def test_steering_wheel_and_the_learned_ratio(self):
+        m, c = self.ctrl()
+        c.action = [0.0, math.radians(1.0)]
+        e = {"Vx": 72.0, "Steer_SW": 0.0, "Steer_L1": 0.0, "Steer_R1": 0.0}
+        self.assertAlmostEqual(c._output(e, 0.05, 1.0, 1.0)[2], m.STEER_RATIO_INIT)   # 1 deg x 19
+        e = {"Vx": 72.0, "Steer_SW": 32.0, "Steer_L1": 2.1, "Steer_R1": 1.9}         # the car's ratio is 16
+        for _ in range(400):
+            out = c._output(e, 0.05, 1.0, 1.0)
+        self.assertAlmostEqual(c.ratio, 16.0, delta=0.05)
+        self.assertAlmostEqual(out[2], 16.0, delta=0.05)
+
+    def test_throttle_and_brake_from_ax(self):
+        m, c = self.ctrl()
+        e = {"Vx": 72.0}
+        c.action = [2.0, 0.0]
+        thr, brk, _ = c._output(e, 0.05, 1.0, 1.0)
+        self.assertTrue(thr > 0 and brk == 0, (thr, brk))
+        c.reset()
+        c.action = [-4.0, 0.0]
+        for _ in range(20):  # a second of hard braking at a constant speed: the target drops away
+            thr, brk, _ = c._output(e, 0.05, 1.0, 1.0)
+        self.assertEqual(thr, 0.0)
+        self.assertGreater(brk, 0.3 * m.BRAKE_MAX)
+        self.assertLessEqual(brk, m.BRAKE_MAX)
+        self.assertLessEqual(72.0 / 3.6 - c.v_target, m.V_TARGET_SLACK + 1e-9)  # never far below the car
+
+    def test_ax_delta_is_passed_on_untouched(self):
+        m, c = self.ctrl()
+        m.OUTPUT = "ax_delta"
+        c.action = [1.5, -0.02]
+        self.assertEqual(c._output({"Vx": 72.0}, 0.05, 1.0, 1.0), [1.5, -0.02])
 
 
 class ServiceTests(unittest.TestCase):

@@ -40,6 +40,7 @@ def default_dict():
         # angle rad], starting at chrono_init_speed m/s; chrono_python "" = found).
         "carsim": {"sim_path": "", "repo_path": "../python_carsim_env", "mock": False, "remote": False,
                    "chrono": False, "chrono_init_speed": 20.0, "chrono_python": "",
+                   "mock_init_speed": 0.0,  # m/s: the mock's speed at t = 0 (a .sim's initial speed)
                    "export_names": list(_defaults.EXPORT_NAMES),
                    "units": dict(_defaults.UNITS)},
         # duration 0 = run until stopped (or until CarSim reaches t_stop).

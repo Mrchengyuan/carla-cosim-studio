@@ -16,7 +16,9 @@ candidates with end dots, the reference, the weighted mean, the best one)
 and reach the GUI's 轨迹 tab with the telemetry; its diagnostics
 (self.debug) reach the GUI and log_debug.csv; a
 the page's 0.02 s frame step: the run goes at the algorithm's FRAME_DT
-(0.05 s) and says so. Starts its own backend (port 57145); deletes its temp files.
+(0.05 s) and says so; KMPPI with OUTPUT = "carsim" through the mock
+CarSim (throttle / brake / steering wheel), from 20 m/s: speed held, on its
+lane, three imports. Starts its own backend (port 57145); deletes its temp files.
 
     python tests/test_kmppi_chrono_carla.py [--port 2000] [--chrono-python PATH] [--shot DIR]
 
@@ -39,6 +41,17 @@ sys.path.insert(0, os.path.join(HERE, ".."))
 from test_backend import Conn  # noqa: E402
 
 PORT = 57145
+# KMPPI with OUTPUT = "carsim" ([油门, 制动, 方向盘]) on the mock CarSim: its steering ratio 16, brake 0~1.
+CARSIM_WRAPPER = '''import importlib.util, os, sys
+D = %r
+sys.path.insert(0, D)
+spec = importlib.util.spec_from_file_location("kmppi_controller_file", os.path.join(D, "controller.py"))
+K = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(K)
+K.OUTPUT, K.STEER_RATIO_INIT, K.BRAKE_MAX = "carsim", 16.0, 1.0
+FRAME_DT = 0.05
+Controller = K.Controller
+''' % os.path.dirname(os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "controllers", "kmppi", "controller.py")))
 DURATION = 40.0
 CONTROLLER = os.path.abspath(os.path.join(HERE, "..", "controllers", "kmppi", "controller.py"))
 FAILS = []
@@ -187,6 +200,41 @@ def main():
               st["state"] == "finished" and abs(info.get("frame_dt", 0) - 0.05) < 1e-9 and
               "仿真步长按控制算法 controller.py 里的 FRAME_DT 用 0.05 s（界面上设的是 0.02 s）" in logs,
               (st, info.get("frame_dt"), [m for m in logs if "FRAME_DT" in m or "步长" in m][:3]))
+        # OUTPUT = "carsim" through the mock CarSim (throttle / brake / steering wheel, like the real one),
+        # starting at 20 m/s (a .sim's initial speed: KMPPI, like the original, starts near its reference speed).
+        wrap = os.path.join(tmp, "kmppi_carsim_mock.py")
+        with open(wrap, "w", encoding="utf-8") as f:
+            f.write(CARSIM_WRAPPER)
+        cfg["carsim"].update(mock=True, chrono=False, mock_init_speed=20.0)
+        cfg["run"]["controller"] = {"path": wrap, "entry": "Controller"}
+        cfg["sync"].update(frame_dt=0.05, duration=40.0)
+        c.events.clear()
+        info = c.call("cosim_start", config=cfg, timeout=300)
+        st = c.wait_event(lambda e: e.get("event") == "cosim_state" and e["state"] in ("finished", "error", "stopped"), 1800)
+        folder = info.get("record_dir") or ""
+        k = json.load(open(os.path.join(folder, "run.json"), encoding="utf-8"))["kpi"] or {}
+        rows = read_csv(os.path.join(folder, "log.csv"))
+        lane = {r["t"]: r for r in read_csv(os.path.join(folder, "log_lane.csv"))}
+        late = [r for r in rows if float(r["t"]) > 5.0]
+        offs = [abs(float(lane[r["t"]]["offset"])) for r in late if r["t"] in lane and lane[r["t"]]["offset"]]
+        rms = math.sqrt(sum(o * o for o in offs) / len(offs)) if offs else float("nan")
+        v_late = [float(r["Vx"]) / 3.6 for r in late]
+        algo = [e["msg"] for e in c.events if e.get("event") == "log" and e.get("level") == "algo"]
+        u = [(float(r["u1"]), float(r["u2"]), float(r["u3"])) for r in rows if r["u1"] not in ("", None)]
+        print("INFO carsim output on the mock: %.0f m, after 5 s lane offset rms %.3f max %.3f m, speed %.2f ~ %.2f m/s, "
+              "max throttle %.2f, max brake %.2f, steering wheel %.1f ~ %.1f deg, collisions %s" % (
+                  k.get("distance") or 0, rms, max(offs) if offs else float("nan"), min(v_late), max(v_late),
+                  max(x[0] for x in u), max(x[1] for x in u), min(x[2] for x in u), max(x[2] for x in u), k.get("collisions")))
+        check("OUTPUT carsim on the mock CarSim: the run ends by its duration, no algorithm error",
+              st["state"] == "finished" and not any("Traceback" in m or "Error" in m for m in algo), (st, algo[-3:]))
+        check("... 20 m/s held (19 ~ 21 m/s after 5 s)", 19.0 < min(v_late) and max(v_late) < 21.0,
+              (round(min(v_late), 2), round(max(v_late), 2)))
+        check("... on its lane (rms < 0.4 m after 5 s), no collision, never off the lanes",
+              rms < 0.4 and k.get("collisions") == 0 and (k.get("time_off_lane") or 0.0) == 0.0,
+              (round(rms, 3), k.get("collisions"), k.get("time_off_lane")))
+        check("... three imports: throttle 0~1, brake 0~1 (the mock's), steering wheel in deg (turning through the curve)",
+              len(u) > 350 and all(0 <= x[0] <= 1 and 0 <= x[1] <= 1 for x in u) and max(abs(x[2]) for x in u) > 5.0,
+              (len(u), max(abs(x[2]) for x in u) if u else None))
         c.call("destroy_ego")
     finally:
         if cam is not None:

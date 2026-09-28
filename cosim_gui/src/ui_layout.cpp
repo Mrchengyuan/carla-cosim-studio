@@ -47,7 +47,7 @@ const std::vector<NavGroup>& Nav() {
         {kPanelCoSim, ICON_FA_GEARS, "CarSim 动力学", "CarSim 模型、导出变量、单位和坐标对齐。"},
         {kPanelScene, ICON_FA_CUBES, "场景信息", "每帧交给控制算法的周围目标（车、行人、障碍物）、前方车道和传感器数据；碰撞时怎么处理。"},
         {kPanelTestScene, ICON_FA_ROAD_BARRIER, "测试场景",
-         "高速施工封道：在出生点前方指定的车道摆放锥桶或护栏，每次运行都摆在同样的位置，用来测试避障算法。"},
+         "高速施工封道和动态目标（前车慢行 / 急刹、旁车切入、行人横穿）：相对出生点摆放，每次运行都一样，用来测试避障算法。"},
         {kPanelBatch, ICON_FA_LIST_CHECK, "批量测试",
          "一次选好几个场景、出生点和参数值，自动一个接一个运行，最后给出每一项的指标、是否通过和一份报告。"}}},
       {"数据", ICON_FA_DATABASE,
@@ -824,8 +824,8 @@ void App::DrawNav() {
       case kPanelCollect: return cfg_.contains("collect") && cfg_["collect"].value("enabled", false) ? "开" : "关";
       case kPanelTestScene: {
         const json sc = cfg_.value("scenario", json::object());
-        const size_t n = sc.value("closures", json::array()).size();
-        return sc.value("enabled", false) && n ? Fmt("%d 处", static_cast<int>(n)) : "关";
+        const size_t n = sc.value("closures", json::array()).size() + sc.value("actors", json::array()).size();
+        return sc.value("enabled", false) && n ? Fmt("%d 个", static_cast<int>(n)) : "关";
       }
       case kPanelRecorder: return recording_ ? "REC" : "";
       case kPanelRuns: return runs_sel_.empty() ? "" : Fmt("%d 次", static_cast<int>(runs_sel_.size()));

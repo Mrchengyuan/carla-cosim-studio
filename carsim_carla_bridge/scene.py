@@ -138,6 +138,7 @@ class SceneProvider:
         self._kinds = {}                    # actor id -> (type, model, bbox) or None
         self._parked = []                   # map parked cars: (id, model, centre world, yaw, extent)
         self._touching = set()
+        self.velocity_overrides = {}        # actor id -> (vx, vy, vz) world m/s: the 测试场景's moving actors
         self._yaw = None                    # ego yaw, continuous like CarSim's (not wrapped)
 
     # --------------------------------------------------------------- lifecycle
@@ -271,7 +272,8 @@ class SceneProvider:
                 cw = tf.transform(carla.Location(bb.location.x, bb.location.y, bb.location.z))
                 if cw.distance(rw) > RANGE_M + 10.0:
                     continue
-                v = a.get_velocity()
+                v = self.velocity_overrides.get(a.id) if self.velocity_overrides else None
+                v = carla.Vector3D(*v) if v is not None else a.get_velocity()
                 add(a.id, kind, False, model, (bb.extent.x, bb.extent.y, bb.extent.z),
                     self._global(cw.x, cw.y, cw.z), self._global_yaw(tf.rotation.yaw + bb.rotation.yaw),
                     self._global_vec(v.x, v.y, v.z))

@@ -42,6 +42,8 @@ struct TestScenePreset {
   json closures;
 };
 const std::vector<TestScenePreset>& TestScenePresets();
+// The 动态目标 presets (one moving actor each: its settings in "closures"), also for 批量测试.
+const std::vector<TestScenePreset>& TestActorPresets();
 
 class App {
  public:
@@ -286,7 +288,7 @@ class App {
   bool algo_params_pending_ = false;
   // 批量测试: what to run (scenario presets x spawn points x values of one algorithm constant),
   // the runs one after the other, their results and the report.
-  bool batch_scn_[5] = {true, false, false, false, false};  // 不开封道, then the 测试场景 presets
+  bool batch_scn_[9] = {true, false, false, false, false, false, false, false, false};  // 不开封道, closures, moving actors
   std::string batch_spawns_, batch_param_, batch_values_;
   double batch_duration_ = 40.0;
   std::vector<json> batch_items_, batch_results_;

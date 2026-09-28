@@ -207,6 +207,7 @@ def check_scenario(d):
     sc = d.get("scenario") or {}
     if sc.get("enabled"):
         sc["closures"] = scenariomod.check_closures(sc.get("closures"))
+        sc["actors"] = scenariomod.check_actors(sc.get("actors") or [])
 
 
 MAX_DEBUG = 32  # values of self.debug shown and recorded
@@ -1034,7 +1035,15 @@ def start_scene(ses, anchor, ref_local=None, t=0.0, ego_velocity=None):
             ses.record_dir = None
             raise
     # Sensors spawned before a tick deliver that frame: the first scene has their data.
-    return scene_step(ses, ses.world.tick(), t, ego_velocity)
+    return scene_step(ses, world_tick(ses), t, ego_velocity)
+
+
+def world_tick(ses):
+    """world.tick(), the 测试场景's moving actors placed for that frame first (ses.pre_tick)."""
+    hook = getattr(ses, "pre_tick", None)
+    if hook is not None:
+        hook()
+    return ses.world.tick()
 
 
 def scene_step(ses, world_frame, t, ego_velocity=None):
@@ -1042,6 +1051,8 @@ def scene_step(ses, world_frame, t, ego_velocity=None):
     Samples are every N run steps from step 0 (t0, t0 + N dt, ...), like
     CarSim's output interval; world_frame is CARLA's own counter (not tied to
     the run) and only names them. Returns telemetry fields."""
+    # The moving actors' real velocities (placed each frame: stock CARLA reads 0 for them).
+    ses.scene.velocity_overrides = getattr(ses, "velocity_overrides", None) or {}
     scene = ses.scene.update(world_frame, t, ego_velocity)
     every = st.sample_every(ses.d)
     warning = ""
@@ -1290,7 +1301,7 @@ class CoSimSession:
             warnings = self.export_check(self.obs, prev, env.t_current - t_prev)
         state = self.state = self.sync.sync(self.obs, env.t_current, frame_dt)
         draw_n = self._paint(frame_dt)
-        world_frame = self.world.tick()
+        world_frame = world_tick(self)
         self.frame += 1
         # CarSim's velocity: the original CARLA reports 0 for the teleported car.
         scene_tel = scene_step(self, world_frame, env.t_current, state.velocity)
@@ -1497,7 +1508,7 @@ class CarlaDriveSession:
         speed = math.sqrt(v.x ** 2 + v.y ** 2 + v.z ** 2)
         if self.command_driver is not None:
             self.vehicle.apply_control(self.command_driver.step(self.vehicle, speed, dt).to_carla())
-        world_frame = self.world.tick()
+        world_frame = world_tick(self)
         self.frame += 1
         t = self.frame * dt
         scene_tel = scene_step(self, world_frame, t)

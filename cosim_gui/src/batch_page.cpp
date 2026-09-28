@@ -32,10 +32,15 @@ std::vector<std::string> SplitList(const std::string& s) {
 
 std::vector<json> App::BatchPlan() {
   std::vector<std::pair<std::string, json>> scenes;
-  if (batch_scn_[0]) scenes.push_back({"不开封道", {{"enabled", false}, {"closures", json::array()}}});
+  if (batch_scn_[0]) scenes.push_back({"不开封道", {{"enabled", false}, {"closures", json::array()}, {"actors", json::array()}}});
   const auto& presets = TestScenePresets();
   for (size_t i = 0; i < presets.size() && i < 4; ++i)
-    if (batch_scn_[i + 1]) scenes.push_back({presets[i].name, {{"enabled", true}, {"closures", presets[i].closures}}});
+    if (batch_scn_[i + 1])
+      scenes.push_back({presets[i].name, {{"enabled", true}, {"closures", presets[i].closures}, {"actors", json::array()}}});
+  const auto& actor_presets = TestActorPresets();
+  for (size_t i = 0; i < actor_presets.size() && i < 4; ++i)
+    if (batch_scn_[i + 5])
+      scenes.push_back({actor_presets[i].name, {{"enabled", true}, {"closures", json::array()}, {"actors", actor_presets[i].closures}}});
   std::vector<int> spawns;
   for (const auto& t : SplitList(batch_spawns_)) {
     char* end = nullptr;
@@ -122,17 +127,19 @@ void App::DrawPanelBatch() {
   const std::vector<json> plan = BatchPlan();
   ui::BeginCard(ICON_FA_LIST_CHECK, "测试项");
   ImGui::BeginDisabled(batch_running_);
-  ui::SectionCaption("场景（“测试场景”页的预设）");
+  ui::SectionCaption("场景（“测试场景”页的预设：施工封道、动态目标）");
   const auto& presets = TestScenePresets();
-  for (int i = 0; i < 5; ++i) {
-    const char* name = i ? presets[static_cast<size_t>(i - 1)].name : "不开封道";
+  const auto& actor_presets = TestActorPresets();
+  for (int i = 0; i < 9; ++i) {
+    const char* name = i == 0 ? "不开封道" : i < 5 ? presets[static_cast<size_t>(i - 1)].name : actor_presets[static_cast<size_t>(i - 5)].name;
     // Side by side while they fit, else on the next line.
     const float w = ImGui::GetFrameHeight() + ImGui::GetStyle().ItemInnerSpacing.x + ImGui::CalcTextSize(name).x;
     if (i && ImGui::GetItemRectMax().x + ImGui::GetStyle().ItemSpacing.x + w < ImGui::GetWindowPos().x + ImGui::GetWindowContentRegionMax().x)
       ImGui::SameLine();
     ImGui::Checkbox(name, &batch_scn_[i]);
     ui::RecordTarget(Fmt("batch:scn:%d", i));
-    if (i && ImGui::IsItemHovered()) ImGui::SetTooltip("%s", presets[static_cast<size_t>(i - 1)].tip);
+    if (i && ImGui::IsItemHovered())
+      ImGui::SetTooltip("%s", i < 5 ? presets[static_cast<size_t>(i - 1)].tip : actor_presets[static_cast<size_t>(i - 5)].tip);
   }
   ui::Row("出生点", "留空 = 当前的出生点；几个出生点用逗号分开，例如 41, 3, 10", fs * 8);
   char buf[256];

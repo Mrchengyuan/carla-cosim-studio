@@ -1526,6 +1526,10 @@ void App::BuildTour() {
                          cfg_["scenario"]["closures"][3].value("distance_m", 0.0) == 540.0; }, "07d_test_scene"},
         {kPanelTestScene, [this] { click_target_ = "scn:del:3"; },
          [this] { return cfg_["scenario"]["closures"].size() == 3; }, ""},
+        {kPanelTestScene, [this] { click_target_ = "scn:actor:2"; }, [this] {
+           const json a = cfg_["scenario"].value("actors", json::array());
+           return a.size() == 1 && a[0].value("type", std::string()) == "cut_in" && ui::TargetShown("scn:adel:0");
+         }, "07e_test_scene_actors"},
         {kPanelTestScene, [this] { cfg_["scenario"] = tour_kept_["scenario"]; },
          [this] { return cfg_["scenario"] == tour_kept_["scenario"]; }, ""},
     };

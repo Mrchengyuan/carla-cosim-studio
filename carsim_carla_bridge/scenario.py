@@ -10,7 +10,8 @@ taper_m of cones / barriers crossing the lane diagonally (the lane narrows
 from its outer side: from the right for the start lane and the lanes to the
 right, from the left for the lanes to the left), then length_m closed, with
 a line along each boundary that has a drivable lane beside it, and an arrow
-board behind the taper. kind "cones" (static.prop.constructioncone) or
+board behind the taper. Moving actors (动态目标: a slow car, a car that
+brakes, one that cuts in, a pedestrian crossing) are further down. kind "cones" (static.prop.constructioncone) or
 "barrier" (static.prop.streetbarrier).
 
 The GUI's presets are made for a start like the Town04 highway's: four lanes
@@ -247,5 +248,219 @@ def remove(client, ids):
 
 
 def leftovers(world):
-    """Scenario props in the world (e.g. left by a backend that crashed)."""
-    return [a for a in world.get_actors().filter("static.prop.*") if a.attributes.get("role_name") == ROLE]
+    """Scenario props and moving actors in the world (e.g. left by a backend that crashed)."""
+    return [a for a in world.get_actors() if a.type_id.startswith(("static.prop.", "vehicle.", "walker.pedestrian."))
+            and a.attributes.get("role_name") == ROLE]
+
+
+# ---------------------------------------------------------------------------
+# Moving actors (the 测试场景 page's 动态目标): vehicles and pedestrians the
+# backend places kinematically every frame along the lanes from the spawn
+# point, so each run is the same (no CARLA physics, no traffic manager).
+#   slow_car    a car ahead in lane `lane` at speed_kmh, the whole run
+#   lead_brake  a car ahead at speed_kmh; once the ego is within trigger_m of
+#               it, it brakes at param m/s^2 to a stop
+#   cut_in      a car in lane `lane` (next to the ego's: -1 / 1) at speed_kmh;
+#               once the ego is within trigger_m, it moves into the ego's
+#               starting lane over param s
+#   pedestrian  someone at the side of the ego's lane distance_m ahead (the
+#               right for lane >= 0, the left otherwise); once the ego is
+#               within trigger_m, crosses the lane at speed_kmh
+# distance_m along the road from the spawn point like a closure's. Their
+# velocity is given to the scene (stock CARLA reads 0 for actors placed like
+# this), so the algorithm sees their real speed.
+ACTOR_TYPES = ("slow_car", "lead_brake", "cut_in", "pedestrian")
+ACTOR_NAMES = {"slow_car": "前车慢行", "lead_brake": "前车急刹", "cut_in": "旁车切入", "pedestrian": "行人横穿"}
+ACTOR_LIMITS = {"distance_m": (1.0, 5000.0), "speed_kmh": (0.0, 200.0), "trigger_m": (0.0, 500.0), "param": (0.0, 20.0)}
+CAR_MODEL = "vehicle.lincoln.mkz_2020"
+WALKER_MODEL = "walker.pedestrian.0001"
+PATH_STEP = 1.0     # m between the precomputed path points
+PATH_MAX = 3000.0   # m of road a car can drive along at most
+WALK_MARGIN = 1.5   # m beyond the lane's edge a pedestrian starts / ends
+
+
+def check_actors(actors):
+    """The moving actors of a config, checked and normalised; ValueError in plain words otherwise."""
+    if not isinstance(actors, list):
+        raise ValueError("测试场景的动态目标列表格式不对（应为列表）")
+    out = []
+    for i, a in enumerate(actors, 1):
+        if not isinstance(a, dict):
+            raise ValueError("测试场景第 %d 个动态目标格式不对" % i)
+        kind = a.get("type")
+        if kind not in ACTOR_TYPES:
+            raise ValueError("测试场景第 %d 个动态目标的类型 %r 不认识（可选 %s）" % (
+                i, kind, "、".join("%s %s" % (t, ACTOR_NAMES[t]) for t in ACTOR_TYPES)))
+        n = {"type": kind}
+        for key, (lo, hi) in ACTOR_LIMITS.items():
+            try:
+                v = float(a.get(key, 0.0))
+            except (TypeError, ValueError):
+                raise ValueError("测试场景第 %d 个动态目标的 %s 不是数字：%r" % (i, key, a.get(key)))
+            if not (lo <= v <= hi) or math.isnan(v):
+                raise ValueError("测试场景第 %d 个动态目标的 %s = %g 超出范围 %g ~ %g" % (i, key, v, lo, hi))
+            n[key] = v
+        try:
+            n["lane"] = int(a.get("lane", 0))
+        except (TypeError, ValueError):
+            raise ValueError("测试场景第 %d 个动态目标的车道不是整数：%r" % (i, a.get("lane")))
+        if kind == "cut_in" and n["lane"] == 0:
+            raise ValueError("测试场景第 %d 个动态目标（旁车切入）要在相邻车道：车道填 -1（左侧）或 1（右侧）" % i)
+        if kind in ("lead_brake", "cut_in") and n["param"] <= 0:
+            raise ValueError("测试场景第 %d 个动态目标（%s）的参数要大于 0（%s）" % (
+                i, ACTOR_NAMES[kind], "减速度 m/s²" if kind == "lead_brake" else "切入用时 s"))
+        out.append(n)
+    return out
+
+
+def plan_actors(cmap, spawn, actors):
+    """Where each moving actor goes, worked out on the map (the world is not touched):
+    [{"type", ..., "path": [(x, y, z, yaw deg)], "width"}]; ValueError when one cannot be placed."""
+    actors = check_actors(actors)
+    start = cmap.get_waypoint(spawn.location, project_to_road=True, lane_type=carla.LaneType.Driving)
+    if start is None:
+        raise ValueError("出生点不在行车道上，放不了测试场景")
+    plans = []
+    for num, a in enumerate(actors, 1):
+        what = "测试场景第 %d 个动态目标（%s，出生点前方 %g m）" % (num, ACTOR_NAMES[a["type"]], a["distance_m"])
+        base = _ahead(start, a["distance_m"])
+        if base is None:
+            raise ValueError("%s：出生点前方不到 %g m 路就到头了" % (what, a["distance_m"]))
+        lane_k = 0 if a["type"] in ("lead_brake", "pedestrian") else a["lane"]
+        wp = _side(base, lane_k)
+        if wp is None:
+            l2, r2 = _lanes_around(base)
+            raise ValueError("%s：那里没有%s。那里同方向有 %d 条车道" % (what, lane_name(lane_k), l2 + r2 + 1))
+        path = []
+        cur, d = wp, 0.0
+        length = 1.0 if a["type"] == "pedestrian" else PATH_MAX
+        while True:
+            tf = cur.transform
+            path.append((tf.location.x, tf.location.y, tf.location.z, tf.rotation.yaw))
+            if d >= length:
+                break
+            nxt = cur.next(PATH_STEP)
+            if not nxt:
+                break
+            cur = min(nxt, key=lambda n: abs(_wrap(n.transform.rotation.yaw - cur.transform.rotation.yaw)))
+            d += PATH_STEP
+        plans.append(dict(a, number=num, path=path, width=wp.lane_width, lane_id=wp.lane_id, road_id=wp.road_id))
+    return plans
+
+
+class Movers:
+    """The moving actors of a run: spawned once (physics off, role ROLE), then step(dt)
+    before every world tick places them for that frame; velocities: {actor id: (vx, vy, vz)}
+    in CARLA's world frame for the scene."""
+
+    def __init__(self, client, world, plans, ego):
+        self.client, self.world, self.ego = client, world, ego
+        self.plans = plans
+        self.velocities = {}
+        self.ids = []
+        self.started = False
+        lib = world.get_blueprint_library()
+        cmds = []
+        for p in plans:
+            bp = lib.find(WALKER_MODEL if p["type"] == "pedestrian" else CAR_MODEL)
+            if bp.has_attribute("role_name"):
+                bp.set_attribute("role_name", ROLE)
+            if bp.has_attribute("is_invincible"):
+                bp.set_attribute("is_invincible", "false")
+            loc, yaw = self._pose(p, self._state0(p))
+            cmds.append(carla.command.SpawnActor(bp, carla.Transform(loc, carla.Rotation(yaw=yaw))).then(
+                carla.command.SetSimulatePhysics(carla.command.FutureActor, False)))
+        self.state = []
+        for p, r in zip(plans, client.apply_batch_sync(cmds, False)):
+            if r.error:
+                self.state.append(None)
+            else:
+                self.ids.append(r.actor_id)
+                self.state.append(dict(self._state0(p), id=r.actor_id))
+
+    @staticmethod
+    def _state0(p):
+        if p["type"] == "pedestrian":
+            side = 1.0 if p["lane"] >= 0 else -1.0
+            edge = p["width"] / 2.0 + WALK_MARGIN
+            return {"s": 0.0, "lat": side * edge, "v": 0.0, "lat_v": 0.0, "go": False, "t_go": 0.0,
+                    "lat0": side * edge, "lat1": -side * edge}
+        return {"s": 0.0, "lat": 0.0, "v": p["speed_kmh"] / 3.6, "lat_v": 0.0, "go": False, "t_go": 0.0,
+                "lat0": 0.0, "lat1": -p["lane"] * p["width"] if p["type"] == "cut_in" else 0.0}
+
+    @staticmethod
+    def _at_s(p, s):
+        """Position and yaw on the path at arc length s (interpolated; held at its end)."""
+        path = p["path"]
+        f = min(max(s / PATH_STEP, 0.0), len(path) - 1.0)
+        i = int(f)
+        j = min(i + 1, len(path) - 1)
+        k = f - i
+        (x0, y0, z0, h0), (x1, y1, z1, h1) = path[i], path[j]
+        return x0 + k * (x1 - x0), y0 + k * (y1 - y0), z0 + k * (z1 - z0), h0 + k * _wrap(h1 - h0)
+
+    def _pose(self, p, st):
+        x, y, z, yaw = self._at_s(p, st["s"])
+        r = math.radians(yaw)
+        rx, ry = -math.sin(r), math.cos(r)  # CARLA's right vector (y right)
+        lift = 0.95 if p["type"] == "pedestrian" else 0.05
+        heading = yaw
+        if p["type"] == "pedestrian":
+            heading = yaw + (90.0 if st["lat1"] > st["lat0"] else -90.0)
+        elif st["v"] > 0.1 and st["lat_v"]:
+            heading = yaw + math.degrees(math.atan2(st["lat_v"], st["v"]))
+        return carla.Location(x + rx * st["lat"], y + ry * st["lat"], z + lift), heading
+
+    def step(self, dt):
+        """Before a world tick: advance every actor by dt (the first call only places them)."""
+        first = not self.started
+        self.started = True
+        try:
+            eloc = self.ego.get_transform().location
+        except RuntimeError:
+            eloc = None
+        batch = []
+        for p, st in zip(self.plans, self.state):
+            if st is None:
+                continue
+            loc_now, _ = self._pose(p, st)
+            if not first:
+                gap = loc_now.distance(eloc) if eloc is not None else 1e9
+                if not st["go"] and p["type"] != "slow_car" and gap <= p["trigger_m"]:
+                    st["go"] = True
+                t = p["type"]
+                st["lat_v"] = 0.0
+                if t == "lead_brake" and st["go"]:
+                    st["v"] = max(0.0, st["v"] - p["param"] * dt)
+                if t == "cut_in" and st["go"] and st["t_go"] < p["param"]:
+                    st["t_go"] = min(p["param"], st["t_go"] + dt)
+                    u = st["t_go"] / p["param"]
+                    lat = st["lat0"] + (st["lat1"] - st["lat0"]) * (1 - math.cos(math.pi * u)) / 2.0
+                    st["lat_v"] = (lat - st["lat"]) / dt
+                    st["lat"] = lat
+                if t == "pedestrian" and st["go"]:
+                    step = p["speed_kmh"] / 3.6 * dt
+                    d = st["lat1"] - st["lat"]
+                    move = math.copysign(min(step, abs(d)), d)
+                    st["lat"] += move
+                    st["lat_v"] = move / dt
+                if t != "pedestrian":
+                    st["s"] = min(st["s"] + st["v"] * dt, (len(p["path"]) - 1) * PATH_STEP)
+                    if st["s"] >= (len(p["path"]) - 1) * PATH_STEP:
+                        st["v"] = 0.0  # the end of its road: it stops there
+            loc, heading = self._pose(p, st)
+            batch.append(carla.command.ApplyTransform(st["id"], carla.Transform(loc, carla.Rotation(yaw=heading))))
+            # Its velocity in CARLA's world frame: along the road plus the sideways part.
+            _, _, _, yaw = self._at_s(p, st["s"])
+            r = math.radians(yaw)
+            fwd = st["v"] if p["type"] != "pedestrian" else 0.0
+            self.velocities[st["id"]] = (math.cos(r) * fwd - math.sin(r) * st["lat_v"],
+                                         math.sin(r) * fwd + math.cos(r) * st["lat_v"], 0.0)
+        if batch:
+            # Synchronous: in place before the tick that follows (asynchronous calls can land a frame late).
+            self.client.apply_batch_sync(batch, False)
+
+    def summary(self):
+        return [{"number": p["number"], "type": p["type"], "name": ACTOR_NAMES[p["type"]], "distance_m": p["distance_m"],
+                 "lane": p["lane"], "speed_kmh": p["speed_kmh"], "trigger_m": p["trigger_m"], "param": p["param"],
+                 "placed": st is not None} for p, st in zip(self.plans, self.state)]

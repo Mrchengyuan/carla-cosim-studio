@@ -516,7 +516,8 @@ class Backend:
         self.world.wait_for_tick(5.0)
         self._try(self.client.stop_recorder)  # nothing happens when none is running
         acts = [a for a in self.world.get_actors()
-                if (a.type_id.startswith("vehicle.") and a.attributes.get("role_name") in ("hero", "autopilot", PROBE_ROLE))
+                if (a.type_id.startswith("vehicle.") and a.attributes.get("role_name") in ("hero", "autopilot", PROBE_ROLE,
+                                                                                            scenariomod.ROLE))
                 or a.type_id.startswith(("walker.pedestrian.", "controller.ai.walker", "sensor."))
                 or (a.type_id.startswith("static.prop.") and a.attributes.get("role_name") == scenariomod.ROLE)]
         for a in acts:
@@ -1157,13 +1158,17 @@ class Backend:
         check_run_files(d)  # controller, .sim, python_carsim_env, CarSim solver
         # 测试场景: planned on the map now (a lane that is not there refuses the run
         # before anything changes), placed once the ego stands at the spawn point.
-        scenario_plan = None
-        if d["scenario"].get("enabled") and d["scenario"].get("closures"):
+        scenario_plan = actor_plan = None
+        sc = d["scenario"]
+        if sc.get("enabled") and (sc.get("closures") or sc.get("actors")):
             pts = w.get_map().get_spawn_points()
             if not pts:
                 raise RuntimeError("当前地图没有出生点")
-            scenario_plan = scenariomod.layout(w.get_map(), pts[int(c["spawn_index"]) % len(pts)],
-                                               d["scenario"]["closures"])
+            spawn_tf = pts[int(c["spawn_index"]) % len(pts)]
+            if sc.get("closures"):
+                scenario_plan = scenariomod.layout(w.get_map(), spawn_tf, sc["closures"])
+            if sc.get("actors"):  # 动态目标: their roads worked out now, placed with the closures
+                actor_plan = scenariomod.plan_actors(w.get_map(), spawn_tf, sc["actors"])
         # Every run starts with a fresh ego at the chosen spawn point, like a
         # CarSim run starts from its initial conditions. A teleported vehicle
         # keeps stale traffic-manager state (autopilot then brakes forever),
@@ -1220,6 +1225,16 @@ class Backend:
                     c["props"], scenariomod.KIND_NAMES[c["kind"]]) for c in summary))
             if "static" not in (d["scene"].get("object_types") or []):
                 self._log("测试场景的锥桶 / 护栏不会交给控制算法：“场景信息”页障碍物没有勾选“施工锥桶 / 护栏”", "warn")
+        movers = None
+        if actor_plan:
+            movers = scenariomod.Movers(self.client, w, actor_plan, self.ego)
+            self.scenario_ids += movers.ids
+            placed = movers.summary()
+            self._log("测试场景动态目标：%s" % "；".join(
+                "第 %d 个%s，出生点前方 %g m%s，%g km/h%s" % (
+                    a["number"], a["name"], a["distance_m"],
+                    "，" + scenariomod.lane_name(a["lane"]) if a["type"] in ("slow_car", "cut_in") else "", a["speed_kmh"],
+                    "" if a["placed"] else "（没能放下：那里被别的物体占着）") for a in placed))
         self._unsent_tel = None
         self._pre_cosim_settings = w.get_settings()
         try:
@@ -1240,8 +1255,14 @@ class Backend:
             # For the run record (run.json): the seed of the traffic around the car, if there is any.
             self.session.run_meta = {"traffic_seed": self.traffic_seed if self.traffic["vehicles"] or
                                      self.traffic["walkers"] else None,
-                                     "scenario": None if scenario_plan is None else
-                                     {"closures": scenario_plan[1], "placed": len(self.scenario_ids)}}
+                                     "scenario": None if scenario_plan is None and movers is None else
+                                     {"closures": scenario_plan[1] if scenario_plan else [],
+                                      "placed": len(self.scenario_ids) - (len(movers.ids) if movers else 0),
+                                      "actors": movers.summary() if movers else []}}
+            if movers is not None:  # moved before every tick of the run, from its first
+                ses = self.session
+                ses.pre_tick = lambda: movers.step(ses.d["sync"]["frame_dt"])
+                ses.velocity_overrides = movers.velocities
         except BaseException:
             # Never leave the world in sync mode with nobody ticking it.
             pre, self._pre_cosim_settings = self._pre_cosim_settings, None

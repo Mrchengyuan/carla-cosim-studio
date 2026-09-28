@@ -67,7 +67,9 @@ def default_dict():
         # start along the road from the spawn point: [{"distance_m", "lane" (0 = the start
         # lane, -1 / 1 the first to the left / right), "taper_m", "length_m", "kind"
         # ("cones" | "barrier")}].
-        "scenario": {"enabled": False, "closures": []},
+        # actors: 动态目标 [{"type": "slow_car" | "lead_brake" | "cut_in" | "pedestrian", "distance_m",
+        # "lane", "speed_kmh", "trigger_m", "param" (lead_brake: m/s^2, cut_in: s)}] (scenario.py).
+        "scenario": {"enabled": False, "closures": [], "actors": []},
         # Sensor mounts in CarSim's vehicle frame (origin = the reference
         # point, y left; rig.py). "carla" = an older config (car centre, y right).
         "rig": {"preset": "front_camera", "sensors": [], "frame": "carsim"},

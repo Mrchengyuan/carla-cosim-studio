@@ -1186,6 +1186,25 @@ const std::vector<TestScenePreset>& TestScenePresets() {
   return kPresets;
 }
 
+namespace {
+json Actor(const char* type, double dist, int lane, double kmh, double trigger, double param) {
+  return {{"type", type}, {"distance_m", dist}, {"lane", lane}, {"speed_kmh", kmh}, {"trigger_m", trigger}, {"param", param}};
+}
+}  // namespace
+
+const std::vector<TestScenePreset>& TestActorPresets() {
+  static const std::vector<TestScenePreset> kActors = {
+      {"scn:actor:0", "前车慢行", "前方 80 m 本车道一辆车以 40 km/h 匀速行驶：跟车或超车", json::array({Actor("slow_car", 80, 0, 40, 0, 0)})},
+      {"scn:actor:1", "前车急刹", "前方 60 m 一辆车以 60 km/h 行驶，你跟近到 40 m 时以 6 m/s² 刹停：紧急制动",
+       json::array({Actor("lead_brake", 60, 0, 60, 40, 6)})},
+      {"scn:actor:2", "旁车切入", "左侧车道前方 40 m 一辆车以 50 km/h 行驶，你靠近到 25 m 时用 2.5 s 并进你的车道",
+       json::array({Actor("cut_in", 40, -1, 50, 25, 2.5)})},
+      {"scn:actor:3", "行人横穿", "前方 120 m 路右侧有行人，你靠近到 45 m 时以 5 km/h 横穿你的车道",
+       json::array({Actor("pedestrian", 120, 1, 5, 45, 0)})},
+  };
+  return kActors;
+}
+
 void App::DrawPanelTestScene() {
   if (!cfg_.contains("scenario") || !cfg_["scenario"].is_object()) {
     ImGui::TextDisabled("等待后端返回配置 ...");
@@ -1254,6 +1273,7 @@ void App::DrawPanelTestScene() {
   ImGui::Dummy(ImVec2(0, fs * 0.2f));
   ui::SectionCaption("预设（点一下替换下表）");
   const auto& kPresets = TestScenePresets();
+  static const char* kLanes[] = {"左侧第 3 条", "左侧第 2 条", "左侧第 1 条", "本车道", "右侧第 1 条", "右侧第 2 条", "右侧第 3 条"};
   for (int i = 0; i < 4; ++i) {
     if (i) ImGui::SameLine();
     if (ui::Button("", kPresets[i].name)) {
@@ -1265,7 +1285,6 @@ void App::DrawPanelTestScene() {
   }
   ImGui::Dummy(ImVec2(0, fs * 0.2f));
   ui::SectionCaption("封道（距离从出生点沿道路算；车道相对出生时所在的车道）");
-  static const char* kLanes[] = {"左侧第 3 条", "左侧第 2 条", "左侧第 1 条", "本车道", "右侧第 1 条", "右侧第 2 条", "右侧第 3 条"};
   int remove = -1;
   // Stretched to the panel's width (fixed widths pushed 类型 and the delete button out of a narrow panel).
   if (ImGui::BeginTable("##closures", 7, ImGuiTableFlags_BordersInnerH | ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingStretchProp)) {
@@ -1323,6 +1342,97 @@ void App::DrawPanelTestScene() {
   ui::RecordTarget("scn:add");
   ui::DimWrapped("一处封道 = 渐变段（锥桶 / 护栏斜着把车道收窄：本车道和右侧的从右往左，左侧的从左往右）+ 封闭段（两侧有车道的边各摆一排）"
                  "+ 渐变段后面一块箭头导向牌。锥桶渐变段每 3 m 一个、封闭段每 6 m 一个；护栏首尾相接。");
+  ui::EndCard();
+
+  // 动态目标: moving actors placed every frame along the lanes (scenario.py Movers).
+  ui::BeginCard(ICON_FA_CAR_SIDE, "动态目标");
+  if (!sc.contains("actors") || !sc["actors"].is_array()) sc["actors"] = json::array();
+  json& actors = sc["actors"];
+  ui::SectionCaption("预设（点一下替换下表）");
+  const auto& aps = TestActorPresets();
+  for (size_t i = 0; i < aps.size(); ++i) {
+    if (i) ImGui::SameLine();
+    if (ui::Button("", aps[i].name)) {
+      actors = aps[i].closures;
+      sc["enabled"] = true;
+    }
+    ui::RecordTarget(aps[i].id);
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", aps[i].tip);
+  }
+  static const char* kTypes[] = {"slow_car", "lead_brake", "cut_in", "pedestrian"};
+  static const char* kTypeNames[] = {"前车慢行", "前车急刹", "旁车切入", "行人横穿"};
+  int remove_a = -1;
+  // Fixed column widths, scrolled sideways in a narrow panel (a height for its rows: see 批量测试).
+  const float actors_h = ImGui::GetFrameHeightWithSpacing() * (std::min<size_t>(actors.size(), 8) + 1.3f) + ImGui::GetStyle().ScrollbarSize;
+  if (!actors.empty() &&
+      ImGui::BeginTable("##actors", 8, ImGuiTableFlags_BordersInnerH | ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingFixedFit |
+                                           ImGuiTableFlags_ScrollX | ImGuiTableFlags_ScrollY, ImVec2(0, actors_h))) {
+    ImGui::TableSetupScrollFreeze(1, 1);
+    ImGui::TableSetupColumn("#", ImGuiTableColumnFlags_WidthFixed, fs * 1.5f);
+    ImGui::TableSetupColumn("类型", ImGuiTableColumnFlags_WidthFixed, fs * 5.5f);
+    ImGui::TableSetupColumn("距离 m", ImGuiTableColumnFlags_WidthFixed, fs * 4.0f);
+    ImGui::TableSetupColumn("车道", ImGuiTableColumnFlags_WidthFixed, fs * 6.5f);
+    ImGui::TableSetupColumn("km/h", ImGuiTableColumnFlags_WidthFixed, fs * 3.5f);
+    ImGui::TableSetupColumn("触发 m", ImGuiTableColumnFlags_WidthFixed, fs * 3.5f);
+    ImGui::TableSetupColumn("参数", ImGuiTableColumnFlags_WidthFixed, fs * 3.5f);
+    ImGui::TableSetupColumn("", ImGuiTableColumnFlags_WidthFixed, fs * 1.8f);
+    ImGui::TableHeadersRow();
+    for (size_t i = 0; i < actors.size(); ++i) {
+      json& a = actors[i];
+      if (!a.is_object()) a = Actor("slow_car", 80, 0, 40, 0, 0);
+      ImGui::PushID(static_cast<int>(1000 + i));
+      ImGui::TableNextRow();
+      ImGui::TableNextColumn();
+      ImGui::AlignTextToFramePadding();
+      ImGui::Text("%d", static_cast<int>(i + 1));
+      ImGui::TableNextColumn();
+      int ti = 0;
+      for (int k = 0; k < 4; ++k) if (a.value("type", std::string()) == kTypes[k]) ti = k;
+      ImGui::SetNextItemWidth(-FLT_MIN);
+      if (ImGui::Combo("##type", &ti, kTypeNames, 4)) a["type"] = kTypes[ti];
+      auto num = [&](const char* id, const char* key, double lo, double hi, const char* fmt) {
+        ImGui::TableNextColumn();
+        double v = a.value(key, 0.0);
+        ImGui::SetNextItemWidth(-FLT_MIN);
+        if (ImGui::InputDouble(id, &v, 0.0, 0.0, fmt)) a[key] = std::max(lo, std::min(hi, v));
+      };
+      num("##dist", "distance_m", 1, 5000, "%.0f");
+      ImGui::TableNextColumn();
+      if (ti == 1) {  // brakes ahead of the ego: its lane
+        ImGui::TextDisabled("本车道");
+      } else {
+        int lane = std::max(-3, std::min(3, a.value("lane", 0)));
+        int idx = lane + 3;
+        ImGui::SetNextItemWidth(-FLT_MIN);
+        if (ImGui::Combo("##lane", &idx, kLanes, 7)) a["lane"] = idx - 3;
+        if (ti == 3 && ImGui::IsItemHovered()) ImGui::SetTooltip("行人从这一侧出发（本车道和右侧 = 从右，左侧 = 从左）");
+      }
+      num("##kmh", "speed_kmh", 0, 200, "%.0f");
+      if (ti == 0) { ImGui::TableNextColumn(); ImGui::TextDisabled("—"); }
+      else num("##trig", "trigger_m", 0, 500, "%.0f");
+      if (ti == 1 || ti == 2) {
+        num("##param", "param", 0.1, 20, "%.1f");
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip(ti == 1 ? "减速度 m/s²" : "切入用时 s");
+      } else {
+        ImGui::TableNextColumn();
+        ImGui::TextDisabled("—");
+      }
+      ImGui::TableNextColumn();
+      if (ui::IconButton(ICON_FA_TRASH_CAN, "删除这一个", "adel")) remove_a = static_cast<int>(i);
+      ui::RecordTarget("scn:adel:" + std::to_string(i));
+      ImGui::PopID();
+    }
+    ImGui::EndTable();
+  }
+  if (remove_a >= 0) actors.erase(actors.begin() + remove_a);
+  if (ui::Button(ICON_FA_PLUS, "添加一个动态目标")) {
+    actors.push_back(Actor("slow_car", 80, 0, 40, 0, 0));
+    sc["enabled"] = true;
+  }
+  ui::RecordTarget("scn:aadd");
+  ui::DimWrapped("距离从出生点沿道路算；触发 = 你的车离它这么近时开始动作。前车急刹的参数是减速度（m/s²），旁车切入的参数是切入用时（s），"
+                 "它从选定的相邻车道并进你出生时的车道。它们每帧按车道精确摆放，每次运行完全一样，在算法里就是 scene[\"objects\"] 里的车和行人"
+                 "（速度是真实值），撞上照常判碰撞。“运行时摆放封道”同时控制它们。");
   ui::EndCard();
 
   ui::BeginCard(ICON_FA_CODE, "在控制算法里");

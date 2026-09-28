@@ -690,6 +690,7 @@ void App::StartRun() {
     trail_y_.clear();
     last_tel_ = json::object();
     last_scene_ = json();
+    draw_ = json::array();
     scene_hover_.clear();
     // Step 0's collect_stats arrives before this reply: keep this run's, drop the last run's.
     const std::string root = r.is_object() && r.contains("collect") && r["collect"].is_object()
@@ -970,6 +971,10 @@ void App::OnEvent(const json& ev) {
     }
   } else if (type == "telemetry") {
     last_tel_ = ev.value("data", json::object());
+    if (last_tel_.contains("draw")) {  // new lines of the algorithm (self.draw): kept until the next ones
+      if (last_tel_["draw"].is_array()) draw_ = std::move(last_tel_["draw"]);
+      last_tel_.erase("draw");
+    }
     if (last_tel_.contains("scene")) {  // big: keep it out of the per-frame readouts
       if (last_tel_["scene"].is_object()) last_scene_ = std::move(last_tel_["scene"]);
       last_tel_.erase("scene");
@@ -1319,8 +1324,11 @@ void App::BuildTour() {
        }, "11c_start_failed"},
       // What the algorithm prints goes to the 输出 page: the 算法 filter shows it, and only it.
       {kPanelDrive, [this, print_ctrl] {
-         std::ofstream(fs::u8path(print_ctrl)) << "print('tour: 算法已加载')\nN = [0]\n\n\ndef control(exports, t, dt):\n"
-                                                  "    N[0] += 1\n    if N[0] == 3:\n        print('" << kPrinted << "')\n"
+         std::ofstream(fs::u8path(print_ctrl)) << "print('tour: 算法已加载')\nN = [0]\ndraw = None\n\n\ndef control(exports, t, dt):\n"
+                                                  "    global draw\n    N[0] += 1\n    if N[0] == 3:\n        print('" << kPrinted << "')\n"
+                                                  "    draw = [{'points': [[0, 0], [10, 0.3], [20, 1.0]], 'color': [255, 60, 40], 'width': 0.1},\n"
+                                                  "            {'points': [[0, 0], [10, -0.2], [20, -0.6]], 'color': [60, 90, 255]},\n"
+                                                  "            {'points': [[20, 1.0]], 'color': [255, 215, 0], 'width': 0.12}]\n"
                                                   "    return [0.0, 0.0, 0.0]\n";
          cfg_["run"]["controller"]["path"] = print_ctrl;
          cfg_["run"]["controller"]["entry"] = "control";
@@ -1330,6 +1338,9 @@ void App::BuildTour() {
          return log_filter_ == 3 && printed() && ui::TargetShown("log:algo_last") && !ui::TargetShown("log:other");
        }, "11d_algo_output"},
       {kPanelDrive, [this] { click_target_ = "log:filter0"; }, [this] { return log_filter_ == 0; }, ""},
+      {kPanelDrive, [this] { click_target_ = "dock:draw"; }, [this] {
+         return Running() && draw_.size() == 3 && ui::TargetShown("draw:lines");
+       }, "11e_algo_draw"},
       {kPanelDrive, [this] { cfg_["run"]["controller"]["entry"] = "Controller"; click_target_ = "停止"; },
        [this] { return run_state_ == "stopped" && last_tel_.empty(); }, ""},
       {kPanelDrive, [this] { cfg_["run"]["controller"]["path"] = "controllers/scene_controller.py"; click_target_ = "dock:scene"; },
@@ -1463,6 +1474,7 @@ void App::BuildTour() {
 void App::BuildHeroTour() {
   fs::create_directories(fs::u8path(tour_dir_));
   auto idle = [this] { return busy_.empty() && be_.PendingCount() == 0; };
+  const bool keep = prefs_cli_.contains("last_config");  // --config: keep that run's settings
   tour_ = new std::vector<TourStep>{
       {kPanelConnect, [this] { ConnectBackend(); }, [this] { return be_.Connected(); }, ""},
       {kPanelConnect, [this] { ConnectCarla(); }, [this, idle] { return carla_connected_ && idle(); }, ""},
@@ -1472,16 +1484,19 @@ void App::BuildHeroTour() {
            if (vehicles_[i]["id"] == "vehicle.tesla.model3") vehicle_sel_ = static_cast<int>(i);
          SpawnEgo();
        }, [this, idle] { return idle() && world_.value("ego_id", 0) != 0; }, ""},
-      {kPanelTraffic, [this] { traffic_vehicles_ = 40; traffic_walkers_ = 20; SpawnTraffic(); }, idle, ""},
-      {kPanelView, [this] {
-         cfg_["drive"]["dynamics"] = "cosim";
-         cfg_["drive"]["cosim_driver"] = "route";
-         cfg_["drive"]["target_speed_kmh"] = 35.0;
-         cfg_["carsim"]["mock"] = true;
-         cfg_["sync"]["duration"] = 0.0;
-         cfg_["sync"]["frame_dt"] = 0.05;
+      {kPanelTraffic, [this, keep] { if (!keep) { traffic_vehicles_ = 40; traffic_walkers_ = 20; SpawnTraffic(); } }, idle, ""},
+      {kPanelView, [this, keep] {
+         if (!keep) {  // --config given: its algorithm, CarSim and run settings (e.g. KMPPI on the Chrono BMW)
+           cfg_["drive"]["dynamics"] = "cosim";
+           cfg_["drive"]["cosim_driver"] = "route";
+           cfg_["drive"]["target_speed_kmh"] = 35.0;
+           cfg_["carsim"]["mock"] = true;
+           cfg_["sync"]["duration"] = 0.0;
+           cfg_["sync"]["frame_dt"] = 0.05;
+         }
          cfg_["run"]["log_path"] = "";
          cfg_["collect"]["enabled"] = false;
+         if (keep) dock_tab_select_ = 4;  // the 轨迹 tab: the algorithm's lines
          view_mode_ = "chase";
          view_res_ = 3;
          view_layout_ = 1;
@@ -1496,7 +1511,7 @@ void App::BuildHeroTour() {
     const size_t comma = std::min(list.find(',', pos), list.size());
     const int sp = std::atoi(list.substr(pos, comma - pos).c_str());
     pos = comma + 1;
-    tour_->push_back({kPanelView, [this, sp] { cfg_["carla"]["spawn_index"] = sp; StartRun(); },
+    tour_->push_back({kPanelView, [this, sp, keep] { if (keep) dock_tab_select_ = 4; cfg_["carla"]["spawn_index"] = sp; StartRun(); },
                       [this] { return run_state_ == "running" && last_tel_.value("t", 0.0) > 4.0; }, ""});
     for (int t : {7, 10, 13, 16})
       tour_->push_back({kPanelView, [] {},

@@ -193,7 +193,7 @@ class GuiTabTests(unittest.TestCase):
 
     def test_manual_and_menu_list_the_bottom_tabs(self):
         src, names = self.tabs()
-        self.assertEqual(len(names), 4, names)
+        self.assertEqual(len(names), 5, names)
         manual = read(MANUAL)
         self.assertIn(" ".join("[%s]" % n for n in names), manual)
         self.assertIn("%s个页签" % CN[len(names)], manual)

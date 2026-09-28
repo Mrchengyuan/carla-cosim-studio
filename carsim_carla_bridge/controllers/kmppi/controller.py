@@ -19,7 +19,7 @@
            仿真步长要能整除 0.05 s（0.05、0.025、0.01 s ...；推荐 0.05 s：每帧算一次）。
     画线   每次计算后把候选轨迹画进 CARLA 画面（self.draw，平台每帧画出来；采集数据时不画）：
            从 K 条推演里挑 DRAW_CANDIDATES 条（权重最高的一半 + 其余随机一半），颜色按权重
-           从蓝（低）到红（高）；最好的一条（代价最低、权重最高）加粗画成亮红色；黄色粗线是按权重
+           从蓝（低）到红（高），末端各有一个同色的点（看得出末端怎么分布）；最好的一条（代价最低、权重最高）加粗画成亮红色；黄色粗线是按权重
            平均的轨迹（实际执行的就是它的第一步）；绿色是参考轨迹。都是质心的轨迹。
            推演的状态由包在预测模型外面的一层记下来（_Recorder），算法本身不动。
 单位跟随“CarSim 动力学”页（scene["units"]）。
@@ -161,8 +161,9 @@ class Controller:
         pick = np.concatenate([rest, top])
         lw = np.log(np.maximum(w[pick], 1e-300))
         lo, hi = float(lw.min()), float(lw.max())
-        lines = [{"points": xy[k].tolist(), "color": _color((lw[j] - lo) / (hi - lo) if hi > lo else 1.0), "width": 0.03}
-                 for j, k in enumerate(pick)]
+        cols = [_color((lw[j] - lo) / (hi - lo) if hi > lo else 1.0) for j in range(len(pick))]
+        lines = [{"points": xy[k].tolist(), "color": cols[j], "width": 0.015} for j, k in enumerate(pick)]
+        lines += [{"points": [xy[k][-1].tolist()], "color": cols[j], "width": 0.12} for j, k in enumerate(pick)]  # 末端的点
         ref = np.vstack([state[None, :2], self.ref_box.val[:, :2]])
         lines.append({"points": ref.tolist(), "color": [40, 230, 90], "width": 0.06})
         mean = np.einsum("k,ktd->td", w, xy)

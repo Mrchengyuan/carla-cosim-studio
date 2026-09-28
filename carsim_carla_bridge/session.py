@@ -88,7 +88,8 @@ def draw_segments(lines, ref_pose):
     """control's self.draw -> ([(carla.Location a, b, thickness, carla.Color)], segments over the
     limit). lines: [{"points": [[x, y], ...] (m, ego frame: x forward, y left, origin at the
     reference point), "color": [r, g, b] (0~255, default white), "width": m (default 0.05)}, ...];
-    ref_pose: (x, y, z, yaw deg) of the reference point in CARLA's world."""
+    one point only: a dot of that width (b is None). ref_pose: (x, y, z, yaw deg) of the
+    reference point in CARLA's world."""
     if not isinstance(lines, (list, tuple)):
         raise RuntimeError("控制算法的 self.draw 应是一组线：[{\"points\": [[x, y], ...], \"color\": [r, g, b], \"width\": 0.05}, ...]")
     X, Y, Z, yaw = ref_pose
@@ -104,7 +105,7 @@ def draw_segments(lines, ref_pose):
             raise RuntimeError("控制算法的 self.draw 第 %d 条线格式不对：要 {\"points\": [[x, y], ...], \"color\": [r, g, b], "
                                "\"width\": 0.05}（x 向前、y 向左，m）" % i)
         world = [carla.Location(X + c * x + s * y, Y + s * x - c * y, Z + DRAW_LIFT_M) for x, y in pts]  # y left -> CARLA y right
-        for a, b in zip(world, world[1:]):
+        for a, b in zip(world, world[1:]) if len(world) > 1 else [(world[0], None)] if world else []:
             total += 1
             if len(out) < MAX_DRAW_SEGMENTS:
                 out.append((a, b, width, color))
@@ -1102,6 +1103,7 @@ class CoSimSession:
             raise RuntimeError("控制算法输出了无效数值（NaN / 无穷大）：%s" % list(action))
         self.last_action = [float(a) for a in action]
         draw_warn = self._take_draw()
+        draw_tel, self._draw_tel = getattr(self, "_draw_tel", None), None
         prev, t_prev = self.obs, env.t_current
         self.obs, _, done, info = env.control_step(action, self.inner)
         # A non-zero return without a model stop is an error, with or without a message.
@@ -1144,6 +1146,7 @@ class CoSimSession:
             "action": [float(a) for a in action],
             **({"ctrl_ms": ms, "ctrl_ms_max": self.ctrl_ms_max} if ms is not None else {}),
             **({"draw_n": draw_n} if draw_n else {}),
+            **({"draw": draw_tel} if draw_tel is not None else {}),
             "warnings": warnings + draw_warn,
             "world_frame": world_frame,
             "dynamics": "CarSim",
@@ -1166,6 +1169,10 @@ class CoSimSession:
             self._draw_segs = []
             return warn
         self._draw_segs, cut = draw_segments(new, self.scene.ref_pose)
+        # The same lines for the GUI's 轨迹 tab, in the ego frame: sent once, with this step's telemetry.
+        self._draw_tel = [{"points": [[round(float(p[0]), 3), round(float(p[1]), 3)] for p in ln["points"]],
+                           "color": [int(max(0, min(255, v))) for v in ln.get("color", (255, 255, 255))][:3],
+                           "width": float(ln.get("width", 0.05))} for ln in new]
         if cut and not getattr(self, "_draw_cut_told", False):
             self._draw_cut_told = True
             warn.append("控制算法要画的线段太多（%d 段），只画前 %d 段" % (cut, MAX_DRAW_SEGMENTS))
@@ -1179,7 +1186,10 @@ class CoSimSession:
             return 0
         dbg, life = self.world.debug, 1.5 * frame_dt
         for a, b, w, c in segs:
-            dbg.draw_line(a, b, thickness=w, color=c, life_time=life)
+            if b is None:  # a single point: a dot
+                dbg.draw_point(a, size=w, color=c, life_time=life)
+            else:
+                dbg.draw_line(a, b, thickness=w, color=c, life_time=life)
         return len(segs)
 
     def _check_exports(self, obs, at_start=False):

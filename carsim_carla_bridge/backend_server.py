@@ -1535,7 +1535,10 @@ class Backend:
             self._stop_cosim_if_running("error", str(e))
             return
         self._try(self._update_spectator)
-        # Every 2nd frame is enough for the GUI, but a single step must show.
+        # Every 2nd frame is enough for the GUI, but a single step must show; the algorithm's
+        # new lines (self.draw) of a frame not sent go with the next one.
+        if "draw" not in tel and self._unsent_tel is not None and "draw" in self._unsent_tel:
+            tel["draw"] = self._unsent_tel["draw"]
         if always_emit or tel["frame"] % 2 == 0 or tel["done"]:
             self.emit({"event": "telemetry", "data": tel})
             self._unsent_tel = None

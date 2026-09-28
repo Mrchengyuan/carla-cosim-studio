@@ -12,7 +12,8 @@ algorithm error and the algorithm's summary; no "导出变量可疑" warning; th
 lanes, lane offset rms < 0.3 m and max < 0.8 m; it covers > 700 m; CARLA's
 car follows the Chrono car (the front wheel angles reach CARLA); KMPPI's
 candidate trajectories are drawn in CARLA every frame (self.draw: 64
-candidates + the weighted mean + the reference, about 790 segments); a
+candidates with end dots, the reference, the weighted mean, the best one)
+and reach the GUI's 轨迹 tab with the telemetry; a
 frame step that does not divide 0.05 s ends the run with the algorithm's
 plain message. Starts its own backend (port 57145); deletes its temp files.
 
@@ -125,6 +126,9 @@ def main():
         drawn = [e["data"].get("draw_n", 0) for e in c.events if e.get("event") == "telemetry"]
         check("the candidate trajectories are drawn every frame (> 700 segments)",
               len(drawn) > 100 and min(drawn[5:]) > 700, (len(drawn), min(drawn[5:]) if drawn[5:] else None, max(drawn or [0])))
+        sent = [e["data"]["draw"] for e in c.events if e.get("event") == "telemetry" and "draw" in e["data"]]
+        check("the GUI gets them too (轨迹 tab: 64 candidates, 64 end dots, reference, mean, best)",
+              len(sent) > 100 and all(len(d) == 131 for d in sent[5:]), (len(sent), {len(d) for d in sent}))
         check("no algorithm error", not any("Traceback" in m or "Error" in m for m in algo), algo[-5:])
         warns = [e["msg"] for e in msgs if e.get("level") == "warn" and "导出变量可疑" in e["msg"]]
         check("the Chrono exports pass the platform's sanity checks", not warns, warns[:2])

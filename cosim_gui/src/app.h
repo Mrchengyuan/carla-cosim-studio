@@ -66,6 +66,7 @@ class App {
   void DrawHud(ImVec2 bottom_left);
   void DrawMinimap(ImVec2 top_left, float size);
   void DrawDock(float w, float h);
+  void DrawDrawTab();
   void DrawPlots();
   void DrawVehicleState();
   void DrawSceneTab();
@@ -255,6 +256,8 @@ class App {
   json last_scene_;                  // what the control algorithm got last (kept after the run ends)
   std::string scene_hover_;          // object id under the mouse in the scene table
   bool scene_moving_only_ = false;   // scene tab: hide the parked cars of the map
+  json draw_ = json::array();        // the algorithm's lines (self.draw), ego frame: the 轨迹 tab
+  int draw_mag_ = 0;                 // 轨迹 tab's lateral magnification: 0 = fit the lane
   json collect_stats_ = json::object();
   static constexpr int kHist = 900;
   // h_thr_, h_brk_, h_u3_: the first three values control() returned (imports 1-3);

@@ -395,7 +395,7 @@ void App::DrawMenuBar() {
   }
   if (ImGui::BeginMenu("视图")) {
     ImGui::MenuItem(ICON_FA_SLIDERS "  属性面板", nullptr, &monitor_open_);
-    ImGui::MenuItem(ICON_FA_TABLE_COLUMNS "  底部面板（曲线 / 状态 / 场景 / 输出）", "Ctrl+L", &log_open_);
+    ImGui::MenuItem(ICON_FA_TABLE_COLUMNS "  底部面板（曲线 / 状态 / 场景 / 轨迹 / 输出）", "Ctrl+L", &log_open_);
     if (ImGui::MenuItem(ICON_FA_VIDEO "  实时画面", nullptr, view_on_, world_.value("ego_id", 0) != 0)) {
       if (view_on_) { Call("view_stop", json::object(), nullptr); view_on_ = false; view_auto_ = false; }
       else { view_auto_ = true; StartView(); }
@@ -1298,6 +1298,12 @@ void App::DrawDock(float w, float h) {
       DrawSceneTab();
       ImGui::EndTabItem();
     }
+    const bool draw_open = ImGui::BeginTabItem(ICON_FA_ROUTE "  轨迹###draw", nullptr, flags(4));
+    ui::RecordTarget("dock:draw");
+    if (draw_open) {
+      DrawDrawTab();
+      ImGui::EndTabItem();
+    }
     if (ImGui::BeginTabItem(out_label.c_str(), nullptr, flags(2))) {
       log_errors_ = 0;
       DrawLogList(warns, errors, algos);
@@ -1513,6 +1519,135 @@ ImVec4 SceneColor(const json& o) {
 
 // The obstacles and lane around the ego, in CarSim's frames: a bird's-eye
 // view (x forward = up, y left = left) and the list of objects.
+// --------------------------------------------------------------------------
+// 轨迹: the lines the control algorithm hands in self.draw (e.g. KMPPI's
+// candidate rollouts), top-down in its ego frame: forward to the right, left
+// up, the lane from the scene. Lateral distances are magnified (by default
+// to fit the lines' own lateral range, labelled on the plot): a spread of a
+// metre over 30 m is invisible at true scale.
+void App::DrawDrawTab() {
+  const ui::Palette& p = ui::Colors();
+  const float fs = ImGui::GetFontSize();
+  static const int kMags[] = {0, 1, 5, 10, 20};
+  static const char* kMagNames[] = {"自动（铺满线的范围）", "×1（真实比例）", "×5", "×10", "×20"};
+  int mi = 0;
+  for (int i = 0; i < 5; ++i) if (kMags[i] == draw_mag_) mi = i;
+  ImGui::AlignTextToFramePadding();
+  ImGui::TextUnformatted("横向放大");
+  ImGui::SameLine();
+  ImGui::SetNextItemWidth(fs * 11);
+  if (ImGui::Combo("##drawmag", &mi, kMagNames, 5)) draw_mag_ = kMags[mi];
+  ui::RecordTarget("draw:mag");
+  ImGui::SameLine();
+  ImGui::TextColored(p.text_dim, "控制算法用 self.draw 画的线（控制算法编写指南 15.4 节）· %d 条", static_cast<int>(draw_.size()));
+
+  const ImVec2 o = ImGui::GetCursorScreenPos();
+  const ImVec2 sz(std::max(50.0f, ImGui::GetContentRegionAvail().x), std::max(50.0f, ImGui::GetContentRegionAvail().y));
+  ImGui::InvisibleButton("##drawcanvas", sz);
+  ui::RecordTarget("draw:canvas");
+  ImDrawList* dl = ImGui::GetWindowDrawList();
+  const ImVec2 e(o.x + sz.x, o.y + sz.y);
+  dl->AddRectFilled(o, e, ImGui::GetColorU32(ImVec4(0.08f, 0.09f, 0.10f, 1)));
+  dl->PushClipRect(o, e, true);
+  if (draw_.empty()) {
+    const char* msg = "运行时，控制算法用 self.draw 画的线显示在这里（例如 KMPPI 的候选轨迹）";
+    const ImVec2 ts = ImGui::CalcTextSize(msg);
+    dl->AddText(ImVec2(o.x + (sz.x - ts.x) * 0.5f, o.y + (sz.y - ts.y) * 0.5f), ImGui::GetColorU32(p.text_dim), msg);
+    dl->PopClipRect();
+    return;
+  }
+  // Extent: forward from a little behind the reference point to the farthest point;
+  // sideways the lines' own range (the lane may reach past it: clipped).
+  double xmax = 20.0, ylo = 1e9, yhi = -1e9;
+  for (const json& ln : draw_)
+    if (ln.contains("points") && ln["points"].is_array())
+      for (const json& q : ln["points"])
+        if (q.is_array() && q.size() >= 2) {
+          xmax = std::max(xmax, appui::NumAt(q, 0) + 3.0);
+          ylo = std::min(ylo, appui::NumAt(q, 1));
+          yhi = std::max(yhi, appui::NumAt(q, 1));
+        }
+  if (ylo > yhi) ylo = yhi = 0.0;
+  const double ymid = 0.5 * (ylo + yhi), yspan = std::max(0.2, 0.5 * (yhi - ylo)) * 1.15;  // half range, 15 % margin
+  const json lane = last_scene_.is_object() && last_scene_.contains("lane") && last_scene_["lane"].is_object()
+                        ? last_scene_["lane"] : json();
+  const double half_lane = lane.is_object() ? JNum(lane, "width", 3.5) * 0.5 : 0.0;
+  const double xmin = -6.0;
+  const float pad = fs * 1.2f;
+  const double s = (sz.x - 2 * pad) / (xmax - xmin);  // px per metre forward
+  const double mag = draw_mag_ > 0 ? draw_mag_ : std::max(1.0, (sz.y * 0.5 - pad) / (yspan * s));
+  // Auto: the lines' middle in the middle of the plot; a fixed scale: the reference point's line.
+  const double yc = draw_mag_ > 0 ? 0.0 : ymid;
+  const float cy = o.y + sz.y * 0.5f;
+  auto to = [&](double x, double y) {
+    return ImVec2(static_cast<float>(o.x + pad + (x - xmin) * s), static_cast<float>(cy - (y - yc) * s * mag));
+  };
+  const double yr = (sz.y * 0.5) / (s * mag);  // lateral half range on the plot, m
+  // Grid: every 10 m forward, every 0.5 m (or 1 m) sideways.
+  const ImU32 grid = ImGui::GetColorU32(ImVec4(1, 1, 1, 0.07f)), label = ImGui::GetColorU32(ImVec4(1, 1, 1, 0.35f));
+  const float ls = fs * 0.72f;
+  for (double x = 0; x <= xmax; x += 10) {
+    dl->AddLine(ImVec2(to(x, 0).x, o.y), ImVec2(to(x, 0).x, e.y), grid);
+    dl->AddText(ImGui::GetFont(), ls, ImVec2(to(x, 0).x + 3, e.y - ls - 3), label, Fmt("%.0f m", x).c_str());
+  }
+  // Sideways grid: a step of 0.1 / 0.2 / 0.5 / 1 / 2 m, about 2 font heights apart.
+  double ystep = 0.1;
+  for (double st : {0.1, 0.2, 0.5, 1.0, 2.0, 5.0}) { ystep = st; if (st * s * mag >= fs * 2.0) break; }
+  for (double y = std::ceil((yc - yr) / ystep) * ystep; y <= yc + yr; y += ystep) {
+    const float py = to(0, y).y;
+    const bool zero = std::fabs(y) < ystep * 0.01;
+    dl->AddLine(ImVec2(o.x, py), ImVec2(e.x, py), zero ? ImGui::GetColorU32(ImVec4(1, 1, 1, 0.15f)) : grid);
+    dl->AddText(ImGui::GetFont(), ls, ImVec2(o.x + 3, py - ls - 1), label, Fmt(ystep < 0.5 ? "%+.1f m" : "%+.1f m", zero ? 0.0 : y).c_str());
+  }
+  // The lane (the scene's centre line and its edges).
+  if (lane.is_object() && lane.contains("center_rel") && lane["center_rel"].is_array()) {
+    std::vector<std::pair<double, double>> pts;
+    for (const json& q : lane["center_rel"])
+      if (q.is_array() && q.size() >= 2) pts.emplace_back(appui::NumAt(q, 0), appui::NumAt(q, 1));
+    std::vector<ImVec2> c, l, r;
+    for (size_t i = 0; i < pts.size(); ++i) {
+      const size_t i0 = i + 1 < pts.size() ? i : (i ? i - 1 : 0), i1 = std::min(i0 + 1, pts.size() - 1);
+      double dx = pts[i1].first - pts[i0].first, dy = pts[i1].second - pts[i0].second;
+      const double n = std::max(1e-6, std::sqrt(dx * dx + dy * dy));
+      dx /= n; dy /= n;
+      c.push_back(to(pts[i].first, pts[i].second));
+      l.push_back(to(pts[i].first - dy * half_lane, pts[i].second + dx * half_lane));
+      r.push_back(to(pts[i].first + dy * half_lane, pts[i].second - dx * half_lane));
+    }
+    if (c.size() > 1) {
+      dl->AddPolyline(l.data(), static_cast<int>(l.size()), ImGui::GetColorU32(ImVec4(1, 1, 1, 0.45f)), 0, 1.5f);
+      dl->AddPolyline(r.data(), static_cast<int>(r.size()), ImGui::GetColorU32(ImVec4(1, 1, 1, 0.45f)), 0, 1.5f);
+      dl->AddPolyline(c.data(), static_cast<int>(c.size()), ImGui::GetColorU32(ui::WithAlpha(p.warning, 0.35f)), 0, 1.0f);
+    }
+  }
+  // The algorithm's lines, in its order (the last on top); a single point is a dot.
+  for (const json& ln : draw_) {
+    if (!ln.contains("points") || !ln["points"].is_array()) continue;
+    const json col = ln.value("color", json::array({255, 255, 255}));
+    const ImU32 cu = IM_COL32(col.size() > 0 ? col[0].get<int>() : 255, col.size() > 1 ? col[1].get<int>() : 255,
+                              col.size() > 2 ? col[2].get<int>() : 255, 230);
+    const double w = JNum(ln, "width", 0.05);
+    std::vector<ImVec2> q;
+    for (const json& pt : ln["points"])
+      if (pt.is_array() && pt.size() >= 2) q.push_back(to(appui::NumAt(pt, 0), appui::NumAt(pt, 1)));
+    // Widths are the CARLA line widths (m): thin here, so the thick ones do not hide the rest.
+    if (q.size() == 1)
+      dl->AddCircleFilled(q[0], std::clamp(static_cast<float>(w * 20.0), 1.5f, 3.5f) * ui::Scale(), cu);
+    else if (q.size() > 1)
+      dl->AddPolyline(q.data(), static_cast<int>(q.size()), cu, 0, std::clamp(static_cast<float>(w * 22.0), 1.0f, 3.0f) * ui::Scale());
+  }
+  // The reference point (CarSim's origin): a small arrow forward.
+  const ImVec2 r0 = to(0, 0);
+  const float a = fs * 0.55f;
+  dl->AddTriangleFilled(ImVec2(r0.x + a, r0.y), ImVec2(r0.x - a * 0.6f, r0.y - a * 0.6f), ImVec2(r0.x - a * 0.6f, r0.y + a * 0.6f),
+                        ImGui::GetColorU32(p.accent));
+  dl->PopClipRect();
+  const std::string cap = Fmt("俯视 · x 向前（右）· y 向左（上）· 横向 ×%.1f（纵向真实比例）· 三角 = 参考点", mag);
+  dl->AddText(ImGui::GetFont(), fs * 0.78f, ImVec2(o.x + fs * 0.4f, o.y + fs * 0.3f), ImGui::GetColorU32(ImVec4(1, 1, 1, 0.75f)),
+              cap.c_str());
+  ui::RecordTarget("draw:lines");
+}
+
 void App::DrawSceneTab() {
   const ui::Palette& p = ui::Colors();
   const float fs = ImGui::GetFontSize();

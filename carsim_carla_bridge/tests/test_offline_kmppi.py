@@ -198,8 +198,12 @@ class DrawTests(unittest.TestCase):
         scene = {"units": UNITS, "lane": {"center_rel": [[2.0 * i, 0.0] for i in range(26)], "offset": 0.0}}
         c.control({"Vx": 72.0, "Vy": 0.0, "AVz": 0.0}, 0.0, 0.05, scene)
         lines = c.draw
-        self.assertEqual(len(lines), 64 + 3)
-        cand, ref, mean, best = lines[:64], lines[64], lines[65], lines[66]
+        self.assertEqual(len(lines), 64 + 64 + 3)
+        cand, dots, ref, mean, best = lines[:64], lines[64:128], lines[128], lines[129], lines[130]
+        # A dot at each candidate's end, in its colour.
+        self.assertTrue(all(len(d["points"]) == 1 for d in dots))
+        self.assertEqual([d["points"][0] for d in dots], [l["points"][-1] for l in cand])
+        self.assertEqual([d["color"] for d in dots], [l["color"] for l in cand])
         self.assertEqual((ref["color"], mean["color"], best["color"]), ([40, 230, 90], [255, 215, 0], [255, 30, 30]))
         self.assertGreater(best["width"], mean["width"])
         self.assertGreater(mean["width"], cand[0]["width"])
@@ -209,6 +213,14 @@ class DrawTests(unittest.TestCase):
         # The bold one is the highest weight: the same as the reddest candidate (drawn last among them).
         self.assertEqual(best["points"], cand[-1]["points"])
         self.assertEqual(cand[-1]["color"], [255, 60, 40])
+        self.assertEqual(cand[0]["width"], 0.015)
+
+    def test_a_single_point_is_a_dot(self):
+        import session
+        segs, _ = session.draw_segments([{"points": [[1, 0]], "width": 0.2}, {"points": []}], (0.0, 0.0, 0.0, 0.0))
+        self.assertEqual(len(segs), 1)
+        a, b, w, c = segs[0]
+        self.assertEqual((round(a.x, 9), b, w), (1.0, None, 0.2))
 
     def test_find_chrono_python(self):
         import chrono_local

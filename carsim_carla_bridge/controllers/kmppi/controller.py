@@ -33,6 +33,10 @@
            推演的状态由包在预测模型外面的一层记下来（_Recorder），算法本身不动。
     曲线   ESS、温度、最小代价、加权平均代价、ax、前轮转角、计算耗时放在 self.debug 里：
            界面“曲线”面板第二排实时显示，运行记录里是 log_debug.csv。
+    GPU    USE_GPU = True 时 K 条候选的推演和代价在 NVIDIA 显卡上算（kmppi_gpu.py，要装 CuPy：
+           pip install cupy-cuda12x）：RTX 3090 上每次计算约 11 ms，CPU 约 55 ms（每个控制周期算 2 次，
+           CPU 版比 0.05 s 的周期慢，仿真跟不上实时）。结果和 CPU 版一致到舍入误差（代价相对差 ~1e-13，
+           tests/test_offline_kmppi_gpu.py 核对）。没有显卡或 CuPy 时自动用 CPU，并在“输出”页说明原因。
 单位跟随“CarSim 动力学”页（scene["units"]）。
 """
 import math
@@ -57,6 +61,7 @@ REF_SPEED = 20.0     # m/s，参考车速（原工程 20 m/s）
 PRINT_EVERY = 5.0    # s，每隔多久在“输出”页打印一行状态
 DRAW_CANDIDATES = 64  # 每次画多少条候选轨迹（0 = 不画）
 DRAW_EVERY = 3       # 每隔几步取一个点（T = 33 步 → 12 个点）
+USE_GPU = True       # 推演放在 NVIDIA 显卡上（没有显卡或 CuPy 时自动用 CPU）
 
 
 class _Recorder:
@@ -88,6 +93,17 @@ class Controller:
         self.ref_box = ReferenceBox(cfg.T)
         self.rec = _Recorder(model.step)
         self.ctrl = build_kmppi(cfg, self.rec, self.ref_box, np.random.default_rng(cfg.rng_seed))
+        self.device = "CPU"
+        if USE_GPU:
+            import kmppi_gpu
+            ok, why = kmppi_gpu.available()
+            if ok:
+                self.ctrl._rollout_cost = kmppi_gpu.GPURollout(self.ctrl, model, cfg, self.ref_box, self.rec)
+                self.device = "GPU（%s）" % why
+            else:
+                print("KMPPI：GPU 不可用（%s），推演用 CPU：每个周期约要算 0.1 s，超过 %.2f s 的控制周期，"
+                      "仿真会比实时慢（结果不变）" % (why, cfg.dt))
+        print("KMPPI：K = %d 条候选、T = %d 步，推演在 %s 上" % (cfg.K, cfg.T, self.device))
         self.pick_rng = np.random.default_rng(1)   # 挑画哪几条（和算法的随机数分开，不影响结果）
         self.draw = None
         self.debug = None
@@ -240,6 +256,6 @@ class Controller:
         o = np.abs(np.asarray(self.offsets)) if self.offsets else np.zeros(1)
         v = np.asarray(self.speeds)
         print("KMPPI 结束（%s）：车道中心偏差 均方根 %.3f m、最大 %.3f m；车速 %.2f ~ %.2f m/s；平均 ESS %.1f；"
-              "每次计算平均 %.0f ms、最长 %.0f ms（%d 次）" % (
+              "每次计算（%s）平均 %.0f ms、最长 %.0f ms（%d 次）" % (
                   reason, math.sqrt(float(np.mean(o ** 2))), float(np.max(o)), float(v.min()), float(v.max()),
-                  float(np.nanmean(self.ess)), self.compute_s / self.n_calls * 1000, self.compute_max * 1000, self.n_calls))
+                  float(np.nanmean(self.ess)), self.device, self.compute_s / self.n_calls * 1000, self.compute_max * 1000, self.n_calls))

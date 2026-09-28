@@ -133,6 +133,7 @@ git clone https://github.com/Mrchengyuan/python_carsim_env
    ```bash
    python3 -m venv venv_build
    venv_build/bin/pip install carla_src/PythonAPI/carla/dist/carla-0.9.16-cp310-cp310-linux_x86_64.whl numpy pillow shapely networkx
+   venv_build/bin/pip install cupy-cuda12x   # 可选：KMPPI 的 GPU 推演（NVIDIA 显卡）
    venv_build/bin/python -c "import carla; print(hasattr(carla.Vehicle, 'apply_external_state'))"   # 输出 True 就对了
    ```
 5. `bash scripts/install_desktop_icons.sh`，双击桌面上的 **CARLA CoSim Studio（改版）**。第一次启动要编译着色器（20–40 分钟），以后约 40 秒（本机实测 42 秒）。
@@ -348,11 +349,13 @@ def control(self, exports, t, dt, scene):
 
 **没有 CarSim 时：Chrono 宝马 E90 替身**（`chrono_bmw/`）。它包装 `kmppi_chrono` 的 `chrono_plant.py`：命令适配原样，四轮加扭矩、转向按标定表；对外接口与 CarSim 相同，导出变量按 CarSim 的名字、坐标和单位给出。前轮转角已扣除 E90 约 1.26° 的静态前束。需要装了 PyChrono 10.0（projectchrono 频道）的 conda 环境 `chrono`（服务器上已装好）。在界面里用：**CarSim 动力学** 页勾选 **Chrono 宝马（服务器）**，后端运行时会自己启动它（`chrono_local.py`，在后台运行 `carsim_service.py --chrono`），不用开终端；“初始车速”默认 20 m/s。
 
-在服务器上的完整步骤：桌面图标打开界面（改版或原版 CARLA 都行）→ **测试场景** 页点“切到 Town04 高速起点”（不用开封道）→ **驾驶模式** 页算法文件选 `controllers/kmppi/controller.py`，入口 `Controller` → **CarSim 动力学** 页勾选“Chrono 宝马（服务器）” → **联合仿真** 页运行时长比如 40 s（仿真步长由算法自动设成 0.05 s）→ **运行**。整体约 0.2 倍实时（KMPPI 每次计算约 113 ms），40 s 仿真要跑 3~4 分钟。
+在服务器上的完整步骤：桌面图标打开界面（改版或原版 CARLA 都行）→ **测试场景** 页点“切到 Town04 高速起点”（不用开封道）→ **驾驶模式** 页算法文件选 `controllers/kmppi/controller.py`，入口 `Controller` → **CarSim 动力学** 页勾选“Chrono 宝马（服务器）” → **联合仿真** 页运行时长比如 40 s（仿真步长由算法自动设成 0.05 s）→ **运行**。KMPPI 的推演默认在 GPU 上（见下），每个控制周期约 36 ms，40 s 仿真约 1 分钟跑完；没有 GPU 时约 113 ms，约 0.25 倍实时。
 
 **实时显示候选轨迹**：每次计算后，KMPPI 从 2048 条推演里挑 64 条画进 CARLA 画面（权重最高的一半 + 其余随机一半，颜色按权重从蓝到红），最好的一条（代价最低）亮红加粗画在最上层，黄色粗线是按权重平均的轨迹（实际执行的就是它的第一步），绿色是参考轨迹。每条候选末端有一个同色的点。画线用的是平台的 `self.draw`（见[控制算法编写指南](docs/控制算法编写指南.md) 15.4 节），采集数据时不画。不想画时把 `controller.py` 开头的 `DRAW_CANDIDATES` 设为 0。你的探索噪声很小（转向角速度 0.006 rad/s），直道上 64 条候选在 33 m 外也只散开约 1 m，所以 3D 画面里是一束光；要看清一条条候选，打开底部面板的 **轨迹** 页签：同样的线的俯视图，横向自动放大（放大倍数写在图上），能看到候选从车身处散开成扇形、末端的点从蓝到红排开。
 
-在 Town04 高速上实测（`tests/test_kmppi_chrono_carla.py`，40 s、800 m，含一段半径约 74 m 的弯）：车道中心偏差均方根 0.035 m、最大 0.16 m，车速 19.97~20.03 m/s，无碰撞、不出车道；原版、改版 CARLA 结果相同。KMPPI 每次计算约 113 ms（服务器 CPU），整体约 0.25 倍实时。
+在 Town04 高速上实测（`tests/test_kmppi_chrono_carla.py`，40 s、800 m，含一段半径约 74 m 的弯）：车道中心偏差均方根 0.035 m、最大 0.16 m，车速 19.97~20.03 m/s，无碰撞、不出车道；原版、改版 CARLA 结果相同。每个控制周期（2 次 refinement）GPU 上约 36 ms、CPU 上约 113 ms，两者跑出的结果相同。
+
+**GPU 加速**（`controllers/kmppi/kmppi_gpu.py`）：K = 2048 条候选的 33 步推演和代价放进一个 CUDA 核（一个线程一条候选），预测模型和代价与 `prediction_model.py` / `kmppi_controller.py` 逐行对应，双精度、不做乘加合并；RBF 插值用矩阵乘代替 einsum。其余（采样、权重、自适应温度）还是原来的代码，原算法文件没有改。和 CPU 版的差别只在舍入误差：40 次闭环计算里代价相对差 < 1e-12、输出差 < 1e-13（`tests/test_offline_kmppi_gpu.py`），不是逐位相同（GPU 和 CPU 的 sin / cos / atan2 最后一位不同）。`controller.py` 里 `USE_GPU = True`（界面“算法参数”里也能改）；需要 NVIDIA 显卡和 CuPy（服务器的 `venv_build` 已装：`pip install cupy-cuda12x`），没有时自动用 CPU 并在输出窗口说明原因。
 
 **接真实 CarSim**：把 `controller.py` 开头的 `OUTPUT` 改成 `"carsim"`，输出就换成你的 CarSim 导入 `[油门 0~1, 制动主缸压力 MPa, 方向盘转角 deg]`。换算和原工程 14DOF 适配层同一思路：方向盘转角 = 前轮转角 × 传动比（从 19 起，运行中用导出的 Steer_SW 和前轮转角自动修正）；KMPPI 的加速度积分成目标车速，车速 PI 加加速度前馈得到油门或制动（制动满量程 8 MPa）。这些常数都在文件开头。**两点要注意**：① KMPPI 和原工程一样要从接近参考车速起步（低速时预测模型的侧偏角不可信，会乱打方向），CarSim 的 .sim 里把初始车速设为 72 km/h；从太低的车速开始时输出窗口会提示。② 预测模型的车辆参数还是 Chrono 宝马 E90 的，换成你的车要按那台车重新标定。用模拟 CarSim（初始车速 20 m/s）实测：40 s、800 m，车道偏差均方根 0.15 m，车速 19.9~20.2 m/s。
 
@@ -390,6 +393,7 @@ def control(self, exports, t, dt, scene):
 | `tests/test_offline_path_follower.py` | 不需要 CARLA：路径跟踪算法 `controllers/path_follower.py`：转向符号（偏左往右打、左弯往左打）、两种单位结果相同、传动比由 CarSim 导出变量估计、弯前降速、太快时制动、没有车道信息时低速回正；闭环（模拟 CarSim）：0.8 m 初始偏差 + 40 m 半径弯道、路口 11 m 右转和 8 m 掉头弯（前后轴都靠近中心线）、另用**带轮胎侧偏和转向滞后的动力学模型**（滞后 0.35 s、60 km/h 仍不摆动）；路口车道读数跳到转弯车道 / 来回跳 / 短暂没有时沿记住的路径直行，没有自车位姿时会跟错（证明检查有效）；目标车速升高有上限、降低立即生效（车道读数来回跳时油门制动不来回切换）、制动量程按主缸压力、20 Hz 帧步长同样准确 | 26/26 |
 | `tests/test_offline_examples.py` | 不需要 CARLA：[控制算法编写指南](docs/控制算法编写指南.md) 的 5 个示例（`controllers/examples/`）和文档里的代码一字不差；每个都按运行时的方式（`session.load_controller`）加载，接模拟 CarSim 闭环：定速 30 km/h、沿车道过 40 m 半径弯道偏差 < 0.3 m、跟 20 km/h 的前车停在期望车距、函数入口和它的 finish()、辅助模块和参数文件 | 7/7 |
 | `tests/test_offline_kmppi.py` | 不需要 CARLA 和 Chrono：KMPPI 移植的车道参考（直线上逐步前移、圆弧上航向和 r = v/R、vy 按原工程的稳态关系）；用原工程的 3DOF 被控对象闭环，从偏离 0.5 m 起步，经直道进入 250 m 半径的弯，3 s 后偏差 < 0.1 m、车速保持 20 m/s；两次计算之间保持输出；仿真步长不能整除 0.05 s 时报错；算法文件里的 `FRAME_DT` 决定运行的仿真步长（只解析、不运行文件；和界面不同时说明；不是数字、超出范围时说清原因；CARLA 物理下不用）；没有车道信息时保持上一次的输出；CarSim 服务 `--chrono` 不检查 .sim；平台画线 `self.draw`：自车坐标换算到 CARLA（左为左）、默认颜色和线宽、格式错误说明是第几条、超过 5000 段只画前 5000 段、取走一次后每帧重画、采集数据时不画并提示一次；KMPPI 画的线（64 条候选、参考、加权平均、最好的一条加粗且和最红的候选是同一条）；找 chrono 环境的 Python；`OUTPUT = "carsim"` 的换算（方向盘转角 = 前轮转角 × 传动比、传动比从导出变量学到、加速度 → 油门 / 制动且制动不超过满量程、目标车速不离实际车速太远；`"ax_delta"` 时原样输出） | 22/22 |
+| `tests/test_offline_kmppi_gpu.py` | 不需要 CARLA：KMPPI 的 GPU 推演和 CPU 版在 40 次闭环计算（同样的随机数、每次 2 次 refinement）里每条候选的代价相对差 < 1e-10、输出的 [ax, 前轮转角] 差 < 1e-10、画线用的候选轨迹差 < 1e-9 m（实测 4e-13、8e-14、3e-13）；GPU 比 CPU 快（每次计算约 11 ms 对 55 ms）；`controller.py` 默认用 GPU 并说明、`USE_GPU = False` 用 CPU、没有 CuPy 时退回 CPU 并说明原因（没有显卡的机器上只查后两项） | 8/8 |
 | `tests/test_offline_algo_debug.py` | 不需要 CARLA：控制算法的 `self.debug`（和模块里的 `debug`）：只留有限的数字（numpy 的数、整数、布尔也行），不是数字的名字报出来、不是字典时说清原因、最多 32 个；按运行时的方式加载，每次 control() 后取、一直保留；记录进 `log_debug.csv`，列按第一次给出的名字，之后新出现的名字报出来 | 6/6 |
 | `tests/test_offline_runs_compare.py` | 不需要 CARLA：运行对比的后端：列出运行记录（新的在前；算法、车辆、地图、时长、指标、有没有 debug；没有 run.json 的文件夹不算；目录不存在时说清）、读一次运行的时间序列（按 t 对齐轨迹、车速、车道偏差、控制输出按车辆类型命名、`self.debug` 量；抽稀时保留最后一点；不是运行记录时说清）、两个命令走后端的文件线程 | 6/6 |
 | `tests/test_offline_algo_params.py` | 不需要 CARLA：算法参数：大写常数只解析不运行地读出（数字、文字、布尔、负数、`KP, KI = …`、行尾注释；小写名和算式不列；文件有语法错误时报出来）；界面上的改动按算法文件区分；加载算法后、创建对象前写回模块（保持文件里的类型），输出里列出改了哪些和文件里已经没有的名字；改过的 FRAME_DT 就是运行的仿真步长 | 6/6 |

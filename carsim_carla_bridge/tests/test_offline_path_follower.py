@@ -29,6 +29,9 @@ def load_follower():
 
 
 PF = load_follower()
+# The test vehicles (the mock CarSim, DynamicBicycle): wheelbase 2.9 m, steering ratio 16 and a 0~1
+# brake pedal as import 2. (The file is set up for the user's CarSim car: 2.66 m, about 19, MPa.)
+PF.WHEELBASE, PF.STEER_RATIO_INIT, PF.BRAKE_MAX = 2.9, 16.0, 1.0
 UNITS = {"angle": "deg", "speed": "km/h", "rate": "deg/s", "wheel_spin": "rpm", "jounce": "mm"}
 
 
@@ -104,6 +107,35 @@ class SpeedTests(unittest.TestCase):
         self.assertLess(c._curve_speed(left_curve(20.0), 11.0), PF.TARGET_KMH)
         self.assertAlmostEqual(c._curve_speed(left_curve(20.0), 11.0), math.sqrt(PF.A_LAT_MAX * 20.0) * 3.6, delta=1.0)
         self.assertEqual(c._curve_speed(straight(0.0), 11.0), PF.TARGET_KMH)
+
+    def test_target_speed_rises_gently_and_drops_at_once(self):
+        c = fresh()
+        for i in range(50):  # 1 s at 20 km/h on a straight: the target leaves the speed at ACCEL_MAX
+            c.control({"Vx": 20.0}, 0.02 * i, 0.02, scene(straight(0.0)))
+        self.assertAlmostEqual(c.target, 20.0 + PF.ACCEL_MAX * 3.6 * 1.0, delta=0.2)
+        c.control({"Vx": 20.0}, 1.0, 0.02, scene(left_curve(12.0)))
+        self.assertAlmostEqual(c.target, c._curve_speed(left_curve(12.0), 20.0 / 3.6), delta=1e-9)
+
+    def test_readings_flickering_between_a_curve_and_a_straight_do_not_toggle_the_pedals(self):
+        # At 40 km/h before a junction the reading alternates between the straight lane and a
+        # 12 m turn: once slowing down it keeps braking / coasting, no throttle in between.
+        c = fresh()
+        c.control({"Vx": 40.0}, 0.0, 0.02, scene(straight(0.0)))
+        out = [c.control({"Vx": 40.0}, 0.02 * (i + 1), 0.02, scene(left_curve(12.0) if i % 2 == 0 else straight(0.0)))
+               for i in range(40)]
+        self.assertGreater(out[0][1], 0.0)
+        self.assertEqual([o[0] for o in out if o[0] > 0.0], [])
+
+    def test_brake_range_in_master_cylinder_pressure(self):
+        saved = PF.BRAKE_MAX
+        try:
+            PF.BRAKE_MAX = 8.0  # import 2 = IMP_PCON_BK, MPa
+            thr, brk, _ = fresh().control({"Vx": 70.0}, 1.0, 0.02, scene(straight(0.0)))
+            self.assertEqual(thr, 0.0)
+            self.assertGreater(brk, 1.0)
+            self.assertLessEqual(brk, 8.0)
+        finally:
+            PF.BRAKE_MAX = saved
 
     def test_brakes_when_too_fast(self):
         thr, brk, _ = fresh().control({"Vx": 70.0}, 1.0, 0.02, scene(straight(0.0)))
@@ -267,7 +299,7 @@ def mock():
     return MockCarSimEnv(NAMES, t_step=0.001, t_stop=1e9, units=UNITS)
 
 
-def drive(read_lane, seconds, pose=True, printed=None, plant=None, target_kmh=None, road=None):
+def drive(read_lane, seconds, pose=True, printed=None, plant=None, target_kmh=None, road=None, dt=0.02):
     """Closed loop: read_lane(X, Y, yaw_deg) -> (lane or None, road heading); plant: the
     mock CarSim unless given. pose: hand the algorithm the ego's X / Y / Yaw (the
     platform's default selection). road: also measure the rear axle's offset from it.
@@ -278,7 +310,7 @@ def drive(read_lane, seconds, pose=True, printed=None, plant=None, target_kmh=No
     saved = PF.TARGET_KMH
     if target_kmh:
         PF.TARGET_KMH = target_kmh
-    dt, t, log = 0.02, 0.0, []
+    t, log = 0.0, []
     try:
         for _ in range(int(seconds / dt)):
             ex = dict(zip(NAMES, obs))  # Xo / Yo: the front axle, like CarSim (the scene's origin)
@@ -295,7 +327,7 @@ def drive(read_lane, seconds, pose=True, printed=None, plant=None, target_kmh=No
                 printed.append(out.getvalue())
             rear = road.offset(X - PF.WHEELBASE * math.cos(yaw), Y - PF.WHEELBASE * math.sin(yaw))[0] if road else None
             log.append((t, lane["offset"] if lane else None, ex["Vx"], h, X, Y, action[1], rear))
-            obs, _, done, _ = env.control_step(action, 20)
+            obs, _, done, _ = env.control_step(action, int(round(dt / 0.001)))
             t += dt
             assert not done
     finally:
@@ -324,6 +356,25 @@ class ClosedLoopTests(unittest.TestCase):
         self.assertLess(max(final), 0.10)
         self.assertLess(max(curve_speed), math.sqrt(PF.A_LAT_MAX * road.r) * 3.6 + 3.0)  # slowed for the curve
         self.assertGreater(log[-1][5], 150.0)  # well into the last straight
+
+    def test_20_hz_frames(self):
+        # A frame step of 0.05 s (fewer round trips in remote mode): the same accuracy.
+        road = Road.with_curve()
+        log = drive(road.lane, 40.0, dt=0.05)
+        north = road.pts[-1][2]
+        settled = [abs(o) for tt, o, v, h, x, y, b, r in log if tt > 10.0]
+        final = [abs(o) for tt, o, v, h, x, y, b, r in log if h > north - 1e-9 and y > 70.0]
+        print("20 Hz: anywhere after 10 s max %.3f m, final max %.3f m" % (max(settled), max(final)))
+        self.assertLess(max(settled), 0.40)
+        self.assertLess(max(final), 0.10)
+
+    def test_speeds_up_gently_from_rest_and_out_of_a_turn(self):
+        road = Road.build([("S", 60), ("C", -11.0, 90), ("S", 400)])
+        log = drive(road.lane, 30.0)
+        acc = [(b[2] - a[2]) / 3.6 / 0.5 for a, b in zip(log, log[25:])]  # km/h -> m/s^2 over 0.5 s
+        print("speeding up: at most %.2f m/s^2" % max(acc))
+        self.assertLess(max(acc), PF.ACCEL_MAX * 1.2)
+        self.assertGreater(log[-1][2], PF.TARGET_KMH - 1.0)  # back at the set speed
 
     def check_tight_turns(self, plant, limit):
         """A junction's 11 m right turn and an 8 m hairpin: front and rear axle both near the centre."""

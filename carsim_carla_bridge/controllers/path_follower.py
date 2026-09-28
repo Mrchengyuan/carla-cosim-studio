@@ -15,23 +15,27 @@
           和记住的对不上时继续沿记住的走，短暂没有车道信息时也一样；过了路口两者又一致，照常更新。
           遇到岔路走转弯最少的那条（场景信息就是这样取中心线的）。
     纵向  PI 定速到 TARGET_KMH；前方有弯时按侧向加速度不超过 A_LAT_MAX 提前降速。
+          目标车速降低立即生效，升高按 ACCEL_MAX 慢慢升：起步、出弯加速平顺，
+          路口里车道读数来回跳时也不会油门、制动来回切换。
           不看红绿灯、不避让其他车辆和行人：只做路径跟踪。
 
 需要的导出变量：Vx（或场景里自车的 Speed）；估计传动比用 Steer_SW、Steer_L1、Steer_R1
 （没有时按 STEER_RATIO_INIT）。单位跟随“CarSim 动力学”页（scene["units"]）。
 返回 [油门 0~1, 制动, 方向盘转角 deg（左为正）]，与 .sim 导入变量（REPLACE）的顺序一致。
 
-按你的 CarSim 车辆改下面几个常数即可：WHEELBASE（轴距）、TARGET_KMH（目标车速）、
-BRAKE_MAX（导入变量 2 的量程：制动踏板 0~1 时为 1；主缸压力 IMP_PCON_BK 时按 MPa，例如 8）。
+下面几个常数已按当前的 CarSim 车辆设好（换车时改）：WHEELBASE（轴距）、TARGET_KMH（目标车速）、
+BRAKE_MAX（导入变量 2 的量程：主缸压力 IMP_PCON_BK 时按 MPa；制动踏板 0~1 时改成 1）。
 """
 import math
 
-WHEELBASE = 2.9            # m，轴距（CarSim 车辆参数里查）
+WHEELBASE = 2.66           # m，轴距。从 CarSim 运行数据估计（转弯时 车速×tan(前轮转角)÷横摆角速度，按车速回归到 0），
+                           # 请到 CarSim 车辆参数里核对
 TARGET_KMH = 40.0          # km/h，目标车速
 A_LAT_MAX = 2.0            # m/s²，弯道里允许的侧向加速度（决定过弯车速）
 MIN_KMH = 10.0             # km/h，弯道降速的下限
-BRAKE_MAX = 1.0            # 导入变量 2 满量程（踏板 0~1：1；主缸压力 MPa：例如 8）
-STEER_RATIO_INIT = 16.0    # 方向盘 / 前轮 传动比初值（运行中用 CarSim 导出变量自动修正）
+BRAKE_MAX = 8.0            # 导入变量 2 满量程：主缸压力 IMP_PCON_BK，MPa（8 MPa 约为紧急制动）；制动踏板 0~1 时改成 1
+ACCEL_MAX = 1.5            # m/s²，目标车速升高的快慢（降低不限）
+STEER_RATIO_INIT = 19.0    # 方向盘 / 前轮 传动比初值（当前车辆约 19；运行中用 CarSim 导出变量自动修正）
 STEER_SW_MAX = 540.0       # deg，方向盘转角限幅
 STEER_RATE_MAX = 540.0     # deg/s，方向盘转速限幅（真实转向系统和驾驶员都转不了更快）
 # 前视距离是最主要的调节量：越短跟得越紧（弯道切角小），太短会左右摆（CarSim 的轮胎、转向系统有滞后）。
@@ -73,6 +77,7 @@ def _reach(pts):
 class Controller:
     def reset(self):
         self.integral = 0.0
+        self.target = None          # km/h，限制了升速快慢的目标车速
         self.ratio = STEER_RATIO_INIT
         self.sw_last = 0.0          # deg
         self.path = []              # 记住的中心线，全局坐标 [(X, Y)]
@@ -237,6 +242,12 @@ class Controller:
         sw = max(self.sw_last - STEER_RATE_MAX * dt, min(self.sw_last + STEER_RATE_MAX * dt, sw))
         sw = max(-STEER_SW_MAX, min(STEER_SW_MAX, sw))
         self.sw_last = sw
+
+        # 目标车速：降低立即生效，升高每秒最多 ACCEL_MAX（从当前车速起步）
+        if self.target is None:
+            self.target = v_kmh
+        self.target = min(target_kmh, self.target + ACCEL_MAX * 3.6 * max(dt, 0.0))
+        target_kmh = self.target
 
         # 纵向：PI 定速；执行器饱和时不再累积积分（防积分饱和）
         err = target_kmh - v_kmh

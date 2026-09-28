@@ -1371,7 +1371,9 @@ void App::DrawPlots() {
   };
   const ImVec2 avail = ImGui::GetContentRegionAvail();
   const float gap = ImGui::GetStyle().ItemSpacing.x;
-  const ImVec2 sz((avail.x - gap * 3) / 4.0f, avail.y);
+  // With the algorithm's own values (self.debug): a second row, a plot per value.
+  const bool with_dbg = !h_dbg_.empty();
+  const ImVec2 sz((avail.x - gap * 3) / 4.0f, with_dbg ? (avail.y - ImGui::GetStyle().ItemSpacing.y) * 0.5f : avail.y);
   ImPlotFlags pf = ImPlotFlags_NoMenus | ImPlotFlags_NoBoxSelect;
   ImPlotSpec line;
   line.LineWeight = 1.5f;
@@ -1413,6 +1415,28 @@ void App::DrawPlots() {
     for (int i = 0; i < n_io; ++i)
       ImPlot::PlotLine(imports_named_ ? (i ? "制动" : "油门") : Fmt("导入 %d", i + 1).c_str(), h_t_.data(), io[i].data(), n, line);
     ImPlot::EndPlot();
+  }
+  if (!with_dbg) return;
+  const int m = std::min(static_cast<int>(h_dbg_.size()), 8);
+  const ImVec2 ds((avail.x - gap * (m - 1)) / m, sz.y);
+  for (int i = 0; i < m; ++i) {
+    auto& sr = h_dbg_[i];
+    if (i) ImGui::SameLine();
+    const int nn = std::min(n, static_cast<int>(sr.second.size()));
+    if (ImPlot::BeginPlot(Fmt("%s（算法）###dbg%d", sr.first.c_str(), i).c_str(), ds, pf | ImPlotFlags_NoLegend)) {
+      ImPlot::SetupAxes(nullptr, nullptr, ax, ImPlotAxisFlags_None);
+      float lo = 1e30f, hi = -1e30f;
+      for (float v : sr.second) if (std::isfinite(v)) { lo = std::min(lo, v); hi = std::max(hi, v); }
+      if (lo <= hi) {
+        const float mid = 0.5f * (lo + hi), half = std::max(0.55f * (hi - lo), std::max(1e-6f, std::fabs(mid) * 0.01f));
+        ImPlot::SetupAxisLimits(ImAxis_Y1, mid - half, mid + half, ImPlotCond_Always);
+      }
+      ImPlot::PlotLine(sr.first.c_str(), h_t_.data() + (n - nn), sr.second.data() + (sr.second.size() - nn), nn, line);
+      ImPlot::EndPlot();
+    }
+    if (i == 0) ui::RecordTarget("plots:debug");
+    if (ImGui::IsItemHovered() && h_dbg_.size() > 8)
+      ImGui::SetTooltip("控制算法的 self.debug 有 %d 个量，这里画前 8 个；全部都在运行记录的 log_debug.csv 里", static_cast<int>(h_dbg_.size()));
   }
 }
 

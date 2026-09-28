@@ -690,6 +690,7 @@ void App::StartRun() {
     // Only once the run has started: a refused start (e.g. a typo in the
     // controller) keeps the last run's curves, trail and scene to compare with.
     for (auto* h : {&h_t_, &h_speed_, &h_steer_fl_, &h_steer_fr_, &h_rt_, &h_thr_, &h_brk_, &h_u3_}) h->clear();
+    h_dbg_.clear();
     for (auto& h : h_susp_) h.clear();
     trail_x_.clear();
     trail_y_.clear();
@@ -1009,6 +1010,17 @@ void App::OnEvent(const json& ev) {
     PushHist(h_thr_, a.size() > 0 ? static_cast<float>(appui::NumAt(a, 0)) : 0.0f, kHist);
     PushHist(h_brk_, a.size() > 1 ? static_cast<float>(appui::NumAt(a, 1)) : 0.0f, kHist);
     PushHist(h_u3_, a.size() > 2 ? static_cast<float>(appui::NumAt(a, 2)) : 0.0f, kHist);
+    // The algorithm's self.debug: a series per name (a new name starts with NaN before it; not given: NaN).
+    const json dbg = d.value("debug", json::object());
+    if (dbg.is_object())
+      for (const auto& kv : dbg.items())
+        if (h_dbg_.size() < 32 &&
+            std::none_of(h_dbg_.begin(), h_dbg_.end(), [&](const auto& sr) { return sr.first == kv.key(); }))
+          h_dbg_.push_back({kv.key(), std::vector<float>(h_t_.size() - 1, std::numeric_limits<float>::quiet_NaN())});
+    for (auto& sr : h_dbg_) {
+      const bool has = dbg.is_object() && dbg.contains(sr.first) && dbg[sr.first].is_number();
+      PushHist(sr.second, has ? dbg[sr.first].get<float>() : std::numeric_limits<float>::quiet_NaN(), kHist);
+    }
     // In .sim import order: only the default 3 are known to be [油门, 制动, 方向盘角].
     n_imports_ = static_cast<int>(a.size());
     imports_named_ = d.value("dynamics", std::string()) != "CarSim" || n_imports_ == 3;
@@ -1330,7 +1342,8 @@ void App::BuildTour() {
       // What the algorithm prints goes to the 输出 page: the 算法 filter shows it, and only it.
       {kPanelDrive, [this, print_ctrl] {
          std::ofstream(fs::u8path(print_ctrl)) << "print('tour: 算法已加载')\nN = [0]\ndraw = None\n\n\ndef control(exports, t, dt):\n"
-                                                  "    global draw\n    N[0] += 1\n    if N[0] == 3:\n        print('" << kPrinted << "')\n"
+                                                  "    global draw, debug\n    N[0] += 1\n    if N[0] == 3:\n        print('" << kPrinted << "')\n"
+                                                  "    debug = {'N': N[0], 't x 2': t * 2}\n"
                                                   "    draw = [{'points': [[0, 0], [10, 0.3], [20, 1.0]], 'color': [255, 60, 40], 'width': 0.1},\n"
                                                   "            {'points': [[0, 0], [10, -0.2], [20, -0.6]], 'color': [60, 90, 255]},\n"
                                                   "            {'points': [[20, 1.0]], 'color': [255, 215, 0], 'width': 0.12}]\n"
@@ -1343,6 +1356,10 @@ void App::BuildTour() {
          return log_filter_ == 3 && printed() && ui::TargetShown("log:algo_last") && !ui::TargetShown("log:other");
        }, "11d_algo_output"},
       {kPanelDrive, [this] { click_target_ = "log:filter0"; }, [this] { return log_filter_ == 0; }, ""},
+      // self.debug: the 曲线 panel's second row, a plot per value.
+      {kPanelDrive, [this] { click_target_ = "dock:plots"; }, [this] {
+         return Running() && h_dbg_.size() == 2 && h_dbg_[0].first == "N" && ui::TargetShown("plots:debug");
+       }, "11e0_algo_debug"},
       {kPanelDrive, [this] { click_target_ = "dock:draw"; }, [this] {
          return Running() && draw_.size() == 3 && ui::TargetShown("draw:lines");
        }, "11e_algo_draw"},

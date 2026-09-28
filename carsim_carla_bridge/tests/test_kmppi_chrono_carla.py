@@ -13,7 +13,8 @@ lanes, lane offset rms < 0.3 m and max < 0.8 m; it covers > 700 m; CARLA's
 car follows the Chrono car (the front wheel angles reach CARLA); KMPPI's
 candidate trajectories are drawn in CARLA every frame (self.draw: 64
 candidates with end dots, the reference, the weighted mean, the best one)
-and reach the GUI's 轨迹 tab with the telemetry; a
+and reach the GUI's 轨迹 tab with the telemetry; its diagnostics
+(self.debug) reach the GUI and log_debug.csv; a
 the page's 0.02 s frame step: the run goes at the algorithm's FRAME_DT
 (0.05 s) and says so. Starts its own backend (port 57145); deletes its temp files.
 
@@ -129,6 +130,13 @@ def main():
         sent = [e["data"]["draw"] for e in c.events if e.get("event") == "telemetry" and "draw" in e["data"]]
         check("the GUI gets them too (轨迹 tab: 64 candidates, 64 end dots, reference, mean, best)",
               len(sent) > 100 and all(len(d) == 131 for d in sent[5:]), (len(sent), {len(d) for d in sent}))
+        dbg = [e["data"]["debug"] for e in c.events if e.get("event") == "telemetry" and "debug" in e["data"]]
+        check("KMPPI's diagnostics reach the GUI (self.debug: ESS about 16, compute time)",
+              len(dbg) > 100 and abs(dbg[-1].get("ESS", 0) - 16.0) < 1.0 and dbg[-1].get("计算耗时 (ms)", 0) > 0,
+              (len(dbg), dbg[-1] if dbg else None))
+        drows = read_csv(os.path.join(info.get("record_dir") or "", "log_debug.csv"))
+        check("... and the run record (log_debug.csv, a row per sample)",
+              len(drows) > 300 and {"ESS", "温度", "最小代价", "前轮转角 (rad)"} <= set(drows[0]), (len(drows), list(drows[0])[:6]))
         check("no algorithm error", not any("Traceback" in m or "Error" in m for m in algo), algo[-5:])
         warns = [e["msg"] for e in msgs if e.get("level") == "warn" and "导出变量可疑" in e["msg"]]
         check("the Chrono exports pass the platform's sanity checks", not warns, warns[:2])

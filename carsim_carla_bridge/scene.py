@@ -530,6 +530,8 @@ class Recorder:
             [n for n in export_names if n in (s.get("exports") or ())]
         self.n_actions = int(n_actions or 0)
         self.files = []
+        self._paths = dict(paths)
+        self.debug, self.debug_names, self.debug_new = None, [], set()  # <log>_debug.csv (self.debug of the algorithm)
         self.min_free_gb = min_free_gb
         self.stopped = ""
         self._disk_checked = None  # time.monotonic() of the last free-space check
@@ -556,13 +558,26 @@ class Recorder:
     @staticmethod
     def run_paths(log_path):
         base = os.path.splitext(log_path)[0]
-        return {"main": log_path, "objects": base + "_objects.csv", "lane": base + "_lane.csv"}
+        return {"main": log_path, "objects": base + "_objects.csv", "lane": base + "_lane.csv",
+                "debug": base + "_debug.csv"}
 
-    def write(self, scene, exports, action=None):
+    def write(self, scene, exports, action=None, debug=None):
         """action: the control() output held over the step that led to this
-        sample (None at t0, before the first call): columns u1..un."""
+        sample (None at t0, before the first call): columns u1..un. debug: the
+        algorithm's self.debug values ({name: number}): <log>_debug.csv, its
+        columns the names of the first one (later names: debug_new, not written)."""
         if self.stopped or self._disk_low():
             return
+        if debug:
+            if self.debug is None and self._paths.get("debug"):
+                self.debug_names = list(debug)
+                f = open(self._paths["debug"], "w", newline="", encoding="utf-8")
+                self.files.append(f)
+                self.debug = csv.writer(f)
+                self.debug.writerow(["t", "frame"] + self.debug_names)
+            if self.debug is not None:
+                self.debug_new.update(k for k in debug if k not in self.debug_names)
+                self.debug.writerow([round(scene["t"], 6), scene["frame"]] + _csv_nums([debug.get(k) for k in self.debug_names]))
         t, fr = round(scene["t"], 6), scene["frame"]
         e = scene["ego"]
         u = list(action or [])[:self.n_actions]

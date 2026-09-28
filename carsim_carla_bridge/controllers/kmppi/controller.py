@@ -23,6 +23,8 @@
            从蓝（低）到红（高），末端各有一个同色的点（看得出末端怎么分布）；最好的一条（代价最低、权重最高）加粗画成亮红色；黄色粗线是按权重
            平均的轨迹（实际执行的就是它的第一步）；绿色是参考轨迹。都是质心的轨迹。
            推演的状态由包在预测模型外面的一层记下来（_Recorder），算法本身不动。
+    曲线   ESS、温度、最小代价、加权平均代价、ax、前轮转角、计算耗时放在 self.debug 里：
+           界面“曲线”面板第二排实时显示，运行记录里是 log_debug.csv。
 单位跟随“CarSim 动力学”页（scene["units"]）。
 """
 import math
@@ -73,6 +75,7 @@ class Controller:
         self.ctrl = build_kmppi(cfg, self.rec, self.ref_box, np.random.default_rng(cfg.rng_seed))
         self.pick_rng = np.random.default_rng(1)   # 挑画哪几条（和算法的随机数分开，不影响结果）
         self.draw = None
+        self.debug = None
         self.ref = LaneReference(cfg, self.vehicle)
         self.every = None           # 每隔几帧算一次（第一帧时按帧步长定）
         self.frame = 0
@@ -129,6 +132,10 @@ class Controller:
             act = self.ctrl.command(state, shift_horizon=(i == 0), commit_action=last)
         self.rec.on = False
         spent = time.perf_counter() - t0
+        # The diagnostics as curves (界面“曲线”, log_debug.csv): as run_kmppi.py's diag columns.
+        self.debug = {"ESS": self.ctrl.last_effective_sample_size, "温度": self.ctrl.last_temperature,
+                      "最小代价": self.ctrl.last_min_cost, "加权平均代价": self.ctrl.last_mean_cost,
+                      "ax (m/s²)": float(act[0]), "前轮转角 (rad)": float(act[1]), "计算耗时 (ms)": spent * 1000}
         if DRAW_CANDIDATES > 0 and self.rec.xy:
             self.draw = self._lines(state)
         self.action = [float(act[0]), float(act[1])]

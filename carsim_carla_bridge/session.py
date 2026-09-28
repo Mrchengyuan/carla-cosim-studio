@@ -114,6 +114,27 @@ def check_scenario(d):
         sc["closures"] = scenariomod.check_closures(sc.get("closures"))
 
 
+MAX_DEBUG = 32  # values of self.debug shown and recorded
+
+
+def debug_values(d):
+    """The algorithm's self.debug -> ({name: float}, names that are not finite numbers).
+    RuntimeError in plain words when it is not a dict."""
+    if not isinstance(d, dict):
+        raise RuntimeError("控制算法的 self.debug 应是 {名字: 数字}，例如 {\"ESS\": 16.0, \"代价\": 3.2}；现在是 %s"
+                           % type(d).__name__)
+    out, bad = {}, []
+    for k, v in d.items():
+        try:
+            x = float(v)
+        except (TypeError, ValueError):
+            bad.append(str(k))
+            continue
+        if math.isfinite(x) and len(out) < MAX_DEBUG:
+            out[str(k)[:40]] = x
+    return out, bad
+
+
 MAX_DRAW_SEGMENTS = 5000
 DRAW_LIFT_M = 0.3  # m above the reference point (ground level at the front axle): on the road, not in it
 
@@ -618,6 +639,11 @@ def load_controller(d, ex, n_imports=None, scene=None, output=None):
             if lines is not None:
                 control.draw = lines
                 setattr(holder, "draw", None)
+            # Values to plot and record (self.debug, or a module-level debug): the latest, kept.
+            dbg = getattr(holder, "debug", None)
+            if dbg is not None:
+                control.debug, bad = debug_values(dbg)
+                control.debug_bad.update(bad)
         except KeyError as e:
             k = e.args[0] if len(e.args) == 1 and isinstance(e.args[0], str) else None
             no_export = "导出变量里没有 %r（导出变量在“CarSim 动力学”页设置，现有：%s）" % (
@@ -659,6 +685,7 @@ def load_controller(d, ex, n_imports=None, scene=None, output=None):
             with cap:
                 user_finish(reason)
     control.path, control.running, control.ms, control.draw = path, None, None, None
+    control.debug, control.debug_bad = None, set()
     control.finish = fin if callable(fin) else None
     return control
 
@@ -923,7 +950,12 @@ def scene_step(ses, world_frame, t, ego_velocity=None):
     sample = ses.frame % every == 0  # the data collector samples the same steps
     exports = ses.exports() if sample else None
     if ses.recorder is not None and sample:
-        ses.recorder.write(ses.scene.record_view(), exports, ses.last_action)
+        dbg = getattr(ses, "last_debug", None)
+        ses.recorder.write(ses.scene.record_view(), exports, ses.last_action, dbg)
+        if ses.recorder.debug_new - getattr(ses, "_debug_new_told", set()):
+            ses._debug_new_told = set(ses.recorder.debug_new)
+            warning = "控制算法 self.debug 里后来才有的 %s 不写进 log_debug.csv（列在第一次给出时定下）" % "、".join(
+                sorted(ses.recorder.debug_new))
         if ses.recorder.stopped:  # the disk is (nearly) full: the run goes on without its record
             warning, ses.recorder = ses.recorder.stopped, None
     new = [c for c in scene["collisions"] if c["new"]]
@@ -1137,6 +1169,11 @@ class CoSimSession:
             raise RuntimeError("控制算法输出了无效数值（NaN / 无穷大）：%s" % list(action))
         self.last_action = [float(a) for a in action]
         draw_warn = self._take_draw()
+        self.last_debug = getattr(self.driver, "debug", None)
+        bad = getattr(self.driver, "debug_bad", set()) - getattr(self, "_debug_told", set())
+        if bad:
+            self._debug_told = getattr(self, "_debug_told", set()) | bad
+            draw_warn = draw_warn + ["控制算法 self.debug 里的 %s 不是数字：不画、不记录" % "、".join(sorted(bad))]
         draw_tel, self._draw_tel = getattr(self, "_draw_tel", None), None
         prev, t_prev = self.obs, env.t_current
         self.obs, _, done, info = env.control_step(action, self.inner)
@@ -1181,6 +1218,7 @@ class CoSimSession:
             **({"ctrl_ms": ms, "ctrl_ms_max": self.ctrl_ms_max} if ms is not None else {}),
             **({"draw_n": draw_n} if draw_n else {}),
             **({"draw": draw_tel} if draw_tel is not None else {}),
+            **({"debug": self.last_debug} if self.last_debug else {}),
             "warnings": warnings + draw_warn,
             "world_frame": world_frame,
             "dynamics": "CarSim",

@@ -264,6 +264,8 @@ class App {
   // h_thr_, h_brk_, h_u3_: the first three values control() returned (imports 1-3);
   // h_steer_*: front wheel angles, + = left (CarSim's sign).
   std::vector<float> h_t_, h_speed_, h_steer_fl_, h_steer_fr_, h_rt_, h_susp_[4], h_thr_, h_brk_, h_u3_;
+  // The algorithm's self.debug values over time (a series per name, in the order they came; NaN: not given).
+  std::vector<std::pair<std::string, std::vector<float>>> h_dbg_;
   // The .sim's imports as the last telemetry had them: [油门, 制动, 方向盘] (the
   // default 3, and always with CARLA dynamics) or else shown as 导入 1 ... n.
   int n_imports_ = 3;

@@ -65,7 +65,8 @@ class App {
   void DrawViewport(float w, float h);
   void DrawHud(ImVec2 bottom_left);
   void DrawMinimap(ImVec2 top_left, float size);
-  void DrawDock(float w, float h);
+  void DrawPanels(float fs);
+  void BuildDefaultLayout(unsigned int dock_id, ImVec2 size, float fs);
   void DrawDrawTab();
   void DrawPlots();
   void DrawVehicleState();
@@ -279,7 +280,13 @@ class App {
   int log_filter_ = 0;  // 0 all, 1 warnings + errors, 2 errors, 3 the control algorithm's own output
 
   // window layout (sizes in pixels, set from the font size on the first frame)
-  float nav_w_ = 0, mon_w_ = 0, console_h_ = 0;
+  // Dockable panels (Dear ImGui docking): each region is a window the user can move,
+  // stack as tabs, float inside the main window or close (视图 menu reopens it).
+  bool nav_open_ = true, view_open_ = true;
+  bool bottom_open_[5] = {true, true, true, true, true};  // 曲线, 车辆状态, 输出, 场景, 轨迹 (dock_tab_select_ order)
+  unsigned int dock_id_ = 0;                               // the main dock space
+  bool layout_checked_ = false, layout_reset_ = false;    // layout_reset_: build the default layout next frame
+  std::string layout_ini_;                                // where the layout is kept (none in a tour)
   bool monitor_open_ = true, about_open_ = false;  // monitor_open_: properties panel visible
   int dock_tab_select_ = -1;                       // >= 0: select this dock tab next frame
   bool view_auto_ = true;                          // open the viewport camera when an ego appears
@@ -336,6 +343,8 @@ class App {
   std::string hero_spawns_;       // --hero-spawns 0,10,20
   void TourClick();                 // feeds a pending tour click to ImGui as real mouse events
   std::string click_target_;
+  ImVec2 drag_to_{-1.0f, -1.0f};  // >= 0: the click on click_target_ is a drag to here (a dock tab)
+  ImVec2 drag_from_{-1.0f, -1.0f}; // where that drag started (the tab moves with the mouse); < 0: not yet
   int click_phase_ = 0;
   ImVec2 click_last_{-1.0f, -1.0f};  // target position last frame
   int tour_mark_ = 0;               // value remembered by a tour step (e.g. the frame before a single step)

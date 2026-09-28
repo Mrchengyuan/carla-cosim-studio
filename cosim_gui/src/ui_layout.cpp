@@ -298,50 +298,122 @@ void App::FrameBody() {
   const float status_h = ImGui::GetFrameHeight() + 2.0f;
   const float total_h = ImGui::GetContentRegionAvail().y - status_h;
   const float total_w = ImGui::GetContentRegionAvail().x;
-  if (nav_w_ <= 0) { nav_w_ = fs * 13.0f; mon_w_ = fs * 34.0f; console_h_ = fs * 15.0f; }
-  if (total_w > fs * 40.0f && total_h > fs * 20.0f) {  // not while minimised: that would lose the sizes
-    nav_w_ = std::max(fs * 9.0f, std::min(nav_w_, total_w * 0.25f));
-    mon_w_ = std::max(fs * 24.0f, std::min(mon_w_, total_w * 0.5f));
-    console_h_ = std::max(fs * 6.0f, std::min(console_h_, total_h * 0.7f));
+  (void)p;
+  (void)split;
+  // The dock space between the toolbar and the status bar: the panels are windows docked in it.
+  const ImGuiID dock_id = ImGui::GetID("##maindock");
+  dock_id_ = dock_id;
+  if (!layout_checked_) {  // no saved layout (first start, a tour): the default one
+    layout_checked_ = true;
+    ImGuiDockNode* node = ImGui::DockBuilderGetNode(dock_id);
+    if (node == nullptr || (node->IsLeafNode() && node->Windows.Size == 0)) layout_reset_ = true;
   }
-
-  // Project tree
-  ImGui::PushStyleColor(ImGuiCol_ChildBg, p.panel);
-  ImGui::BeginChild("nav", ImVec2(nav_w_, total_h));
-  DrawNav();
-  ImGui::EndChild();
-  ImGui::PopStyleColor();
-  ImGui::SameLine();
-  ui::Splitter("##split_nav", true, total_h, &nav_w_, fs * 9.0f, total_w * 0.25f, false);
-  ImGui::SameLine();
-
-  // Centre: viewport + dock
-  const float center_w = ImGui::GetContentRegionAvail().x - (monitor_open_ ? mon_w_ + split : 0.0f);
-  ImGui::BeginChild("center", ImVec2(center_w, total_h));
-  const float view_h = total_h - (log_open_ ? console_h_ + split : 0.0f);
-  DrawViewport(center_w, view_h);
-  if (log_open_) {
-    ui::Splitter("##split_dock", false, center_w, &console_h_, fs * 6.0f, total_h * 0.7f, true);
-    DrawDock(center_w, console_h_);
+  if (layout_reset_ && total_w > fs * 40.0f && total_h > fs * 20.0f) {
+    layout_reset_ = false;
+    BuildDefaultLayout(dock_id, ImVec2(total_w, total_h), fs);
   }
-  ImGui::EndChild();
-
-  // Properties of the selected page
-  if (monitor_open_) {
-    ImGui::SameLine();
-    ui::Splitter("##split_prop", true, total_h, &mon_w_, fs * 24.0f, total_w * 0.5f, true);
-    ImGui::SameLine();
-    ImGui::PushStyleColor(ImGuiCol_ChildBg, p.bg);
-    ImGui::BeginChild("props", ImVec2(0, total_h));
-    DrawProperties();
-    ImGui::EndChild();
-    ImGui::PopStyleColor();
-  }
-
+  ImGui::DockSpace(dock_id, ImVec2(total_w, total_h), ImGuiDockNodeFlags_None);
   DrawStatusBar();
   ImGui::PopStyleVar();
   DrawAbout();
   ImGui::End();
+  DrawPanels(fs);
+}
+
+// The default layout: 工程 left, 属性 right, 画面 in the middle, the five
+// bottom panels stacked as tabs under it (the sizes of the old fixed layout).
+void App::BuildDefaultLayout(unsigned int dock_id, ImVec2 size, float fs) {
+  ImGui::DockBuilderRemoveNode(dock_id);
+  ImGui::DockBuilderAddNode(dock_id, ImGuiDockNodeFlags_DockSpace);
+  ImGui::DockBuilderSetNodeSize(dock_id, size);
+  ImGuiID rest = 0, center = 0;
+  const ImGuiID left = ImGui::DockBuilderSplitNode(dock_id, ImGuiDir_Left, std::min(0.25f, fs * 13.0f / size.x), nullptr, &rest);
+  const ImGuiID right = ImGui::DockBuilderSplitNode(rest, ImGuiDir_Right, std::min(0.5f, fs * 34.0f / (size.x - fs * 13.0f)),
+                                                    nullptr, &center);
+  const ImGuiID bottom = ImGui::DockBuilderSplitNode(center, ImGuiDir_Down, std::min(0.7f, fs * 15.0f / size.y), nullptr, &center);
+  ImGui::DockBuilderDockWindow("###nav", left);
+  ImGui::DockBuilderDockWindow("###props", right);
+  ImGui::DockBuilderDockWindow("###viewport", center);
+  for (const char* w : {"###plots", "###vstate", "###scene", "###draw", "###log"}) ImGui::DockBuilderDockWindow(w, bottom);
+  ImGui::DockBuilderFinish(dock_id);
+  nav_open_ = view_open_ = monitor_open_ = log_open_ = true;
+  for (bool& b : bottom_open_) b = true;
+}
+
+// The panels: one window each (docked, stacked as tabs, floating or closed).
+void App::DrawPanels(float fs) {
+  const ui::Palette& p = ui::Colors();
+  // A window with its background and padding; its dock tab is a click target (tour).
+  auto panel = [&](const char* name, bool* open, const ImVec4& bg, ImVec2 pad, ImGuiWindowFlags flags,
+                   const char* target, bool focus) -> bool {
+    ImGui::PushStyleColor(ImGuiCol_WindowBg, bg);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, pad);
+    if (focus) ImGui::SetNextWindowFocus();
+    const bool shown = ImGui::Begin(name, open, flags);
+    ImGui::PopStyleVar();
+    ImGui::PopStyleColor();
+    ImGuiWindow* w = ImGui::GetCurrentWindow();
+    if (w->DockIsActive && target) ui::RecordTarget(target, w->DC.DockTabItemRect.Min, w->DC.DockTabItemRect.Max);
+    return shown;
+  };
+  const ImVec2 no_pad(0, 0);
+  if (nav_open_) {
+    if (panel(ICON_FA_FOLDER_TREE "  工程###nav", &nav_open_, p.panel, no_pad, 0, "dock:nav", false)) DrawNav();
+    ImGui::End();
+  }
+  if (view_open_) {
+    if (panel(ICON_FA_VIDEO "  画面###viewport", &view_open_, p.bg, no_pad,
+              ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse, "dock:viewport", false)) {
+      const ImVec2 av = ImGui::GetContentRegionAvail();
+      DrawViewport(std::max(10.0f, av.x), std::max(10.0f, av.y));
+    }
+    ImGui::End();
+  }
+  // Bottom panels (Ctrl+L shows / hides all five). dock_tab_select_: bring one to the front.
+  if (dock_tab_select_ >= 0 && dock_tab_select_ < 5) {
+    log_open_ = true;
+    bottom_open_[dock_tab_select_] = true;
+  }
+  if (log_open_) {
+    int errors = 0, warns = 0, algos = 0;
+    for (const auto& l : log_) { errors += l.level == "error"; warns += l.level == "warn"; algos += l.level == "algo"; }
+    const int n_hits = last_scene_.is_object() && last_scene_.contains("collisions") && last_scene_["collisions"].is_array()
+                         ? static_cast<int>(last_scene_["collisions"].size()) : 0;
+    const std::string out_label = errors ? Fmt(ICON_FA_TERMINAL "  输出  (%d 错误)###log", errors) : std::string(ICON_FA_TERMINAL "  输出###log");
+    const std::string scene_label = n_hits ? std::string(ICON_FA_CUBES "  场景  (碰撞)###scene") : std::string(ICON_FA_CUBES "  场景###scene");
+    const ImVec2 pad(fs * 0.5f, fs * 0.3f);
+    struct B { int i; std::string name; const char* target; };
+    const B bs[] = {{0, ICON_FA_CHART_LINE "  曲线###plots", "dock:plots"}, {1, ICON_FA_GAUGE_HIGH "  车辆状态###vstate", "dock:vstate"},
+                    {3, scene_label, "dock:scene"}, {4, ICON_FA_ROUTE "  轨迹###draw", "dock:draw"}, {2, out_label, "dock:log"}};
+    for (const B& b : bs) {
+      if (!bottom_open_[b.i]) continue;
+      const bool shown = panel(b.name.c_str(), &bottom_open_[b.i], p.panel, pad, ImGuiWindowFlags_NoScrollbar, b.target,
+                               dock_tab_select_ == b.i);
+      if (shown) {
+        ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(7 * ui::Scale(), 6 * ui::Scale()));
+        switch (b.i) {
+          case 0: DrawPlots(); break;
+          case 1: DrawVehicleState(); break;
+          case 3: DrawSceneTab(); break;
+          case 4: DrawDrawTab(); break;
+          case 2: log_errors_ = 0; DrawLogList(warns, errors, algos); break;
+          default: break;
+        }
+        ImGui::PopStyleVar();
+      }
+      ImGui::End();
+    }
+    // All five closed one by one: the group is hidden (Ctrl+L brings them back).
+    if (!bottom_open_[0] && !bottom_open_[1] && !bottom_open_[2] && !bottom_open_[3] && !bottom_open_[4]) {
+      log_open_ = false;
+      for (bool& b : bottom_open_) b = true;
+    }
+  }
+  dock_tab_select_ = -1;
+  if (monitor_open_) {
+    if (panel(ICON_FA_SLIDERS "  属性###props", &monitor_open_, p.bg, no_pad, 0, "dock:props", false)) DrawProperties();
+    ImGui::End();
+  }
 }
 
 // --------------------------------------------------------------------------
@@ -393,9 +465,24 @@ void App::DrawMenuBar() {
     if (ImGui::MenuItem(ICON_FA_PLUG "  连接 CARLA", nullptr, false, be_.Connected() && busy_.empty() && !Running())) ConnectCarla();
     ImGui::EndMenu();
   }
-  if (ImGui::BeginMenu("视图")) {
+  const bool view_menu = ImGui::BeginMenu("视图");
+  if (!view_menu) ui::RecordTarget("menu:视图");
+  if (view_menu) {
+    ImGui::MenuItem(ICON_FA_FOLDER_TREE "  工程", nullptr, &nav_open_);
+    ImGui::MenuItem(ICON_FA_VIDEO "  画面", nullptr, &view_open_);
     ImGui::MenuItem(ICON_FA_SLIDERS "  属性面板", nullptr, &monitor_open_);
     ImGui::MenuItem(ICON_FA_TABLE_COLUMNS "  底部面板（曲线 / 状态 / 场景 / 轨迹 / 输出）", "Ctrl+L", &log_open_);
+    if (ImGui::BeginMenu(ICON_FA_LAYER_GROUP "  底部面板的页签")) {
+      static const char* kNames[] = {"曲线", "车辆状态", "输出", "场景", "轨迹"};
+      for (int i : {0, 1, 3, 4, 2})
+        if (ImGui::MenuItem(kNames[i], nullptr, log_open_ && bottom_open_[i])) {
+          if (log_open_ && bottom_open_[i]) bottom_open_[i] = false;
+          else dock_tab_select_ = i;
+        }
+      ImGui::EndMenu();
+    }
+    if (ImGui::MenuItem(ICON_FA_TABLE_CELLS_LARGE "  恢复默认布局")) layout_reset_ = true;
+    ui::RecordTarget("menu:layout_reset");
     if (ImGui::MenuItem(ICON_FA_VIDEO "  实时画面", nullptr, view_on_, world_.value("ego_id", 0) != 0)) {
       if (view_on_) { Call("view_stop", json::object(), nullptr); view_on_ = false; view_auto_ = false; }
       else { view_auto_ = true; StartView(); }
@@ -702,7 +789,6 @@ bool App::PageEnabled(int panel) const {
 void App::DrawNav() {
   const ui::Palette& p = ui::Colors();
   const float fs = ImGui::GetFontSize();
-  ui::PanelTitle(ICON_FA_FOLDER_TREE, "工程");
   const float row_h = fs * 1.75f;
   ImDrawList* dl = ImGui::GetWindowDrawList();
   const bool cosim = cfg_.contains("drive") && cfg_["drive"].value("dynamics", std::string("cosim")) == "cosim";
@@ -792,7 +878,6 @@ void App::DrawNav() {
 // --------------------------------------------------------------------------
 void App::DrawProperties() {
   const float fs = ImGui::GetFontSize();
-  ui::PanelTitle(ICON_FA_SLIDERS, "属性");
   ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(fs * 0.8f, fs * 0.6f));
   ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(7 * ui::Scale(), 6 * ui::Scale()));
   ImGui::BeginChild("props_body", ImVec2(0, 0), ImGuiChildFlags_AlwaysUseWindowPadding);
@@ -1267,56 +1352,6 @@ void App::DrawMinimap(ImVec2 tl, float size) {
 
 // --------------------------------------------------------------------------
 // Bottom dock: plots, vehicle state, output.
-void App::DrawDock(float w, float h) {
-  const ui::Palette& p = ui::Colors();
-  const float fs = ImGui::GetFontSize();
-  ImGui::PushStyleColor(ImGuiCol_ChildBg, p.panel);
-  ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(fs * 0.5f, fs * 0.3f));
-  ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(7 * ui::Scale(), 6 * ui::Scale()));
-  ImGui::BeginChild("dock", ImVec2(w, h), ImGuiChildFlags_AlwaysUseWindowPadding, ImGuiWindowFlags_NoScrollbar);
-  int errors = 0, warns = 0, algos = 0;
-  for (const auto& l : log_) { errors += l.level == "error"; warns += l.level == "warn"; algos += l.level == "algo"; }
-  const std::string out_label = errors ? Fmt(ICON_FA_TERMINAL "  输出  (%d 错误)###out", errors) : std::string(ICON_FA_TERMINAL "  输出###out");
-  auto flags = [&](int i) { return dock_tab_select_ == i ? ImGuiTabItemFlags_SetSelected : 0; };
-  if (ImGui::BeginTabBar("docktabs")) {
-    if (ImGui::BeginTabItem(ICON_FA_CHART_LINE "  曲线", nullptr, flags(0))) {
-      DrawPlots();
-      ImGui::EndTabItem();
-    }
-    const bool vstate_open = ImGui::BeginTabItem(ICON_FA_GAUGE_HIGH "  车辆状态", nullptr, flags(1));
-    ui::RecordTarget("dock:vstate");
-    if (vstate_open) {
-      DrawVehicleState();
-      ImGui::EndTabItem();
-    }
-    const int n_hits = last_scene_.is_object() && last_scene_.contains("collisions") && last_scene_["collisions"].is_array()
-                         ? static_cast<int>(last_scene_["collisions"].size()) : 0;
-    const std::string scene_label = n_hits ? std::string(ICON_FA_CUBES "  场景  (碰撞)###scene") : std::string(ICON_FA_CUBES "  场景###scene");
-    const bool scene_open = ImGui::BeginTabItem(scene_label.c_str(), nullptr, flags(3));
-    ui::RecordTarget("dock:scene");
-    if (scene_open) {
-      DrawSceneTab();
-      ImGui::EndTabItem();
-    }
-    const bool draw_open = ImGui::BeginTabItem(ICON_FA_ROUTE "  轨迹###draw", nullptr, flags(4));
-    ui::RecordTarget("dock:draw");
-    if (draw_open) {
-      DrawDrawTab();
-      ImGui::EndTabItem();
-    }
-    if (ImGui::BeginTabItem(out_label.c_str(), nullptr, flags(2))) {
-      log_errors_ = 0;
-      DrawLogList(warns, errors, algos);
-      ImGui::EndTabItem();
-    }
-    ImGui::EndTabBar();
-  }
-  dock_tab_select_ = -1;
-  ImGui::EndChild();
-  ImGui::PopStyleVar(2);
-  ImGui::PopStyleColor();
-}
-
 void App::DrawPlots() {
   const ui::Palette& p = ui::Colors();
   const int n = static_cast<int>(h_t_.size());

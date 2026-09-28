@@ -179,15 +179,17 @@ class CliTests(unittest.TestCase):
 
 class GuiTabTests(unittest.TestCase):
     def tabs(self):
+        """The bottom panels in their default order (DrawPanels: dockable windows, stacked as tabs)."""
         src = read(os.path.join(REPO, "cosim_gui", "src", "ui_layout.cpp"))
-        start = src.index('BeginTabBar("docktabs")')
-        end = src.index("EndTabBar()", start)
-        body = src[src.rfind("\nvoid ", 0, start):end]
+        body = src[src.index("void App::DrawPanels("):]
+        body = body[:body.index("\n}\n")]
+        table = body[body.index("const B bs[] = {"):]
+        table = table[:table.index("};")]
         names = []
-        for arg in re.findall(r"BeginTabItem\(([^,]+),", src[start:end]):
-            m = re.search(r'"  ([一-鿿]+)', arg)
-            if not m:  # a label built before the tab bar
-                m = re.search(r"\b%s\s*=[^;]*?\"  ([一-鿿]+)" % re.escape(arg.strip().split(".")[0]), body)
+        for label in re.findall(r'\{\d+, ([^{}]+?), "dock:', table):
+            m = re.search(r'"  ([一-鿿]+)###', label)
+            if not m:  # a label built before the table
+                m = re.search(r'\b%s\s*=[^;]*?"  ([一-鿿]+)' % re.escape(label.strip()), body)
             names.append(m.group(1))
         return src, names
 

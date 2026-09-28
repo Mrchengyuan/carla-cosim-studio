@@ -103,7 +103,9 @@ int main(int argc_raw, char** argv_raw) {
   IMGUI_CHECKVERSION();
   ImGui::CreateContext();
   ImPlot::CreateContext();
-  ImGui::GetIO().IniFilename = nullptr;
+  ImGui::GetIO().IniFilename = nullptr;  // App::Init names the layout file (not in a tour)
+  ImGui::GetIO().ConfigFlags |= ImGuiConfigFlags_DockingEnable;
+  ImGui::GetIO().ConfigDockingWithShift = false;
 
   auto app_ptr = std::make_unique<App>();
   App& app = *app_ptr;

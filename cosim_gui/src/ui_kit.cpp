@@ -107,6 +107,14 @@ void ApplyTheme(bool dark, float scale) {
   c[ImGuiCol_TabHovered] = p.header;
   c[ImGuiCol_TabSelected] = p.card;
   c[ImGuiCol_TabSelectedOverline] = p.accent;
+  c[ImGuiCol_TabDimmed] = p.panel;
+  c[ImGuiCol_TabDimmedSelected] = p.card;
+  c[ImGuiCol_TabDimmedSelectedOverline] = WithAlpha(p.accent, 0.5f);
+  c[ImGuiCol_DockingPreview] = WithAlpha(p.accent, 0.45f);
+  c[ImGuiCol_DockingEmptyBg] = p.bg;
+  c[ImGuiCol_Separator] = p.card_border;
+  c[ImGuiCol_SeparatorHovered] = p.accent;
+  c[ImGuiCol_SeparatorActive] = p.accent;
   c[ImGuiCol_TableHeaderBg] = p.header;
   c[ImGuiCol_TableBorderStrong] = p.card_border;
   c[ImGuiCol_TableBorderLight] = Mix(p.card, p.card_border, 0.7f);
@@ -140,6 +148,7 @@ void ApplyTheme(bool dark, float scale) {
   s.TabRounding = 2;
   s.SeparatorTextBorderSize = 1;
   s.SelectableTextAlign = ImVec2(0, 0.5f);
+  s.DockingSeparatorSize = 4;  // easy to grab between docked panels
   s.ScaleAllSizes(scale);
 }
 

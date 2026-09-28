@@ -183,6 +183,7 @@ git clone https://github.com/Mrchengyuan/python_carsim_env
 | **多视图 2×2：相机 · 语义分割 · 激光雷达 · 深度** | **多视图 1+3：相机 · 毫米波雷达 · 激光雷达 · 深度** |
 | ![多视图 2×2](docs/images/multiview_2x2.jpg) | ![多视图 1+3](docs/images/multiview_1p3.jpg) |
 | **数据浏览：相机 + 3D 真值框 · 激光雷达俯视 · 目标列表 · 导出** | |
+| **界面布局** | 像 Visual Studio、CarMaker 那样的可停靠面板：工程、画面、属性、曲线、车辆状态、场景、轨迹、输出都能拖动页签重新排布、叠成页签、浮动在主窗口里、关闭再打开，分隔条随意调大小；布局自动保存，一键恢复默认 |
 | ![数据浏览](docs/images/dataset_browser.jpg) | |
 
 ## 架构

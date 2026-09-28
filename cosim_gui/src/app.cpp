@@ -1,3 +1,4 @@
+#include "imgui_internal.h"
 #include "view_modes.h"
 #include "app.h"
 
@@ -256,6 +257,10 @@ void App::Init(int argc, char** argv) {
   if (prefs_.value("auto_start_backend", true)) StartBackend();
   if (!tour_dir_.empty()) {
     if (hero_spawns_.empty()) BuildTour(); else BuildHeroTour();
+  } else {
+    // The panel layout, next to the prefs (a tour always starts from the default one).
+    layout_ini_ = (fs::u8path(prefs_path_).parent_path() / "cosim_studio_layout.ini").u8string();
+    ImGui::GetIO().IniFilename = layout_ini_.c_str();
   }
 }
 
@@ -1341,6 +1346,24 @@ void App::BuildTour() {
       {kPanelDrive, [this] { click_target_ = "dock:draw"; }, [this] {
          return Running() && draw_.size() == 3 && ui::TargetShown("draw:lines");
        }, "11e_algo_draw"},
+      // Docking by real mouse drags: the 轨迹 tab out into the middle of the viewport: a floating window.
+      {kPanelDrive, [this] {
+         const ImGuiViewport* v = ImGui::GetMainViewport();
+         drag_to_ = ImVec2(v->WorkPos.x + v->WorkSize.x * 0.45f, v->WorkPos.y + v->WorkSize.y * 0.35f);
+         click_target_ = "dock:draw";
+       }, [this] {
+         // Out of the main dock space: floating (on its own, or in a floating dock node of its own).
+         ImGuiWindow* w = ImGui::FindWindowByName("###draw");
+         const bool out = w != nullptr && (w->DockNode == nullptr || ImGui::DockNodeGetRootNode(w->DockNode)->ID != dock_id_);
+         return click_target_.empty() && out && w->WasActive && ui::TargetShown("draw:lines");  // (Active is cleared at each frame start)
+       }, "11f_panel_floating"},
+      {kPanelDrive, [this] { click_target_ = "menu:视图"; }, [] { return ui::TargetShown("menu:layout_reset"); }, ""},
+      {kPanelDrive, [this] { click_target_ = "menu:layout_reset"; }, [this] {
+         ImGuiWindow* w = ImGui::FindWindowByName("###draw");
+         ImGuiWindow* l = ImGui::FindWindowByName("###log");
+         return click_target_.empty() && w != nullptr && l != nullptr && w->DockIsActive && w->DockNode == l->DockNode;
+       }, "11g_layout_reset"},
+      {kPanelDrive, [this] { click_target_ = "dock:log"; }, [this] { return ui::TargetShown("log:filter0"); }, ""},
       {kPanelDrive, [this] { cfg_["run"]["controller"]["entry"] = "Controller"; click_target_ = "停止"; },
        [this] { return run_state_ == "stopped" && last_tel_.empty(); }, ""},
       {kPanelDrive, [this] { cfg_["run"]["controller"]["path"] = "controllers/scene_controller.py"; click_target_ = "dock:scene"; },
@@ -1561,6 +1584,23 @@ void App::TourTick() {
 void App::TourClick() {
   ui::SetTourTarget(click_target_);
   if (click_target_.empty()) return;
+  ImGuiIO& dio = ImGui::GetIO();
+  if (drag_to_.x >= 0 && drag_from_.x >= 0) {
+    // A drag: pressed on the target (a dock tab), moved to drag_to_ over 30 frames, held, released
+    // there. The tab moves with the mouse (it may stop being a target): from where it started.
+    const int ph = click_phase_++;
+    const float k = std::clamp((ph - 4) / 30.0f, 0.0f, 1.0f);
+    dio.AddMousePosEvent(drag_from_.x + (drag_to_.x - drag_from_.x) * k, drag_from_.y + (drag_to_.y - drag_from_.y) * k);
+    if (ph == 2) dio.AddMouseButtonEvent(ImGuiMouseButton_Left, true);
+    if (ph == 44) dio.AddMouseButtonEvent(ImGuiMouseButton_Left, false);
+    if (ph == 48) {
+      dio.AddMousePosEvent(-FLT_MAX, -FLT_MAX);
+      click_target_.clear();
+      drag_to_ = drag_from_ = ImVec2(-1.0f, -1.0f);
+      click_phase_ = 0;
+    }
+    return;
+  }
   ImVec2 c;
   if (!ui::FindTarget(click_target_, &c)) {
     if (++click_phase_ > 120) {
@@ -1572,8 +1612,14 @@ void App::TourClick() {
   }
   // A target still moving (its panel scrolling it into view) would get the press in one
   // place and the release in another, which ImGui does not count as a click: wait until it holds still.
-  if (click_phase_ <= 2 && (c.x != click_last_.x || c.y != click_last_.y)) click_phase_ = 0;
+  if (click_phase_ <= 2 && drag_to_.x < 0 && (c.x != click_last_.x || c.y != click_last_.y)) click_phase_ = 0;
   click_last_ = c;
+  if (drag_to_.x >= 0) {  // a drag starts here
+    drag_from_ = c;
+    dio.AddMousePosEvent(c.x, c.y);
+    click_phase_ = 1;
+    return;
+  }
   ImGuiIO& io = ImGui::GetIO();
   // Every frame: with the window focused (e.g. on Windows) the GLFW backend
   // reports the real cursor each frame, which would move the press elsewhere.

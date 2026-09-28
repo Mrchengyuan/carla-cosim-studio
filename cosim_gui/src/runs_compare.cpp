@@ -20,6 +20,17 @@ double Num(const json& j, const char* k, double def = NAN) {
   return j[k].get<double>();
 }
 
+// The value of series y (over times t) at time x: interpolated, NaN outside or between missing values.
+double ValueAt(const std::vector<float>& t, const std::vector<float>& y, double x) {
+  const size_t n = std::min(t.size(), y.size());
+  if (n == 0 || x < t[0] || x > t[n - 1]) return NAN;
+  size_t i = static_cast<size_t>(std::upper_bound(t.begin(), t.begin() + static_cast<long>(n), static_cast<float>(x)) - t.begin());
+  if (i == 0) return y[0];
+  if (i >= n) return y[n - 1];
+  const double t0 = t[i - 1], t1 = t[i], k = t1 > t0 ? (x - t0) / (t1 - t0) : 0.0;
+  return y[i - 1] + k * (y[i] - y[i - 1]);
+}
+
 // A json array of numbers / nulls -> floats (NaN for null).
 std::vector<float> Floats(const json& a) {
   std::vector<float> v;
@@ -240,6 +251,72 @@ void App::DrawCompare() {
   } else {
     ImGui::NewLine();
   }
+  // Timeline: play / pause, the time, the speed; 在 CARLA 里看这一刻 (run A).
+  double t_max = 0.0;
+  for (const auto& [slot, s] : ser) {
+    const json tj = s->value("t", json::array());
+    if (!tj.empty() && tj.back().is_number()) t_max = std::max(t_max, tj.back().get<double>());
+  }
+  if (compare_play_) {
+    compare_t_ += ImGui::GetIO().DeltaTime * compare_speed_;
+    if (compare_t_ >= t_max) { compare_t_ = t_max; compare_play_ = false; }
+  }
+  compare_t_ = std::clamp(compare_t_, 0.0, t_max);
+  if (ui::IconButton(compare_play_ ? ICON_FA_PAUSE : ICON_FA_PLAY, compare_play_ ? "暂停" : "播放", "cmpplay")) {
+    if (!compare_play_ && compare_t_ >= t_max) compare_t_ = 0.0;
+    compare_play_ = !compare_play_;
+  }
+  ui::RecordTarget("compare:play");
+  ImGui::SameLine();
+  float tf = static_cast<float>(compare_t_);
+  ImGui::SetNextItemWidth(ImGui::GetFontSize() * 18);
+  if (ImGui::SliderFloat("##cmpt", &tf, 0.0f, static_cast<float>(t_max), "t = %.2f s")) { compare_t_ = tf; compare_play_ = false; }
+  ui::RecordTarget("compare:time");
+  ImGui::SameLine();
+  static const float kSpeeds[] = {0.5f, 1.0f, 2.0f, 4.0f};
+  ImGui::SetNextItemWidth(ImGui::GetFontSize() * 4.5f);
+  if (ImGui::BeginCombo("##cmpspeed", Fmt("×%g", compare_speed_).c_str())) {
+    for (float sp : kSpeeds)
+      if (ImGui::Selectable(Fmt("×%g", sp).c_str(), sp == compare_speed_)) compare_speed_ = sp;
+    ImGui::EndCombo();
+  }
+  ImGui::SameLine();
+  ImGui::BeginDisabled(Running() || !carla_connected_);
+  ImGui::Checkbox("在 CARLA 里看这一刻（A）", &compare_carla_);
+  ImGui::EndDisabled();
+  ui::RecordTarget("compare:carla");
+  if (ImGui::IsItemHovered())
+    ImGui::SetTooltip("把主车摆到 A 这次运行在这一刻记录的位置和航向（地图要是那次运行的地图），画面和视角都跟着；下一次运行会重新生成主车");
+  if (compare_carla_ && (Running() || !carla_connected_)) compare_carla_ = false;
+  if (compare_carla_ && !compare_replay_pending_ && std::fabs(compare_t_ - compare_sent_t_) > 1e-3 &&
+      ImGui::GetTime() - compare_sent_at_ > 0.08) {
+    compare_replay_pending_ = true;
+    compare_sent_t_ = compare_t_;
+    compare_sent_at_ = ImGui::GetTime();
+    be_.Request("replay_pose", {{"folder", ser[0].second->value("folder", std::string())}, {"t", compare_t_}},
+                [this](bool ok, const json&, const std::string& err) {
+                  compare_replay_pending_ = false;
+                  if (!ok) {
+                    Log("在 CARLA 里回放：" + err, "warn");
+                    compare_carla_ = false;
+                    compare_sent_t_ = -1.0;
+                  }
+                });
+  }
+  if (!compare_carla_) compare_sent_t_ = -1.0;  // switched on again: send at once
+  // The values at this time, a line per run.
+  for (const auto& [slot, s] : ser) {
+    const std::vector<float> t = Floats(s->value("t", json::array()));
+    const json u = s->value("u", json::array()), names = s->value("u_names", json::array());
+    std::string line = Fmt("%s  车速 %.1f  偏差 %.3f m", kLetters[slot], ValueAt(t, Floats(s->value("speed", json::array())), compare_t_),
+                           ValueAt(t, Floats(s->value("offset", json::array())), compare_t_));
+    for (size_t i = 0; i < u.size() && i < names.size(); ++i)
+      line += Fmt("  %s %.3g", names[i].get<std::string>().c_str(), ValueAt(t, Floats(u[i]), compare_t_));
+    const json d = s->value("debug", json::object());
+    if (!compare_dbg_.empty() && d.contains(compare_dbg_))
+      line += Fmt("  %s %.4g", compare_dbg_.c_str(), ValueAt(t, Floats(d[compare_dbg_]), compare_t_));
+    ImGui::TextColored(kRunColors[slot], "%s", line.c_str());
+  }
   const ImVec2 avail = ImGui::GetContentRegionAvail();
   const float gap = ImGui::GetStyle().ItemSpacing.x;
   const ImVec2 sz((avail.x - gap * 2) / 3.0f, (avail.y - ImGui::GetStyle().ItemSpacing.y) * 0.5f);
@@ -256,6 +333,9 @@ void App::DrawCompare() {
         spec.LineColor = kRunColors[slot];
         if (nn > 1) ImPlot::PlotLine(kLetters[slot], t.data(), y.data(), nn, spec);
       }
+      ImPlotSpec cur;
+      cur.LineColor = ImVec4(1, 1, 1, 0.55f);
+      ImPlot::PlotInfLines("##t", &compare_t_, 1, cur);  // the timeline's time
       ImPlot::EndPlot();
     }
   };
@@ -268,6 +348,17 @@ void App::DrawCompare() {
       spec.LineColor = kRunColors[slot];
       const int nn = static_cast<int>(std::min(x.size(), y.size()));
       if (nn > 1) ImPlot::PlotLine(kLetters[slot], x.data(), y.data(), nn, spec);
+      // Where it is at the timeline's time.
+      const std::vector<float> t = Floats(s->value("t", json::array()));
+      const double px = ValueAt(t, x, compare_t_), py = ValueAt(t, y, compare_t_);
+      if (std::isfinite(px) && std::isfinite(py)) {
+        ImPlotSpec dot;
+        dot.Marker = ImPlotMarker_Circle;
+        dot.MarkerSize = 6;
+        dot.MarkerFillColor = kRunColors[slot];
+        dot.MarkerLineColor = ImVec4(1, 1, 1, 1);
+        ImPlot::PlotScatter("##pos", &px, &py, 1, dot);
+      }
     }
     ImPlot::EndPlot();
   }

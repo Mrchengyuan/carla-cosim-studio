@@ -117,3 +117,56 @@ def run_series(folder, max_points=2000):
     else:
         out["u_names"] = ["导入 %d" % i for i in range(1, n_u + 1)]
     return out
+
+
+def ego_track(folder):
+    """The ego's recorded pose over a run, for replaying it in CARLA: {"t", "x", "y", "z",
+    "yaw" (deg: the run's angle unit converted), "map", "spawn_index"}; the reference point's
+    CarSim global position (m), as the record has it."""
+    folder = os.path.abspath(folder)
+    run = _read_json(os.path.join(folder, "run.json"))
+    if run is None:
+        raise ValueError("不是一次运行的记录（没有 run.json）：%s" % folder)
+    main = _rows(os.path.join(folder, "log.csv"))
+    need = ("ego_X", "ego_Y", "ego_Yaw")
+    if not main or any(k not in main[0] for k in need):
+        raise ValueError("这次运行的记录里没有主车的位置和航向（log.csv 要有 ego_X、ego_Y、ego_Yaw："
+                         "“场景信息”页自车的“写进记录”勾选 X、Y、Yaw）")
+    deg = (180.0 / math.pi) if (run.get("units") or {}).get("angle") == "rad" else 1.0
+    t, x, y, z, yaw = [], [], [], [], []
+    for r in main:
+        v = [_num(r.get(k)) for k in ("t", "ego_X", "ego_Y", "ego_Z", "ego_Yaw")]
+        if None in (v[0], v[1], v[2], v[4]):
+            continue
+        t.append(v[0])
+        x.append(v[1])
+        y.append(v[2])
+        z.append(v[3] or 0.0)
+        yaw.append(v[4] * deg)
+    if not t:
+        raise ValueError("这次运行的记录里没有主车的位置")
+    return {"t": t, "x": x, "y": y, "z": z, "yaw": yaw, "map": run.get("map"), "spawn_index": run.get("spawn_index")}
+
+
+def pose_at(track, t):
+    """The recorded pose at time t (interpolated, held at the ends): (t, x, y, z, yaw deg)."""
+    ts = track["t"]
+    if t <= ts[0]:
+        i, k = 0, 0.0
+    elif t >= ts[-1]:
+        i, k = len(ts) - 1, 0.0
+    else:
+        lo, hi = 0, len(ts) - 1
+        while hi - lo > 1:
+            mid = (lo + hi) // 2
+            if ts[mid] <= t:
+                lo = mid
+            else:
+                hi = mid
+        i, k = lo, (t - ts[lo]) / (ts[hi] - ts[lo]) if ts[hi] > ts[lo] else 0.0
+    j = min(i + 1, len(ts) - 1)
+
+    def lerp(a):
+        return a[i] + k * (a[j] - a[i])
+    dyaw = (track["yaw"][j] - track["yaw"][i] + 180.0) % 360.0 - 180.0
+    return (min(max(t, ts[0]), ts[-1]), lerp(track["x"]), lerp(track["y"]), lerp(track["z"]), track["yaw"][i] + k * dyaw)

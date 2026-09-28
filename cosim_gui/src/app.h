@@ -304,6 +304,11 @@ class App {
   int runs_pending_ = 0;
   bool compare_open_ = false, compare_focus_ = false;
   std::string compare_dbg_;          // the self.debug value shown in the 对比 panel
+  // Its timeline: the time shown on every plot, played at a speed; 在 CARLA 里看这一刻 places the
+  // ego where run A had it then (the backend's replay_pose, a request at a time).
+  double compare_t_ = 0.0, compare_sent_t_ = -1.0, compare_sent_at_ = 0.0;
+  float compare_speed_ = 1.0f;
+  bool compare_play_ = false, compare_carla_ = false, compare_replay_pending_ = false;
   int draw_mag_ = 0;                 // 轨迹 tab's lateral magnification: 0 = fit the lane
   json collect_stats_ = json::object();
   static constexpr int kHist = 900;

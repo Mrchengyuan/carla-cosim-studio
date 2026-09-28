@@ -1481,6 +1481,14 @@ void App::BuildTour() {
       {kPanelRuns, [this] { click_target_ = "runs:open"; }, [this] {
          return compare_open_ && ui::TargetShown("compare:plots") && compare_dbg_ == "cost";
        }, "12e_runs_compare"},
+      {kPanelRuns, [this] { compare_t_ = 0.0; compare_speed_ = 4.0f; click_target_ = "compare:play"; },
+       [this] { return compare_t_ > 3.0 && ui::TargetShown("compare:time"); }, "12e2_runs_timeline"},
+      {kPanelRuns, [this] { compare_play_ = false; click_target_ = "compare:carla"; }, [this] {
+         // The made-up runs have no yaw in their record: refused in plain words, switched off again.
+         return !compare_carla_ && std::any_of(log_.begin(), log_.end(), [](const LogLine& l) {
+           return l.text.find("在 CARLA 里回放：") != std::string::npos;
+         });
+       }, ""},
       {kPanelRuns, [this] { compare_open_ = false; runs_sel_.clear(); }, [this] { return !ui::TargetShown("compare:plots"); }, ""},
       // 批量测试: 不开封道 and (a click) 封闭本车道 at the current spawn point, 2 s each; the report.
       {kPanelBatch, [this, dir] {

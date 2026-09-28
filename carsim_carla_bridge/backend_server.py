@@ -21,6 +21,7 @@ import atexit
 import base64
 import faulthandler
 import json
+import math
 import os
 import queue
 import random
@@ -35,6 +36,7 @@ import time
 import traceback
 
 import carla
+import numpy as np
 
 import carsim_remote
 import batch_report
@@ -45,6 +47,7 @@ import dataset as dsmod
 import rig as rigmod
 import scenario as scenariomod
 import settings as st
+from bridge import anchor_frame, front_axle_local
 from carsim_local import json_safe as _json_safe
 from session import (AlgoOutput, CarlaDriveSession, CoSimSession, browse_controllers, check_run_config, check_run_files,
                      controller_params,
@@ -81,6 +84,8 @@ class Backend:
         self.anchor = None
         self.session = None
         self.scenario_ids = []  # 测试场景 props of the last run (removed when the next one starts)
+        self._replay_cache = {}  # 运行对比 replay: folder -> (ego track, anchor frame)
+        self._replay_ref = None  # (ego id, its reference point in its own frame)
         self._scn_start = None  # (map name, scenario.find_start of it)
         self.ending = None         # the session in stop(), for the heartbeat: the algorithm's finish()
         self.cosim_state = "stopped"
@@ -1452,6 +1457,41 @@ class Backend:
     def cmd_batch_summary(self, dir, items):
         """批量测试: the batch's report (report.csv, report.md in its dir) from its runs' run.json."""
         return batch_report.summarize(dir, items)
+
+    def cmd_replay_pose(self, folder, t):
+        """运行对比's 在 CARLA 里看这一刻: the ego placed where a recorded run had it at time t
+        (the run's CarSim frame at its spawn point, as the run itself did; physics off)."""
+        if self.cosim_state in ("running", "paused"):
+            raise RuntimeError("仿真运行中不能回放：先停止运行")
+        w = self._need_world()
+        cache = self._replay_cache.get(folder)
+        if cache is None:
+            track = runsmod.ego_track(folder)
+            cmap = w.get_map()
+            now = cmap.name.split("/")[-1]
+            if track["map"] and track["map"] != now:
+                raise RuntimeError("这次运行在地图 %s 上，当前是 %s：先在“地图与天气”页加载 %s" % (track["map"], now, track["map"]))
+            pts = cmap.get_spawn_points()
+            anchor = anchor_frame(cmap, pts[int(track["spawn_index"] or 0) % len(pts)])
+            cache = self._replay_cache[folder] = (track, anchor)
+            if len(self._replay_cache) > 4:
+                self._replay_cache.pop(next(iter(self._replay_cache)))
+        track, anchor = cache
+        if not self._alive(self.ego):
+            raise RuntimeError("还没有主车：先在“车辆与视角”页生成主车，再回放")
+        t, X, Y, Z, yaw = runsmod.pose_at(track, float(t))
+        R = anchor.R
+        ref = np.asarray(anchor.origin) + R @ np.array([X, -Y, Z])       # the reference point, CARLA world
+        anchor_yaw = math.degrees(math.atan2(R[1, 0], R[0, 0]))
+        yaw_c = anchor_yaw - yaw                                          # CarSim yaw (left +) -> CARLA
+        if self._replay_ref is None or self._replay_ref[0] != self.ego.id:
+            self._replay_ref = (self.ego.id, front_axle_local(self.ego))
+            self.ego.set_simulate_physics(False)  # held where it is put (the next run respawns the ego)
+        loc = self._replay_ref[1]
+        c, s = math.cos(math.radians(yaw_c)), math.sin(math.radians(yaw_c))
+        centre = ref - np.array([c * loc[0] - s * loc[1], s * loc[0] + c * loc[1], loc[2]])
+        self.ego.set_transform(carla.Transform(carla.Location(*map(float, centre)), carla.Rotation(yaw=float(yaw_c))))
+        return {"t": t}
 
     def cmd_runs_list(self, path=""):
         """The run records in a record dir (relative: the bridge dir), newest first (runs.list_runs)."""

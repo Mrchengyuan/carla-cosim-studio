@@ -6,6 +6,35 @@
 >
 > **CarSim 接口基于 [python_carsim_env](https://github.com/dyZhou2001/python_carsim_env)（原作者 [dyZhou2001](https://github.com/dyZhou2001)）**，这是本项目能与 CarSim 联合仿真的基础，衷心感谢原作者的开源工作。见下方说明。
 
+## 目录
+
+- [🔗 基础：python_carsim_env](#-基础python_carsim_env)
+- [📖 使用文档](#-使用文档)
+- [远程使用：笔记本 + 云服务器](#远程使用笔记本--云服务器)
+- [原版 CARLA 与改版 CARLA](#原版-carla-与改版-carla)
+  - [本仓库里有什么，没有什么](#本仓库里有什么没有什么)
+  - [怎么编译改版 CARLA](#怎么编译改版-carla)
+  - [Python 的 carla 包也分原版和改版](#python-的-carla-包也分原版和改版)
+- [功能](#功能)
+- [架构](#架构)
+- [仓库结构](#仓库结构)
+- [快速开始](#快速开始)
+  - [1. CARLA](#1-carla)
+  - [2. 后端](#2-后端)
+  - [3. 界面](#3-界面)
+  - [4. 启动](#4-启动)
+  - [5. 使用（详细步骤见上面的使用指南）](#5-使用详细步骤见上面的使用指南)
+  - [6. 接入你的控制算法](#6-接入你的控制算法)
+  - [7. 测试避障：高速施工封道](#7-测试避障高速施工封道)
+- [坐标与同步](#坐标与同步)
+- [测试](#测试)
+- [CARLA 0.9.16 自身的已知问题](#carla-0916-自身的已知问题)
+  - [改版 CARLA 的补丁已修复](#改版-carla-的补丁已修复)
+  - [CARLA 修不了，本项目的代码已绕开](#carla-修不了本项目的代码已绕开)
+  - [仍然存在](#仍然存在)
+- [已知限制](#已知限制)
+- [致谢](#致谢)
+
 **CarSim ⇄ CARLA 联合仿真平台** —— 像 CarSim 一样，全部通过图形界面操作 CARLA。
 
 **你的控制算法控制 CarSim 里的车，CarSim 计算车辆动力学，CARLA 负责场景、渲染和传感器。** 每一帧 CarSim 算出的车身位姿、四轮转向角、车轮转速、悬架行程都同步到 CARLA 车辆上，CARLA 自己不算动力学，只照 CarSim 的结果摆放车辆，**转向机构一致**。再配上多视图、传感器套件编辑、数据采集与导出、场景和交通等功能，不写代码也能完成仿真和数据集生产。
@@ -171,7 +200,7 @@ git clone https://github.com/Mrchengyuan/python_carsim_env
 - 改版 CARLA：`carla_patches/` 给 CARLA 0.9.16 新增 `vehicle.enable_external_dynamics()` / `vehicle.apply_external_state()`，一帧一次下发位姿、速度、角速度、四轮转向 / 转角 / 悬架，`get_velocity()`、IMU 等读数为真实值。
 - 原版 CARLA：自动用兼容模式（画面相同，速度类读数为 0，无悬架动画）。两者的区别见 [原版 CARLA 与改版 CARLA](#原版-carla-与改版-carla)。
 
-## 目录
+## 仓库结构
 
 | 目录 | 内容 |
 |---|---|

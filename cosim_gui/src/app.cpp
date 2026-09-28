@@ -1341,8 +1341,9 @@ void App::BuildTour() {
        }, "11c_start_failed"},
       // What the algorithm prints goes to the 输出 page: the 算法 filter shows it, and only it.
       {kPanelDrive, [this, print_ctrl] {
-         std::ofstream(fs::u8path(print_ctrl)) << "print('tour: 算法已加载')\nN = [0]\ndraw = None\n\n\ndef control(exports, t, dt):\n"
-                                                  "    global draw, debug\n    N[0] += 1\n    if N[0] == 3:\n        print('" << kPrinted << "')\n"
+         std::ofstream(fs::u8path(print_ctrl)) << "print('tour: 算法已加载')\nN = [0]\ndraw = None\nSPEED = 3.0  # 测试参数\n\n\ndef control(exports, t, dt):\n"
+                                                  "    global draw, debug\n    N[0] += 1\n    if N[0] == 2:\n        print('tour: SPEED = %s' % SPEED)\n"
+                                                  "    if N[0] == 3:\n        print('" << kPrinted << "')\n"
                                                   "    debug = {'N': N[0], 't x 2': t * 2}\n"
                                                   "    draw = [{'points': [[0, 0], [10, 0.3], [20, 1.0]], 'color': [255, 60, 40], 'width': 0.1},\n"
                                                   "            {'points': [[0, 0], [10, -0.2], [20, -0.6]], 'color': [60, 90, 255]},\n"
@@ -1350,8 +1351,16 @@ void App::BuildTour() {
                                                   "    return [0.0, 0.0, 0.0]\n";
          cfg_["run"]["controller"]["path"] = print_ctrl;
          cfg_["run"]["controller"]["entry"] = "control";
-         click_target_ = "运行";
-       }, [this, printed] { return run_state_ == "running" && last_tel_.contains("ctrl_ms") && printed(); }, ""},
+         // 算法参数: SPEED changed on the page (as a typed value), the run gets 4.0.
+         cfg_["run"]["params"] = {{print_ctrl, {{"SPEED", 4.0}}}};
+       }, [this] { return ui::TargetShown("params:SPEED") && ui::TargetShown("params:reset"); }, "07c_algo_params"},
+      {kPanelDrive, [this] { click_target_ = "运行"; }, [this, printed] {
+         auto has = [this](const std::string& t) {
+           return std::any_of(log_.begin(), log_.end(), [&](const LogLine& l) { return l.text.find(t) != std::string::npos; });
+         };
+         return run_state_ == "running" && last_tel_.contains("ctrl_ms") && printed() && has("tour: SPEED = 4.0") &&
+                has("算法参数（界面上改过的）：SPEED = 4.0（文件里 3.0）");
+       }, ""},
       {kPanelDrive, [this] { click_target_ = "log:filter3"; }, [this, printed] {
          return log_filter_ == 3 && printed() && ui::TargetShown("log:algo_last") && !ui::TargetShown("log:other");
        }, "11d_algo_output"},
@@ -1383,6 +1392,9 @@ void App::BuildTour() {
       {kPanelDrive, [this] { click_target_ = "dock:log"; }, [this] { return ui::TargetShown("log:filter0"); }, ""},
       {kPanelDrive, [this] { cfg_["run"]["controller"]["entry"] = "Controller"; click_target_ = "停止"; },
        [this] { return run_state_ == "stopped" && last_tel_.empty(); }, ""},
+      {kPanelDrive, [this] { click_target_ = "params:reset"; }, [this, print_ctrl] {
+         return cfg_["run"]["params"].value(print_ctrl, json::object()).empty() && !ui::TargetShown("params:reset");
+       }, ""},
       {kPanelDrive, [this] { cfg_["run"]["controller"]["path"] = "controllers/scene_controller.py"; click_target_ = "dock:scene"; },
        [this] { return ui::TargetShown("scene:moving_only") && !ui::TargetShown("log:filter0"); }, ""},
       {kPanelDrive, [this] { click_target_ = "view:wheel"; },

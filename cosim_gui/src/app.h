@@ -97,7 +97,8 @@ class App {
   void DrawPanelView();
   void DrawViewImage(float max_w, float max_h);
   void BackendPathStatus(const std::string& path);  // check / cross under a path the backend reads
-  void EditAlgoPath(json& ctl);                        // 控制算法 file field with its “浏览…”
+  void EditAlgoPath(json& ctl);
+  void DrawAlgoParams(const json& ctl);                        // 控制算法 file field with its “浏览…”
   void AlgoBrowse(const std::string& path);            // remote: a folder of the server (controller_browse)
   void DrawAlgoBrowser(json& ctl);                     // remote: the server's algorithm files to pick from
 
@@ -265,6 +266,10 @@ class App {
   bool scene_moving_only_ = false;   // scene tab: hide the parked cars of the map
   json draw_ = json::array();        // the algorithm's lines (self.draw), ego frame: the 轨迹 tab
   // 运行对比: the run records of a record dir, up to 4 picked, their time series; the 对比 panel.
+  // 算法参数: the algorithm file's upper-case constants (the backend's controller_params), for which file.
+  json algo_params_ = json::object();
+  std::string algo_params_path_;
+  bool algo_params_pending_ = false;
   std::string runs_path_;
   json runs_list_ = json::object();
   std::vector<std::string> runs_sel_;

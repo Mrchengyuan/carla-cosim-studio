@@ -660,6 +660,7 @@ void App::DrawPanelDrive() {
       EditString(ctl, "entry");
       ImGui::EndDisabled();
       DrawAlgoBrowser(ctl);
+      DrawAlgoParams(ctl);
       ui::DimWrapped("接口：control(exports, t, dt) -> [油门, 制动, 方向盘角]，exports 是按变量名取值的 CarSim 导出变量");
       ui::DimWrapped("要用周围的车、行人、障碍物和车道：写成 control(exports, t, dt, scene)，见“场景信息”页");
       ui::DimWrapped("示例：controllers/path_follower.py（沿车道路径跟踪），controllers/examples/（《控制算法编写指南》的 5 个例子），"
@@ -869,6 +870,108 @@ std::string PreferEntry(const json& entries, const std::string& cur) {
   return entries[0].get<std::string>();
 }
 }  // namespace
+
+// 算法参数: the upper-case constants at the top of the algorithm file (NAME = number / text /
+// True / False, the comment at the end of the line as the explanation), read by the backend
+// without running the file. Changed values go in run.params[<file>] and are set on the loaded
+// module before the algorithm object is made (session.apply_params); the file is not changed.
+void App::DrawAlgoParams(const json& ctl) {
+  const ui::Palette& p = ui::Colors();
+  const float fs = ImGui::GetFontSize();
+  const std::string path = ctl.value("path", std::string());
+  auto fetch = [this, path] {
+    algo_params_path_ = path;
+    algo_params_pending_ = true;
+    be_.Request("controller_params", {{"path", path}}, [this, path](bool ok, const json& r, const std::string& err) {
+      algo_params_pending_ = false;
+      if (path != algo_params_path_) return;  // another file was picked meanwhile
+      algo_params_ = ok ? r : json{{"params", json::array()}, {"error", err}};
+    });
+  };
+  if (!path.empty() && path != algo_params_path_ && be_.Connected() && !algo_params_pending_) fetch();
+  ImGui::Dummy(ImVec2(0, fs * 0.2f));
+  ui::SectionCaption("算法参数（文件开头的大写常数）");
+  ImGui::SameLine();
+  if (ui::IconButton(ICON_FA_ROTATE_RIGHT, "重新读取（改了文件以后）", "params_refresh") && be_.Connected()) fetch();
+  ui::RecordTarget("params:refresh");
+  const json list = algo_params_.value("params", json::array());
+  const std::string err = algo_params_.value("error", std::string());
+  if (!err.empty()) {
+    ImGui::TextColored(p.text_dim, "读不了这个文件：%s", err.c_str());
+    return;
+  }
+  if (list.empty()) {
+    ui::DimWrapped("这个文件开头没有大写的常数（例如 TARGET_KMH = 40.0  # km/h，目标车速）；有的话会列在这里，可以直接改。");
+    return;
+  }
+  if (!cfg_["run"].contains("params") || !cfg_["run"]["params"].is_object()) cfg_["run"]["params"] = json::object();
+  json& all = cfg_["run"]["params"];
+  if (!all.contains(path) || !all[path].is_object()) all[path] = json::object();
+  json& over = all[path];
+  ImGui::BeginDisabled(Running());
+  if (ImGui::BeginTable("##params", 3, ImGuiTableFlags_BordersInnerH | ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingFixedFit)) {
+    ImGui::TableSetupColumn("名称", ImGuiTableColumnFlags_WidthFixed, fs * 10.0f);
+    ImGui::TableSetupColumn("值", ImGuiTableColumnFlags_WidthStretch);
+    ImGui::TableSetupColumn("", ImGuiTableColumnFlags_WidthFixed, fs * 1.8f);
+    int i = 0;
+    for (const json& prm : list) {
+      const std::string name = prm.value("name", std::string()), type = prm.value("type", std::string());
+      const json file_v = prm.value("value", json());
+      const bool changed = over.contains(name);
+      ImGui::PushID(i++);
+      ImGui::TableNextRow();
+      ImGui::TableNextColumn();
+      ImGui::AlignTextToFramePadding();
+      if (changed) ImGui::TextColored(p.accent, "%s", name.c_str());
+      else ImGui::TextUnformatted(name.c_str());
+      ui::RecordTarget("params:" + name);
+      if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("%s\n文件里：%s（第 %d 行）", prm.value("comment", std::string()).c_str(), file_v.dump().c_str(),
+                          prm.value("line", 0));
+      ImGui::TableNextColumn();
+      ImGui::SetNextItemWidth(-FLT_MIN);
+      json cur = changed ? over[name] : file_v;
+      bool edited = false;
+      if (type == "bool") {
+        bool b = cur.is_boolean() ? cur.get<bool>() : false;
+        if (ImGui::Checkbox("##v", &b)) { cur = b; edited = true; }
+      } else if (type == "int") {
+        int v = cur.is_number() ? cur.get<int>() : 0;
+        if (ImGui::InputInt("##v", &v, 0, 0)) { cur = v; edited = true; }
+      } else if (type == "float") {
+        double v = cur.is_number() ? cur.get<double>() : 0.0;
+        if (ImGui::InputDouble("##v", &v, 0.0, 0.0, "%g")) { cur = v; edited = true; }
+      } else {
+        char buf[256];
+        std::snprintf(buf, sizeof(buf), "%s", cur.is_string() ? cur.get<std::string>().c_str() : "");
+        if (ImGui::InputText("##v", buf, sizeof(buf))) { cur = std::string(buf); edited = true; }
+      }
+      if (ImGui::IsItemHovered() && !prm.value("comment", std::string()).empty())
+        ImGui::SetTooltip("%s", prm.value("comment", std::string()).c_str());
+      if (edited) {
+        if (cur == file_v) over.erase(name);
+        else over[name] = cur;
+      }
+      ImGui::TableNextColumn();
+      if (changed && ui::IconButton(ICON_FA_ROTATE_LEFT, "恢复文件里的值", "undo")) over.erase(name);
+      ImGui::PopID();
+    }
+    ImGui::EndTable();
+  }
+  // Values changed for names the file no longer has.
+  std::vector<std::string> stale;
+  for (const auto& kv : over.items())
+    if (std::none_of(list.begin(), list.end(), [&](const json& x) { return x.value("name", std::string()) == kv.key(); }))
+      stale.push_back(kv.key());
+  for (const auto& n : stale) over.erase(n);
+  if (!over.empty()) {
+    if (ui::Button(ICON_FA_ROTATE_LEFT, Fmt("全部恢复（%d 个改过）", static_cast<int>(over.size())).c_str())) over = json::object();
+    ui::RecordTarget("params:reset");
+  }
+  ImGui::EndDisabled();
+  ui::DimWrapped("改过的值（蓝色）在每次运行加载算法后生效：写回模块里的同名常数，输出窗口列出这次改了哪些，run.json 里也记下；"
+                 "文件本身不改。算法要在运行时（reset、control 里）读这些常数，改动才起作用。");
+}
 
 void App::EditAlgoPath(json& ctl) {
   const float bw = ImGui::GetFrameHeight() + ImGui::GetStyle().FramePadding.x * 2;

@@ -46,6 +46,7 @@ import scenario as scenariomod
 import settings as st
 from carsim_local import json_safe as _json_safe
 from session import (AlgoOutput, CarlaDriveSession, CoSimSession, browse_controllers, check_run_config, check_run_files,
+                     controller_params,
                      control_busy)
 from views import ViewStreamer, encode_jpeg
 
@@ -64,7 +65,7 @@ PROBE_ROLE = "cosim_probe"  # cars vehicle_specs spawns to measure a vehicle mod
 # deleting a large dataset never holds up a run's frames on the worker.
 IO_CMDS = {"dataset_list", "dataset_info", "dataset_frame", "dataset_export", "dataset_delete",
            "disk_info", "rig_estimate", "path_status", "carsim_service", "controller_browse",
-           "runs_list", "run_series"}
+           "runs_list", "run_series", "controller_params"}
 # What "hello" reports; the GUI (kBackendProtocol in cosim_gui/src/app.cpp) warns
 # when it was built for another one. Raise both together whenever a command,
 # event or config field the GUI relies on changes.
@@ -1384,6 +1385,10 @@ class Backend:
             r = os.path.abspath(p) if p else ""
             out[p] = {"resolved": r, "exists": os.path.exists(r), "is_file": os.path.isfile(r)}
         return out
+
+    def cmd_controller_params(self, path):
+        """The algorithm file's tunable constants (session.controller_params: read, never run)."""
+        return controller_params(os.path.abspath(path))
 
     def cmd_runs_list(self, path=""):
         """The run records in a record dir (relative: the bridge dir), newest first (runs.list_runs)."""

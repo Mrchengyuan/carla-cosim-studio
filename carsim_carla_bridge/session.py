@@ -8,13 +8,16 @@ import ast
 import contextlib
 import importlib.util
 import inspect
+import io
 import json
 import math
 import os
+import re
 import shutil
 import sys
 import threading
 import time
+import tokenize
 import traceback
 
 import carla
@@ -45,6 +48,93 @@ def demo_driver(t):
 
 # Longest CARLA frame: PhysX substeps cover at most 10 x 0.01 s per frame.
 MAX_FRAME_DT = 0.1
+
+
+PARAM_NAME = re.compile(r"^[A-Z][A-Z0-9_]*$")
+
+
+def controller_params(path):
+    """The algorithm's tunable constants for the GUI: top-level NAME = <number, text,
+    True / False> with an upper-case name, read with ast (never run), the comment at
+    the end of the line as the explanation. {"params": [{"name", "value", "type",
+    "comment", "line"}], "error"}."""
+    try:
+        with open(path, "rb") as f:
+            raw = f.read(4 * 1024 * 1024)
+        src = raw.decode("utf-8")
+        tree = ast.parse(src, filename=path)
+    except (OSError, ValueError, SyntaxError) as e:
+        return {"params": [], "error": str(e)}
+    comments = {}
+    try:
+        for tok in tokenize.generate_tokens(io.StringIO(src).readline):
+            if tok.type == tokenize.COMMENT:
+                comments.setdefault(tok.start[0], tok.string.lstrip("#").strip())
+    except (tokenize.TokenError, IndentationError):
+        pass
+    out = []
+
+    def literal(v):
+        neg = isinstance(v, ast.UnaryOp) and isinstance(v.op, ast.USub)
+        if neg:
+            v = v.operand
+        if not isinstance(v, ast.Constant) or not isinstance(v.value, (bool, int, float, str)):
+            return None
+        if neg:
+            return None if isinstance(v.value, (bool, str)) else (-v.value,)
+        return (v.value,)
+    for node in tree.body:
+        if not (isinstance(node, ast.Assign) and len(node.targets) == 1):
+            continue
+        tgt, val = node.targets[0], node.value
+        if isinstance(tgt, ast.Name):
+            pairs = [(tgt, val)]
+        elif isinstance(tgt, ast.Tuple) and isinstance(val, ast.Tuple) and len(tgt.elts) == len(val.elts):
+            pairs = list(zip(tgt.elts, val.elts))  # KP, KI = 0.08, 0.02
+        else:
+            continue
+        for t, v in pairs:
+            lit = literal(v)
+            if not isinstance(t, ast.Name) or not PARAM_NAME.match(t.id) or lit is None:
+                continue
+            x = lit[0]
+            kind = "bool" if isinstance(x, bool) else "int" if isinstance(x, int) else "float" if isinstance(x, float) else "str"
+            out.append({"name": t.id, "value": x, "type": kind, "comment": comments.get(node.lineno, ""), "line": node.lineno})
+    return {"params": out, "error": ""}
+
+
+def params_for(d):
+    """The GUI's changed constants (run.params, by algorithm file) for this run's file: {name: value}."""
+    want = os.path.abspath(d["run"]["controller"]["path"])
+    for k, v in (d["run"].get("params") or {}).items():
+        if isinstance(v, dict) and v and os.path.abspath(k) == want:
+            return dict(v)
+    return {}
+
+
+def apply_params(mod, overrides):
+    """Set the changed constants on the loaded module (before the algorithm object is
+    made): the type of the file's value kept. The lines for the output."""
+    done, gone = [], []
+    for name, v in overrides.items():
+        if name not in vars(mod):
+            gone.append(name)
+            continue
+        old = getattr(mod, name)
+        try:
+            new = bool(v) if isinstance(old, bool) else int(v) if isinstance(old, int) and float(v).is_integer() else \
+                float(v) if isinstance(old, (int, float)) else str(v)
+        except (TypeError, ValueError):
+            gone.append(name)
+            continue
+        setattr(mod, name, new)
+        done.append("%s = %r（文件里 %r）" % (name, new, old))
+    lines = []
+    if done:
+        lines.append("算法参数（界面上改过的）：" + "；".join(done))
+    if gone:
+        lines.append("这些参数文件里已经没有了（或值不对），没有用上：" + "、".join(gone))
+    return lines
 
 
 def algorithm_frame_dt(path):
@@ -79,6 +169,11 @@ def check_run_config(d):
     if d["drive"]["dynamics"] == "cosim" and d["run"]["driver"] == "custom":
         path = os.path.abspath(d["run"]["controller"]["path"])
         want = algorithm_frame_dt(path) if os.path.isfile(path) else None
+        if "FRAME_DT" in params_for(d):  # changed on the page (算法参数)
+            try:
+                want = float(params_for(d)["FRAME_DT"])
+            except (TypeError, ValueError):
+                raise ValueError("算法参数 FRAME_DT 不是数字：%r" % (params_for(d)["FRAME_DT"],))
         if want is not None:
             if not 0 < want <= MAX_FRAME_DT:
                 raise ValueError("控制算法 %s 的 FRAME_DT = %g s 超出范围：要大于 0、不超过 %g s"
@@ -595,6 +690,8 @@ def load_controller(d, ex, n_imports=None, scene=None, output=None):
     try:
         with cap:
             spec.loader.exec_module(mod)
+            for line in apply_params(mod, params_for(d)):  # 算法参数 changed on the page
+                print(line)
             obj = getattr(mod, entry, None)
             if obj is None:
                 found = ["%s（%s）" % (n, "类" if isinstance(v, type) else "函数") for n, v in vars(mod).items()
@@ -846,6 +943,7 @@ def _run_json(ses, end=None, reason=None):
             "dynamics": d["drive"]["dynamics"],
             "driver": d["run"]["driver"] if cosim else d["drive"]["carla_driver"],
             "controller": _controller_file(d),
+            "params": params_for(d) or None,  # 算法参数 changed on the page (the file's copy has the old ones)
             # The modified CARLA's external-dynamics interface, else the stock-CARLA fallback.
             "external_api": bool(getattr(getattr(ses, "sync", None), "external_api", False)),
             "carsim_sim": sim,

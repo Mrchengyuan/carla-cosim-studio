@@ -696,6 +696,7 @@ void App::DrawPanelDrive() {
       ImGui::EndDisabled();
       DrawAlgoBrowser(ctl);
       DrawAlgoParams(ctl);
+      DrawDisturb();
       ui::DimWrapped("接口：control(exports, t, dt) -> [油门, 制动, 方向盘角]，exports 是按变量名取值的 CarSim 导出变量");
       ui::DimWrapped("要用周围的车、行人、障碍物和车道：写成 control(exports, t, dt, scene)，见“场景信息”页");
       ui::DimWrapped("示例：controllers/path_follower.py（沿车道路径跟踪），controllers/examples/（《控制算法编写指南》的 5 个例子），"
@@ -910,6 +911,81 @@ std::string PreferEntry(const json& entries, const std::string& cur) {
 // True / False, the comment at the end of the line as the explanation), read by the backend
 // without running the file. Changed values go in run.params[<file>] and are set on the loaded
 // module before the algorithm object is made (session.apply_params); the file is not changed.
+void App::DrawDisturb() {
+  const ui::Palette& p = ui::Colors();
+  const float fs = ImGui::GetFontSize();
+  if (!cfg_["run"].contains("disturb") || !cfg_["run"]["disturb"].is_object()) cfg_["run"]["disturb"] = json::object();
+  json& x = cfg_["run"]["disturb"];
+  if (!x.contains("noise") || !x["noise"].is_object()) x["noise"] = json::object();
+  ImGui::Dummy(ImVec2(0, fs * 0.2f));
+  ui::SectionCaption("干扰（检验算法的鲁棒性）");
+  ImGui::BeginDisabled(Running());
+  bool on = x.value("enabled", false);
+  if (ImGui::Checkbox("开启干扰##disturb", &on)) x["enabled"] = on;
+  ui::RecordTarget("disturb:on");
+  ImGui::SameLine();
+  ui::DimWrapped("只作用在你的算法看到的和发出的东西上：运行记录（log.csv）记的还是 CarSim 的真值，run.json 记下这次的干扰设置。");
+  if (on) {
+    const json& u = cfg_["carsim"].value("units", json::object());
+    const double spd = u.value("speed", std::string("km/h")) == "km/h" ? 1.0 : 1.0 / 3.6;
+    const double ang = u.value("angle", std::string("deg")) == "deg" ? 1.0 : 3.14159265358979 / 180.0;
+    const double rate = u.value("rate", std::string("deg/s")) == "deg/s" ? 1.0 : 3.14159265358979 / 180.0;
+    if (ui::Button(ICON_FA_WAND_MAGIC_SPARKLES, "典型设置")) {
+      x["act_delay"] = 0.1;
+      x["sense_delay"] = 0.05;
+      x["lane_dropout"] = 0.05;
+      x["noise"] = {{"Vx", 0.5 * spd}, {"Vy", 0.2 * spd}, {"AVz", 0.3 * rate}, {"Yaw", 0.2 * ang}};
+    }
+    ui::RecordTarget("disturb:preset");
+    if (ImGui::IsItemHovered())
+      ImGui::SetTooltip("执行器延迟 0.1 s、测量延迟 0.05 s、车道信息丢失 5%%，Vx / Vy / AVz / Yaw 加上常见传感器量级的噪声");
+    auto num = [&](const char* key, const char* name, const char* tip, double lo, double hi, double step, const char* fmt) {
+      ui::Row(name, tip, fs * 8);
+      double v = x.value(key, 0.0);
+      if (ImGui::InputDouble(Fmt("##dist_%s", key).c_str(), &v, step, step * 10, fmt)) x[key] = std::clamp(v, lo, hi);
+    };
+    num("act_delay", "执行器延迟 s", "算法的输出晚这么久才到 CarSim（按帧取整，最长 1 s）", 0.0, 1.0, 0.01, "%.3f");
+    num("sense_delay", "测量延迟 s", "算法拿到的导出变量和场景是这么久以前的（按帧取整，最长 1 s）", 0.0, 1.0, 0.01, "%.3f");
+    ui::Row("车道信息丢失 %", "每帧以这个概率拿不到车道信息（scene[\"lane\"] 为 None，像没识别到车道线）", fs * 8);
+    float pct = static_cast<float>(x.value("lane_dropout", 0.0) * 100.0);
+    if (ImGui::SliderFloat("##dist_drop", &pct, 0.0f, 100.0f, "%.0f %%")) x["lane_dropout"] = pct / 100.0;
+    ui::Row("随机种子", "同样的设置和种子，每次运行的噪声和丢失都一样", fs * 8);
+    int seed = x.value("seed", 0);
+    if (ImGui::InputInt("##dist_seed", &seed)) x["seed"] = std::max(0, seed);
+    ImGui::TextColored(p.text_dim, "导出变量的噪声（高斯，标准差；单位同导出变量，见“CarSim 动力学”页）");
+    json& noise = x["noise"];
+    std::vector<std::string> names;
+    for (const json& n : cfg_["carsim"].value("export_names", json::array()))
+      if (n.is_string()) names.push_back(n.get<std::string>());
+    std::string drop;
+    json renamed;
+    int i = 0;
+    for (auto it = noise.begin(); it != noise.end(); ++it, ++i) {
+      ImGui::PushID(i);
+      std::string name = it.key();
+      ImGui::SetNextItemWidth(fs * 9);
+      if (appui::ComboStr("##n", name, names) && name != it.key() && !noise.contains(name)) renamed = {it.key(), name};
+      ImGui::SameLine();
+      double sd = it.value().is_number() ? it.value().get<double>() : 0.0;
+      ImGui::SetNextItemWidth(fs * 8);
+      if (ImGui::InputDouble("##sd", &sd, 0.0, 0.0, "± %g")) it.value() = std::max(0.0, sd);
+      ImGui::SameLine();
+      if (ui::IconButton(ICON_FA_XMARK, "去掉", "dist_del")) drop = it.key();
+      ImGui::PopID();
+    }
+    if (renamed.is_array()) {
+      noise[renamed[1].get<std::string>()] = noise[renamed[0].get<std::string>()];
+      noise.erase(renamed[0].get<std::string>());
+    }
+    if (!drop.empty()) noise.erase(drop);
+    if (ui::Button(ICON_FA_PLUS, "添加噪声")) {
+      for (const char* want : {"Vx", "Vy", "AVz", "Yaw", "Xo", "Yo"})
+        if (!noise.contains(want) && std::find(names.begin(), names.end(), want) != names.end()) { noise[want] = 0.0; break; }
+    }
+  }
+  ImGui::EndDisabled();
+}
+
 void App::DrawAlgoParams(const json& ctl) {
   const ui::Palette& p = ui::Colors();
   const float fs = ImGui::GetFontSize();

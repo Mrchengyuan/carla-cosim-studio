@@ -103,7 +103,8 @@ class App {
   void BatchTick();
   std::vector<json> BatchPlan();
   void DrawCompare();
-  void DrawIdent();  // 车辆参数辨识 card (运行对比 page)
+  void DrawIdent();
+  void DrawDisturb();  // 干扰 (驾驶模式 page, run.disturb)  // 车辆参数辨识 card (运行对比 page)
   void RunsRefresh();
   void RunsToggle(const std::string& folder);
   void DrawPanelScene();

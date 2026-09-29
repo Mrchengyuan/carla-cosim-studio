@@ -1420,6 +1420,17 @@ void App::BuildTour() {
          // 算法参数: SPEED changed on the page (as a typed value), the run gets 4.0.
          cfg_["run"]["params"] = {{print_ctrl, {{"SPEED", 4.0}}}};
        }, [this] { return ui::TargetShown("params:SPEED") && ui::TargetShown("params:reset"); }, "07c_algo_params"},
+      {kPanelDrive, [this] {
+         tour_kept_["disturb"] = cfg_["run"].value("disturb", json::object());
+         cfg_["run"]["disturb"]["enabled"] = false;
+         props_scroll_end_ = true;
+         click_target_ = "disturb:on"; }, [this] { return click_target_.empty() && cfg_["run"]["disturb"].value("enabled", false); }, ""},
+      {kPanelDrive, [this] { click_target_ = "disturb:preset"; }, [this] {
+         const json& x = cfg_["run"]["disturb"];
+         return click_target_.empty() && x.value("act_delay", 0.0) == 0.1 && x.value("noise", json::object()).size() == 4;
+       }, "07c2_disturb"},
+      {kPanelDrive, [this] { cfg_["run"]["disturb"] = tour_kept_["disturb"]; }, [this] {
+         return cfg_["run"]["disturb"] == tour_kept_["disturb"]; }, ""},
       {kPanelDrive, [this] { click_target_ = "运行"; }, [this, printed] {
          auto has = [this](const std::string& t) {
            return std::any_of(log_.begin(), log_.end(), [&](const LogLine& l) { return l.text.find(t) != std::string::npos; });

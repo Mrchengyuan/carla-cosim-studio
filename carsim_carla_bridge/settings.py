@@ -57,7 +57,10 @@ def default_dict():
         # params: the 算法参数 changed on the 驾驶模式 page, by algorithm file: {path: {NAME: value}}
         # (set on the loaded module before the algorithm object is made; session.apply_params).
         "run": {"driver": "custom", "log_path": "runs",
-                "controller": {"path": "controllers/example_controller.py", "entry": "Controller"}, "params": {}},
+                "controller": {"path": "controllers/example_controller.py", "entry": "Controller"}, "params": {},
+                # 干扰 (disturb.py): delays, noise on exports, lane dropouts for the user's algorithm.
+                "disturb": {"enabled": False, "act_delay": 0.0, "sense_delay": 0.0, "noise": {},
+                            "lane_dropout": 0.0, "seed": 0}},
         # dynamics: "cosim" = CarSim drives the car, "carla" = CARLA PhysX.
         # drive.cosim_driver (GUI) = custom | demo | route | manual; carla_driver = route | autopilot | manual
         "drive": {"dynamics": "cosim", "carla_driver": "route", "target_speed_kmh": 40.0,

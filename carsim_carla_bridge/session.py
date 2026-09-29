@@ -24,6 +24,7 @@ import carla
 
 import carsim_remote
 import chrono_local
+import disturb as disturbmod
 import rig as rigmod
 import scenario as scenariomod
 import settings as st
@@ -186,6 +187,13 @@ def check_run_config(d):
         raise ValueError("仿真步长 %g s 超出范围：要大于 0、不超过 %g s（CARLA 的物理每帧最多算 %g s）"
                          % (s["frame_dt"], MAX_FRAME_DT, MAX_FRAME_DT))
     dyn = d["drive"]["dynamics"]
+    dist = disturbmod.config(d)
+    if dist is not None:
+        if dyn == "cosim" and d["run"]["driver"] == "custom":
+            disturbmod.check(d)
+            notes.append("干扰已开启：" + disturbmod.describe(dist, s["frame_dt"]))
+        else:
+            notes.append("干扰只作用在自己的控制算法上（CarSim 联合仿真）：这次运行不用")
     if dyn == "carla":
         if d["drive"]["carla_driver"] not in ("route", "autopilot", "manual"):
             raise ValueError("未知的驾驶方式 %r（CARLA 物理下可选 route、autopilot、manual）" % d["drive"]["carla_driver"])
@@ -720,12 +728,17 @@ def load_controller(d, ex, n_imports=None, scene=None, output=None):
     dt = d["sync"]["frame_dt"]
     names = list(ex.index)
     with_scene = _wants_scene(obj)
+    dist = disturbmod.config(d)
+    dist = disturbmod.Disturb(dist, dt) if dist is not None else None  # 干扰: between the run and the algorithm
 
     def control(obs, t):
         exports = {n: ex.raw(obs, n) for n in names}
         control.running = (time.time(), threading.get_ident())  # for control_busy()
         try:
-            args = (exports, t, dt, scene() if scene else None) if with_scene else (exports, t, dt)
+            sc = scene() if scene and with_scene else None
+            if dist is not None:
+                exports, sc = dist.sense(exports, sc)
+            args = (exports, t, dt, sc) if with_scene else (exports, t, dt)
             with cap:
                 t0 = time.perf_counter()
                 out = obj(*args)
@@ -775,7 +788,7 @@ def load_controller(d, ex, n_imports=None, scene=None, output=None):
         if n and len(vals) != n:
             # CarSim would silently fill missing imports with 0 (e.g. no steering).
             raise RuntimeError("控制算法返回了 %d 个值，但 .sim 里有 %d 个导入变量；应%s" % (len(vals), n, want))
-        return vals
+        return dist.act(vals) if dist is not None else vals
     if callable(fin) and output is not None:
         user_finish = fin
 
@@ -784,6 +797,7 @@ def load_controller(d, ex, n_imports=None, scene=None, output=None):
                 user_finish(reason)
     control.path, control.running, control.ms, control.draw = path, None, None, None
     control.debug, control.debug_bad = None, set()
+    control.disturb = dist
     control.finish = fin if callable(fin) else None
     return control
 
@@ -955,7 +969,8 @@ def _run_json(ses, end=None, reason=None):
             "t_start": kpi.t_start if kpi else None, "t_end": kpi.t_end if kpi else None,
             "end": end, "end_reason": reason,
             "kpi": kpi.result() if kpi and kpi.samples else None,
-            "units": _units(d)}
+            "units": _units(d),
+            "disturb": disturbmod.config(d) if cosim and d["run"]["driver"] == "custom" else None}
 
 
 def _record_start(ses):

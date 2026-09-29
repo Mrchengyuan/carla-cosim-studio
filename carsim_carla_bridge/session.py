@@ -974,7 +974,8 @@ def _run_json(ses, end=None, reason=None):
             "verdict": criteriamod.verdict(kpi.result() if kpi and kpi.samples else None, end, d.get("criteria"))
             if end is not None and kpi is not None else None,
             "units": _units(d),
-            "disturb": disturbmod.config(d) if cosim and d["run"]["driver"] == "custom" else None}
+            "disturb": disturbmod.config(d) if cosim and d["run"]["driver"] == "custom" else None,
+            "no_render": bool(d["sync"].get("no_render"))}
 
 
 def _record_start(ses):

@@ -49,7 +49,9 @@ def default_dict():
                  "z_mode": _defaults.Z_MODE,
                  "wheel_spin_sign": _defaults.WHEEL_SPIN_SIGN,
                  "steering_wheel_max_deg": _defaults.STEERING_WHEEL_MAX_DEG,
-                 "use_external_api": "auto"},
+                 "use_external_api": "auto",
+                 # no_render: CARLA renders nothing during the run (faster; cameras get no pictures)
+                 "no_render": False},
         # driver: custom = the user's control algorithm (controller.path,
         # relative to carsim_carla_bridge/) | demo. Both drive CarSim.
         # log_path: the run record directory, every run a folder in it ("" = no

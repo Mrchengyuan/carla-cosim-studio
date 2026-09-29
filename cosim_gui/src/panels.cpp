@@ -780,6 +780,9 @@ void App::DrawPanelDrive() {
   EditDouble(cfg_["sync"], "duration", 1.0, "%.1f", 0.0, 1e6);
   ui::RecordTarget("run:duration+", ImVec2(ImGui::GetItemRectMax().x - ImGui::GetFrameHeight(), ImGui::GetItemRectMin().y),
                    ImGui::GetItemRectMax());  // its "+" button
+  ui::Row("运行时关闭渲染", "运行时 CARLA 不渲染画面，只算物理：约快 2.5 倍（实测路线跟随 30 s：16 s → 6.5 s）。运行中实时画面不更新；要采集数据或算法要用相机传感器时自动不关（输出窗口会说明）。运行结束后恢复原来的设置");
+  bool nr = cfg_["sync"].value("no_render", false);
+  if (ImGui::Checkbox("##run_norender", &nr)) cfg_["sync"]["no_render"] = nr;
   if (run_info_.contains("t_stop") && !run_info_.value("mock", true))
     ui::DimWrapped("上次运行：CarSim 结束时间 t = %.1f s，仿真步长 %g s（%d × t_step %g s）", run_info_.value("t_stop", 0.0),
                    run_info_.value("frame_dt", 0.0), run_info_.value("inner_steps", 0), run_info_.value("t_step", 0.0));

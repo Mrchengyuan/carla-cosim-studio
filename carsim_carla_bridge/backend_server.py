@@ -74,11 +74,64 @@ PROBE_ROLE = "cosim_probe"  # cars vehicle_specs spawns to measure a vehicle mod
 IO_CMDS = {"dataset_list", "dataset_info", "dataset_frame", "dataset_export", "dataset_delete",
            "disk_info", "rig_estimate", "path_status", "carsim_service", "controller_browse",
            "runs_list", "run_series", "controller_params", "batch_summary", "vehicle_identify",
-           "templates_list", "template_config", "run_output"}
+           "templates_list", "template_config", "run_output",
+           "carla_port_ready"}
 # What "hello" reports; the GUI (kBackendProtocol in cosim_gui/src/app.cpp) warns
 # when it was built for another one. Raise both together whenever a command,
 # event or config field the GUI relies on changes.
 PROTOCOL = 4
+
+
+CAMERA_TYPES = ("rgb", "depth", "semantic", "instance")
+
+
+def no_render_blocked(d):
+    """Why a run cannot go without rendering ("" = it can): cameras need CARLA to render."""
+    if (d.get("collect") or {}).get("enabled"):
+        return "要采集数据（相机需要渲染）"
+    wanted = set((d.get("scene") or {}).get("sensors") or ())
+    if not wanted:
+        return ""
+    rig = (d.get("rig") or {}).get("sensors") or []
+    if not rig:
+        try:
+            rig = rigmod.build_preset((d.get("rig") or {}).get("preset") or "front_camera", None)
+        except Exception:  # noqa: BLE001
+            rig = []
+    cams = sorted(s.get("name") for s in rig if s.get("name") in wanted and s.get("type") in CAMERA_TYPES)
+    return "算法要用相机 %s（相机需要渲染）" % "、".join(cams) if cams else ""
+
+
+def listeners(port, netstat=True):
+    """The sockets listening on a local TCP port: Linux inodes (/proc/net/tcp), Windows process
+    ids (netstat; only with netstat=True: it is slow); an empty set: nothing; None: can't tell."""
+    if os.path.exists("/proc/net/tcp"):
+        want = ":%04X" % port
+        owners = set()
+        for table in ("/proc/net/tcp", "/proc/net/tcp6"):
+            try:
+                with open(table) as f:
+                    for line in f.readlines()[1:]:
+                        cols = line.split()
+                        if cols[1].endswith(want) and cols[3] == "0A":  # 0A = LISTEN
+                            owners.add(cols[9])  # socket inode
+            except (OSError, IndexError):
+                pass
+        return owners
+    if os.name == "nt" and netstat:
+        try:
+            out = subprocess.run(["netstat", "-ano", "-p", "TCP"], capture_output=True, text=True, timeout=10).stdout
+        except (OSError, subprocess.SubprocessError):
+            return None
+        # The state column is localized (e.g. "ABHÖREN"); a listening socket is
+        # the one without a foreign address.
+        owners = set()
+        for line in out.splitlines():
+            cols = line.split()
+            if len(cols) >= 3 and cols[1].endswith(":%d" % port) and cols[2] in ("0.0.0.0:0", "[::]:0", "*:*"):
+                owners.add(cols[-1])  # process id
+        return owners
+    return None
 
 
 class Backend:
@@ -199,33 +252,10 @@ class Backend:
         host, port = self.carla_addr
         if host not in ("localhost", "127.0.0.1", "::1"):
             return None if not now else False
-        if os.path.exists("/proc/net/tcp") and getattr(self, "_proc_sees_carla", True):
-            want = ":%04X" % port
-            owners = set()
-            for table in ("/proc/net/tcp", "/proc/net/tcp6"):
-                try:
-                    with open(table) as f:
-                        for line in f.readlines()[1:]:
-                            cols = line.split()
-                            if cols[1].endswith(want) and cols[3] == "0A":  # 0A = LISTEN
-                                owners.add(cols[9])  # socket inode
-                except (OSError, IndexError):
-                    pass
-            return self._same_listener(owners, record)
-        if os.name == "nt" and now and getattr(self, "_proc_sees_carla", True):
-            try:
-                out = subprocess.run(["netstat", "-ano", "-p", "TCP"], capture_output=True, text=True, timeout=10).stdout
-            except (OSError, subprocess.SubprocessError):
-                return None
-            # The state column is localized (e.g. "ABHÖREN"); a listening socket is
-            # the one without a foreign address.
-            owners = set()
-            for line in out.splitlines():
-                cols = line.split()
-                if len(cols) >= 3 and cols[1].endswith(":%d" % port) and cols[2] in ("0.0.0.0:0", "[::]:0", "*:*"):
-                    owners.add(cols[-1])  # process id
-            return self._same_listener(owners, record)
-        return None
+        if not getattr(self, "_proc_sees_carla", True):
+            return None
+        owners = listeners(port, netstat=now)
+        return None if owners is None else self._same_listener(owners, record)
 
     def _same_listener(self, owners, record=True):
         """Listening on our port, by the listener seen when we connected?"""
@@ -1212,6 +1242,13 @@ class Backend:
         self._run_out = []  # this run's 输出, for output.txt in its record folder
         for note in check_run_config(d):
             self._log(note)
+        if d["sync"].get("no_render"):  # CARLA renders nothing during the run: faster
+            why = no_render_blocked(d)
+            if why:
+                d["sync"]["no_render"] = False
+                self._log("这次运行没有关闭渲染：%s" % why, "warn")
+            else:
+                self._log("这次运行关闭了 CARLA 渲染（更快）：运行中实时画面不更新")
         world_done = self._fix_world(d)  # world.fixed: the map and weather of the config first (traffic: below)
         w = self._need_world()  # (another map: another world)
         c = d["carla"]
@@ -1318,6 +1355,8 @@ class Backend:
             # Settle under PhysX so the bridge reads a resting vehicle.
             s = w.get_settings()
             s.synchronous_mode, s.fixed_delta_seconds = True, d["sync"]["frame_dt"]
+            if d["sync"].get("no_render"):
+                s.no_rendering_mode = True  # (the settings from before the run come back at its end)
             w.apply_settings(s)
             self._tm_sync(True)
             if world_done is not None:
@@ -1533,6 +1572,15 @@ class Backend:
     def cmd_runs_list(self, path=""):
         """The run records in a record dir (relative: the bridge dir), newest first (runs.list_runs)."""
         return runsmod.list_runs(path or "runs")
+
+    def cmd_carla_port_ready(self, host="localhost", port=2000):
+        """批量测试 after CARLA went away: is something listening on its port again? From the
+        kernel's socket table (never by connecting: CARLA 0.9.16 crashes after a few hundred
+        connections that close right away). {"listening": True / False, None = can't tell (another host)}."""
+        if host not in ("localhost", "127.0.0.1", "::1"):
+            return {"listening": None}
+        owners = listeners(int(port), netstat=True)
+        return {"listening": None if owners is None else bool(owners)}
 
     def cmd_check_sim(self, config=None):
         """检查 .sim: CarSim (or its stand-in) started once, its settings against the page's (simcheck.py)."""

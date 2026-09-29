@@ -4,6 +4,7 @@
 
 #include <deque>
 #include <map>
+#include <set>
 #include <functional>
 #include <string>
 #include <vector>
@@ -298,6 +299,11 @@ class App {
   std::vector<json> batch_items_, batch_results_;
   int batch_i_ = -1;
   bool batch_running_ = false, batch_stop_ = false, batch_wait_ = false;
+  // CARLA gone during a batch: waiting for its port, then the item again once (batch_retried_: item indices).
+  bool batch_lost_ = false, batch_probe_pending_ = false;
+  double batch_probe_at_ = -1e9, batch_connect_at_ = -1e9, batch_ready_since_ = -1.0;
+  std::set<std::string> batch_retried_;
+  std::string batch_map_;
   std::string batch_dir_;
   json batch_report_ = json::object();
   std::string runs_path_;

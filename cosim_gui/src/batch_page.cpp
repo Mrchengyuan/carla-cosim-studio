@@ -94,6 +94,18 @@ void App::BatchTick() {
       r["detail"] = run_note_;
     }
     batch_wait_ = false;
+    if (!carla_connected_ && !batch_stop_) {
+      // CARLA went away in this item: waited for below, then the item again (once).
+      r["detail"] = "CARLA 断开：" + r.value("detail", std::string());
+      const std::string key = std::to_string(batch_i_);
+      if (!batch_retried_.count(key)) {
+        batch_retried_.insert(key);
+        --batch_i_;
+        Log("批量测试：CARLA 断开了。等 CARLA 重新启动后自动重连，重跑这一项再继续（没有别的程序会重启 CARLA 时，请手动启动它）", "warn");
+      }
+      batch_lost_ = true;
+      batch_ready_since_ = -1.0;
+    }
     // The report so far (after every run: a batch stopped half way has one too).
     Call("batch_summary", {{"dir", batch_dir_}, {"items", batch_results_}}, [this](const json& rep) { batch_report_ = rep; });
   }
@@ -102,6 +114,41 @@ void App::BatchTick() {
     Log(Fmt("批量测试%s：%d 项运行完，报告在 %s（report.md / report.csv）", batch_stop_ ? "已停止" : "完成",
             static_cast<int>(batch_results_.size()), batch_dir_.c_str()));
     return;
+  }
+  if (batch_lost_ && !batch_stop_) {
+    if (!carla_connected_) {
+      // Is CARLA's port listening again? (the kernel's table: never by connecting, see
+      // carla_port_ready). Listening for 20 s (the map loads): connect once; every 30 s at most.
+      const double now = ImGui::GetTime();
+      if (!busy_.empty() || batch_probe_pending_ || now - batch_probe_at_ < 5.0) return;
+      batch_probe_at_ = now;
+      batch_probe_pending_ = true;
+      be_.Request("carla_port_ready", {{"host", prefs_.value("carla_host", std::string("localhost"))}, {"port", prefs_.value("carla_port", 2000)}},
+                  [this](bool ok, const json& r, const std::string&) {
+                    batch_probe_pending_ = false;
+                    const json l = ok ? r.value("listening", json()) : json(false);
+                    const double t = ImGui::GetTime();
+                    if (l.is_boolean() && !l.get<bool>()) { batch_ready_since_ = -1.0; return; }
+                    if (l.is_boolean()) {
+                      if (batch_ready_since_ < 0) batch_ready_since_ = t;
+                      if (t - batch_ready_since_ < 20.0) return;
+                    }
+                    if (t - batch_connect_at_ < 30.0 || !batch_running_) return;
+                    batch_connect_at_ = t;
+                    Log("批量测试：CARLA 又在监听了，重新连接");
+                    ConnectCarla();
+                  });
+      return;
+    }
+    // Back: the batch's map again (a restarted CARLA starts on its default map).
+    const std::string map = world_.value("map", std::string());
+    if (!batch_map_.empty() && !map.empty() && map != batch_map_) {
+      if (busy_.empty()) LoadMap(batch_map_);
+      return;
+    }
+    if (map.empty()) return;
+    batch_lost_ = false;
+    Log("批量测试：CARLA 已重新连接，继续");
   }
   if (!busy_.empty() || !carla_connected_ || be_.PendingCount() > 0) return;
   ++batch_i_;
@@ -219,6 +266,10 @@ void App::DrawPanelBatch() {
   ui::Row("每次时长 s", "每一项运行多久（仿真时间）", fs * 8);
   ImGui::SetNextItemWidth(fs * 8);
   if (ImGui::InputDouble("##bdur", &batch_duration_, 5.0, 10.0, "%.0f")) batch_duration_ = std::clamp(batch_duration_, 1.0, 3600.0);
+  ui::Row("关闭渲染（更快）", "运行时 CARLA 不渲染画面，只算物理：约快 2.5 倍（实测路线跟随 30 s：16 s → 6.5 s）。运行中实时画面不更新；要采集数据或算法要用相机传感器时自动不关（输出窗口会说明）。运行结束后恢复原来的设置（和“驾驶模式”页的“运行时关闭渲染”是同一个设置）");
+  bool nr = cfg_["sync"].value("no_render", false);
+  if (ImGui::Checkbox("##batch_norender", &nr)) cfg_["sync"]["no_render"] = nr;
+  ui::RecordTarget("batch:norender");
   ImGui::EndDisabled();
   ImGui::TextColored(p.text_dim, "共 %d 项（场景 × 出生点 × 参数值），每项 %.0f s；算法、车辆、仿真设置用各页现在的设置", static_cast<int>(plan.size()),
                      batch_duration_);
@@ -237,12 +288,25 @@ void App::DrawPanelBatch() {
       std::strftime(ts, sizeof(ts), "%Y%m%d_%H%M%S", std::localtime(&now));
       batch_dir_ = base + "/batch_" + ts;
       batch_running_ = true;
+      batch_lost_ = false;
+      batch_retried_.clear();
+      batch_map_ = world_.value("map", std::string());
     }
     ui::RecordTarget("batch:start");
     ImGui::EndDisabled();
   } else {
-    ImGui::ProgressBar(static_cast<float>(batch_i_ + 1) / std::max<size_t>(1, batch_items_.size()), ImVec2(-FLT_MIN, 0),
-                       Fmt("第 %d / %d 项", batch_i_ + 1, static_cast<int>(batch_items_.size())).c_str());
+    if (batch_lost_) {
+      ImGui::PushTextWrapPos(0.0f);
+      ImGui::TextColored(p.warning, ICON_FA_TRIANGLE_EXCLAMATION "  %s",
+                         carla_connected_ ? ("CARLA 已重新连接，正在切回地图 " + batch_map_ + " …").c_str()
+                                          : "CARLA 断开了：等它重新启动（端口重新监听 20 s 后自动重连），然后重跑断开的那一项、继续往下跑。"
+                                            "没有别的程序会重启 CARLA 时，请手动启动它。");
+      ImGui::PopTextWrapPos();
+      ui::RecordTarget("batch:lost");
+    }
+    // (waiting for CARLA: the item that broke, run again next)
+    const int n_items = static_cast<int>(batch_items_.size()), shown = std::min(batch_i_ + 1 + (batch_lost_ ? 1 : 0), n_items);
+    ImGui::ProgressBar(static_cast<float>(shown) / std::max(1, n_items), ImVec2(-FLT_MIN, 0), Fmt("第 %d / %d 项", shown, n_items).c_str());
     if (ui::Button(ICON_FA_STOP, batch_stop_ ? "正在停止 ..." : "停止批量测试", ui::Kind::Danger) && !batch_stop_) {
       batch_stop_ = true;
       if (Running()) RunCommand("cosim_stop");

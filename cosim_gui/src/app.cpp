@@ -1596,10 +1596,15 @@ void App::BuildTour() {
          cfg_["run"]["log_path"] = (dir / "tour_batch_runs").u8string();  // the batch folder in the tour's, not runs/
          batch_duration_ = 2.0; batch_spawns_.clear(); batch_param_.clear(); click_target_ = "batch:scn:1"; },
        [this] { return batch_scn_[0] && batch_scn_[1] && ui::TargetShown("batch:start"); }, ""},
+      {kPanelBatch, [this] { tour_kept_["no_render"] = cfg_["sync"].value("no_render", false); cfg_["sync"]["no_render"] = false;
+                             click_target_ = "batch:norender"; },
+       [this] { return click_target_.empty() && cfg_["sync"].value("no_render", false); }, ""},
       {kPanelBatch, [this] { click_target_ = "batch:start"; }, [this] {
          return !batch_running_ && batch_results_.size() == 2 && batch_report_.value("rows", json::array()).size() == 2 &&
-                ui::TargetShown("batch:report");
+                ui::TargetShown("batch:report") && std::count_if(log_.begin(), log_.end(), [](const LogLine& l) {
+                  return l.text.find("这次运行关闭了 CARLA 渲染") != std::string::npos; }) >= 2;
        }, "12f_batch"},
+      {kPanelBatch, [this] { cfg_["sync"]["no_render"] = tour_kept_["no_render"]; }, [] { return true; }, ""},
       {kPanelBatch, [this] {}, [this, dir] { return batch_dir_.rfind((dir / "tour_batch_runs").u8string(), 0) == 0; }, ""},
       {kPanelBatch, [this] { props_scroll_end_ = true; }, [] { return ui::TargetShown("batch:open_runs"); }, ""},
       {-1, [this] { click_target_ = "batch:open_runs"; }, [this] {  // (-1: the click changes the page)
@@ -1717,6 +1722,21 @@ void App::BuildTour() {
                     }, [this] { return cfg_["run"]["controller"] == tour_kept_["controller"]; }, ""});
     auto at = std::find_if(tour_->begin(), tour_->end(), [](const TourStep& t) { return t.shot == "07_drive"; });
     if (at != tour_->end()) tour_->insert(at + 1, algo.begin(), algo.end());
+  }  if (std::getenv("CC_TOUR_CRASH")) {
+    tour_->push_back({kPanelBatch, [this, dir] {
+                        cfg_["run"]["log_path"] = (dir / "tour_crash_runs").u8string();
+                        cfg_["carla"]["spawn_index"] = 3;
+                        for (bool& b : batch_scn_) b = false;
+                        batch_scn_[0] = true;
+                        batch_duration_ = 40.0; batch_spawns_.clear(); batch_param_.clear();
+                        click_target_ = "batch:start"; },
+                      [this] { return batch_running_ && Running() && last_tel_.value("t", 0.0) > 3.0; }, ""});
+    tour_->push_back({kPanelBatch, [dir] { std::ofstream(dir / "kill_carla") << "now\n"; },
+                      [this] { return batch_lost_ && !carla_connected_ && ui::TargetShown("batch:lost"); }, "18_batch_carla_lost"});
+    tour_->push_back({kPanelBatch, [] {}, [this] {
+                        return !batch_running_ && batch_results_.size() == 2 && batch_results_[0].value("detail", std::string()).rfind("CARLA 断开", 0) == 0 &&
+                               batch_results_[1].value("state", std::string()) == "finished" && batch_report_.value("rows", json::array()).size() == 2;
+                      }, "18b_batch_recovered"});
   }
 }
 

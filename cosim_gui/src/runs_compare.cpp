@@ -167,6 +167,8 @@ void App::DrawPanelRuns() {
   static const K kKpis[] = {{"lane_offset_rms", "车道偏差 均方根 (m)", -1, "%.3f"}, {"lane_offset_max", "车道偏差 最大 (m)", -1, "%.3f"},
                             {"heading_err_max", "最大航向偏差", -1, "%.2f"}, {"time_off_lane", "出车道时间 (s)", -1, "%.2f"},
                             {"collisions", "碰撞次数", -1, "%.0f"}, {"min_gap_ahead", "前方最小间距 (m)", +1, "%.2f"},
+                            {"ttc_min", "最小 TTC (s)", +1, "%.2f"}, {"accel_max", "最大加速度 (m/s²)", -1, "%.2f"},
+                            {"decel_max", "最大减速度 (m/s²)", -1, "%.2f"}, {"jerk_max", "最大 jerk (m/s³)", -1, "%.1f"},
                             {"ay_max", "最大侧向加速度", -1, "%.2f"}, {"distance", "行驶距离 (m)", 0, "%.0f"}};
   std::vector<json> picked;
   for (const auto& f : runs_sel_)
@@ -198,6 +200,22 @@ void App::DrawPanelRuns() {
         else ImGui::Text(fmt, x);
       }
     };
+    // 判定 (通过标准): passed / not, why on hover.
+    ImGui::TableNextRow();
+    ImGui::TableNextColumn();
+    ImGui::TextUnformatted("判定");
+    for (const json& r : picked) {
+      ImGui::TableNextColumn();
+      const json v = r.value("verdict", json());
+      if (!v.is_object()) { ImGui::TextColored(p.text_dim, "—"); continue; }
+      if (v.value("passed", false)) ImGui::TextColored(p.success, "通过");
+      else {
+        ImGui::TextColored(p.danger, "未通过");
+        std::string why;
+        for (const json& f : v.value("fails", json::array())) why += (why.empty() ? "" : "\n") + f.get<std::string>();
+        if (ImGui::IsItemHovered() && !why.empty()) ImGui::SetTooltip("%s", why.c_str());
+      }
+    }
     std::vector<double> dur;
     for (const json& r : picked) dur.push_back(Num(r, "duration"));
     row("时长 (s)", dur, 0, "%.1f");

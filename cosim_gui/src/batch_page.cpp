@@ -121,6 +121,56 @@ void App::BatchTick() {
   });
 }
 
+void App::DrawCriteria() {
+  const ui::Palette& p = ui::Colors();
+  const float fs = ImGui::GetFontSize();
+  if (!cfg_.contains("criteria") || !cfg_["criteria"].is_object()) cfg_["criteria"] = json::object();
+  json& c = cfg_["criteria"];
+  if (!c.contains("limits") || !c["limits"].is_object()) c["limits"] = json::object();
+  ui::BeginCard(ICON_FA_SCALE_BALANCED, "通过标准（每次运行结束时判定）");
+  ImGui::BeginDisabled(Running() || batch_running_);
+  ui::DimWrapped("每次运行结束时按这些标准判定通过 / 未通过：输出窗口说明原因，run.json 记下（verdict），批量测试的报告和“运行对比”页都用它。随工程保存。");
+  struct B { const char* key; const char* name; };
+  static const B kBasic[] = {{"finished", "要跑完设定的时长"}, {"no_collision", "不能有碰撞"}, {"on_lane", "不能开出行车道"}};
+  for (const B& b : kBasic) {
+    bool v = c.value(b.key, true);
+    if (ImGui::Checkbox(b.name, &v)) c[b.key] = v;
+    ImGui::SameLine();
+  }
+  ImGui::NewLine();
+  struct L { const char* key; const char* name; const char* op; const char* unit; double def; double step; };
+  static const L kLimits[] = {{"lane_offset_rms", "车道偏差均方根", "≤", "m", 0.3, 0.05},
+                              {"lane_offset_max", "车道偏差最大", "≤", "m", 0.8, 0.05},
+                              {"ttc_min", "最小碰撞时间 TTC", "≥", "s", 2.0, 0.5},
+                              {"min_gap_ahead", "前方最小间距", "≥", "m", 5.0, 1.0},
+                              {"accel_max", "最大加速度", "≤", "m/s²", 3.0, 0.5},
+                              {"decel_max", "最大减速度", "≤", "m/s²", 6.0, 0.5},
+                              {"jerk_max", "最大纵向 jerk", "≤", "m/s³", 10.0, 1.0}};
+  json& lim = c["limits"];
+  for (const L& l : kLimits) {
+    ImGui::PushID(l.key);
+    bool on = lim.contains(l.key) && lim[l.key].is_number();
+    if (ImGui::Checkbox("##on", &on)) lim[l.key] = on ? json(l.def) : json();
+    ui::RecordTarget(std::string("crit:") + l.key);
+    ImGui::SameLine();
+    ImGui::AlignTextToFramePadding();
+    if (on) ImGui::TextUnformatted(Fmt("%s %s", l.name, l.op).c_str());
+    else ImGui::TextColored(p.text_dim, "%s（不检查）", l.name);
+    if (on) {
+      ImGui::SameLine(fs * 12.5f);
+      double v = lim[l.key].get<double>();
+      ImGui::SetNextItemWidth(fs * 7);
+      if (ImGui::InputDouble("##v", &v, l.step, l.step * 10, "%g")) lim[l.key] = std::max(0.0, v);
+      ImGui::SameLine();
+      ImGui::TextColored(p.text_dim, "%s", l.unit);
+    }
+    ImGui::PopID();
+  }
+  ui::DimWrapped("没有数据的一项不算违反（例如前方一直没有接近的目标，TTC 为空）。加速度、jerk 按采样周期（“数据采集”页，默认 0.1 s）由车速差分。");
+  ImGui::EndDisabled();
+  ui::EndCard();
+}
+
 void App::DrawPanelBatch() {
   const ui::Palette& p = ui::Colors();
   const float fs = ImGui::GetFontSize();
@@ -200,6 +250,7 @@ void App::DrawPanelBatch() {
     ui::RecordTarget("batch:stop");
   }
   ui::EndCard();
+  DrawCriteria();
 
   if (batch_results_.empty()) return;
   ui::BeginCard(ICON_FA_TABLE, "结果");
@@ -242,14 +293,16 @@ void App::DrawPanelBatch() {
       num("collisions", "%.0f");
       num("time_off_lane", "%.2f");
       ImGui::TableNextColumn();
-      const std::string d = row.is_object() ? row.value("detail", std::string()) : res.value("detail", std::string());
+      std::string d = row.is_object() ? row.value("detail", std::string()) : res.value("detail", std::string());
+      if (row.is_object())  // why it did not pass (通过标准), then how it ended
+        for (const json& f : row.value("fails", json::array())) d = f.get<std::string>() + "；" + d;
       ImGui::TextUnformatted(d.c_str());
       if (ImGui::IsItemHovered() && !d.empty()) ImGui::SetTooltip("%s", d.c_str());
     }
     ImGui::EndTable();
   }
   if (batch_report_.contains("md")) {
-    ImGui::TextColored(p.text_dim, "通过 %d / %d 项（通过 = 跑完设定的时长、没有碰撞、没有开出车道）", batch_report_.value("passed", 0),
+    ImGui::TextColored(p.text_dim, "通过 %d / %d 项（按上面的“通过标准”；未通过的原因在“说明”里）", batch_report_.value("passed", 0),
                        batch_report_.value("total", 0));
     ui::DimWrapped(("报告：" + batch_report_.value("md", std::string()) + "（同一个文件夹里还有 report.csv）").c_str());
     ui::RecordTarget("batch:report");

@@ -631,9 +631,14 @@ class RunKpi:
     (every key, whatever the record keeps) and the CarSim exports; contacts
     at every step, like the collision lines in the output."""
 
-    def __init__(self, period, collisions=True, angle="deg"):
+    def __init__(self, period, collisions=True, angle="deg", speed="km/h"):
         self.period = float(period)  # s between two samples
         self.to_rad = math.pi / 180.0 if angle == "deg" else 1.0  # rel_yaw is in the export angle unit
+        self.to_ms = 1.0 / 3.6 if speed == "km/h" else 1.0       # Speed / rel_vx are in the export speed unit
+        # Comfort and safety (m/s², m/s³, s): the ego speed differenced over the sample period; the
+        # time to collision with what is ahead in its path and closing in (gap / closing speed).
+        self.ttc_min = self.accel_max = self.decel_max = self.jerk_max = None
+        self._v = self._a = None
         self.samples = 0
         self.t_start = self.t_end = None
         self.lane_n = self.no_lane_n = 0
@@ -671,6 +676,18 @@ class RunKpi:
                 self.off_sq += off * off
                 self.off_max = off if self.off_max is None else max(self.off_max, off)
                 self.head_max = head if self.head_max is None else max(self.head_max, head)
+        v = ego.get("Speed")
+        if v is not None:
+            v *= self.to_ms
+            if self._v is not None and self.period > 0:
+                a = (v - self._v) / self.period
+                self.accel_max = max(a, self.accel_max if self.accel_max is not None else 0.0)
+                self.decel_max = max(-a, self.decel_max if self.decel_max is not None else 0.0)
+                if self._a is not None:
+                    j = abs(a - self._a) / self.period
+                    self.jerk_max = j if self.jerk_max is None else max(self.jerk_max, j)
+                self._a = a
+            self._v = v
         half = ego.get("width", 0.0) / 2.0
         for o in scene.get("objects") or ():
             # Ahead in the ego's own path: in front of the reference point, its box
@@ -679,6 +696,10 @@ class RunKpi:
             side = abs(o["length"] / 2.0 * math.sin(ry)) + abs(o["width"] / 2.0 * math.cos(ry))
             if o["rel_x"] > 0.0 and abs(o["rel_y"]) - side < half:
                 self.gap_min = o["gap"] if self.gap_min is None else min(self.gap_min, o["gap"])
+                closing = -o.get("rel_vx", 0.0) * self.to_ms
+                if closing > 0.1:
+                    ttc = max(o["gap"], 0.0) / closing
+                    self.ttc_min = ttc if self.ttc_min is None else min(self.ttc_min, ttc)
         ay = exports.get("Ay")
         if ay is not None:
             self.ay_max = abs(ay) if self.ay_max is None else max(self.ay_max, abs(ay))
@@ -693,7 +714,9 @@ class RunKpi:
              "lane_offset_max": g(self.off_max), "heading_err_max": g(self.head_max),
              "time_off_lane": g(self.no_lane_n * self.period) if self.lane_n + self.no_lane_n else None,
              "collisions": self.collisions, "first_collision_t": g(fc[0]), "first_collision_with": fc[1],
-             "min_gap_ahead": g(self.gap_min), "distance": g(self.distance)}
+             "min_gap_ahead": g(self.gap_min), "distance": g(self.distance),
+             "ttc_min": g(self.ttc_min), "accel_max": g(self.accel_max), "decel_max": g(self.decel_max),
+             "jerk_max": g(self.jerk_max)}
         if self.ay_max is not None:
             k["ay_max"] = g(self.ay_max)
         return k
@@ -713,6 +736,11 @@ def kpi_text(k, angle="deg"):
         parts.append("碰撞 %d 次%s" % (k["collisions"], "（第一次 t = %.2f s，%s）" % (
             k["first_collision_t"], k["first_collision_with"]) if k["collisions"] else ""))
     parts.append("前方最小间距 %.2f m" % k["min_gap_ahead"] if k["min_gap_ahead"] is not None else "前方没有目标")
+    if k.get("ttc_min") is not None:
+        parts.append("最小 TTC %.2f s" % k["ttc_min"])
+    if k.get("decel_max") is not None:
+        parts.append("最大加速 %.2f / 减速 %.2f m/s²、最大 jerk %.1f m/s³" % (
+            k["accel_max"], k["decel_max"], k["jerk_max"] or 0.0))
     parts.append("行驶距离 %.1f m" % k["distance"])
     if "ay_max" in k:
         parts.append("最大 |Ay| %.3g（导出单位）" % k["ay_max"])

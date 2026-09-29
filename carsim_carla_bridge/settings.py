@@ -77,6 +77,10 @@ def default_dict():
         # (loaded if another one is up), the weather (CARLA weather parameters) and the traffic
         # (cleared, then vehicles / walkers spawned with seed): the same surroundings every time.
         "world": {"fixed": False, "map": "", "weather": {}, "traffic": {"vehicles": 0, "walkers": 0, "seed": 0}},
+        # 通过标准 (criteria.py): the verdict of every run (run.json "verdict", the batch report).
+        "criteria": {"finished": True, "no_collision": True, "on_lane": True,
+                     "limits": {"lane_offset_rms": None, "lane_offset_max": None, "ttc_min": None, "min_gap_ahead": None,
+                                "accel_max": None, "decel_max": None, "jerk_max": None}},
         # 车辆参数辨识 (运行对比 page, vehicle_ident.py): the car's mass (kg), yaw inertia (kg m^2),
         # CG to front / rear axle (m); path = where the KMPPI vehicle file is written.
         "ident": {"m": 1910.0, "I": 3482.0, "a": 1.371, "b": 1.386, "path": "controllers/kmppi/vehicle_identified.json"},

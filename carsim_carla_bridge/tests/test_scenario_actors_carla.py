@@ -137,6 +137,9 @@ def main():
               (i0, gaps[i0] if i0 is not None else None))
         check("... the lane follower does not stop: a collision with it",
               (k.get("collisions") or 0) > 0 and str(k.get("first_collision_with")).startswith("vehicle."), k.get("first_collision_with"))
+        check("... the run's minimum TTC (closing in on it) under 2 s, the verdict not passed for the collision",
+              k.get("ttc_min") is not None and 0.0 <= k["ttc_min"] < 2.0 and not rj["verdict"]["passed"]
+              and any(f.startswith("碰撞") for f in rj["verdict"]["fails"]), (k.get("ttc_min"), rj.get("verdict")))
 
         # ---- 3: a cut-in from the left lane into the ego's ------------------------------------------
         cut = [dict(type="cut_in", distance_m=70, lane=-1, speed_kmh=30, trigger_m=35, param=3)]

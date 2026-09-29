@@ -14,7 +14,7 @@ import math
 import os
 
 KPI_KEYS = ("lane_offset_rms", "lane_offset_max", "heading_err_max", "time_off_lane", "collisions",
-            "min_gap_ahead", "ay_max", "distance")
+            "min_gap_ahead", "ttc_min", "accel_max", "decel_max", "jerk_max", "ay_max", "distance")
 
 
 def _num(v):
@@ -59,6 +59,7 @@ def list_runs(root, base=None, limit=300):
             "duration": (t1 - t0) if t0 is not None and t1 is not None else None,
             "kpi": {k: (r.get("kpi") or {}).get(k) for k in KPI_KEYS} if r.get("kpi") else {},
             "debug": os.path.isfile(os.path.join(folder, "log_debug.csv")),
+            "verdict": r.get("verdict"),  # 通过标准 (None: a run from before it)
             "units": r.get("units") or {},
         })
     return out

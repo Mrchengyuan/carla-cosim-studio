@@ -24,6 +24,7 @@ import carla
 
 import carsim_remote
 import chrono_local
+import criteria as criteriamod
 import disturb as disturbmod
 import rig as rigmod
 import scenario as scenariomod
@@ -969,6 +970,9 @@ def _run_json(ses, end=None, reason=None):
             "t_start": kpi.t_start if kpi else None, "t_end": kpi.t_end if kpi else None,
             "end": end, "end_reason": reason,
             "kpi": kpi.result() if kpi and kpi.samples else None,
+            # 通过标准 (criteria.py): at the end of the run
+            "verdict": criteriamod.verdict(kpi.result() if kpi and kpi.samples else None, end, d.get("criteria"))
+            if end is not None and kpi is not None else None,
             "units": _units(d),
             "disturb": disturbmod.config(d) if cosim and d["run"]["driver"] == "custom" else None}
 
@@ -1004,6 +1008,8 @@ def end_run(ses, end, reason, errors=()):
         if ses.kpi is not None and ses.kpi.samples:
             out["kpi"] = ses.kpi.result()
             out["kpi_text"] = kpi_text(out["kpi"], _units(ses.d)["angle"])
+        if ses.kpi is not None:  # 通过标准 (a run that measured its key figures)
+            out["verdict"] = criteriamod.verdict(out.get("kpi"), end, ses.d.get("criteria"))
         if ses.record_dir:
             _write_json(os.path.join(ses.record_dir, "run.json"), _run_json(ses, end, reason))
     except Exception as e:  # e.g. the drive went away: the run is over anyway
@@ -1036,7 +1042,7 @@ def start_scene(ses, anchor, ref_local=None, t=0.0, ego_velocity=None):
         raise
     ses.scene = sp
     ses.kpi = RunKpi(st.sample_every(d) * float(d["sync"]["frame_dt"]), d["scene"].get("collision", "log") != "off",
-                     _units(d)["angle"])
+                     _units(d)["angle"], _units(d)["speed"])
     if d["run"]["log_path"]:
         # Every run a folder of its own: the CSV files, config.json, the algorithm file, run.json.
         ses.record_dir, base = run_dir(d["run"]["log_path"], _run_stem(d))

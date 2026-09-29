@@ -1,5 +1,6 @@
-"""批量测试 report without CARLA: a row per item from its run.json (pass =
-finished by its duration, no collision, never off the lanes; an item that
+"""批量测试 report without CARLA: a row per item from its run.json (pass = the
+run's verdict (通过标准, run.json); runs from before it: finished by its
+duration, no collision, never off the lanes; an item that
 did not start or has no record: not passed, its reason kept), report.csv
 (with a BOM: Excel reads the Chinese headers) and report.md in the batch's
 folder (relative: the bridge dir); served by the backend's IO thread.
@@ -52,8 +53,8 @@ class BatchReportTests(unittest.TestCase):
         self.assertEqual(r["rows"][0]["lane_offset_rms"], 0.04)
         with open(r["csv"], encoding="utf-8-sig") as f:
             rows = list(csv.reader(f))
-        self.assertEqual(rows[0][:4], ["测试项", "结果", "结束", "车道偏差均方根 m"])
-        self.assertEqual(rows[1][:4], ["a", "通过", "finished", "0.040"])
+        self.assertEqual(rows[0][:5], ["测试项", "结果", "未通过的原因", "结束", "车道偏差均方根 m"])
+        self.assertEqual(rows[1][:5], ["a", "通过", "", "finished", "0.040"])
         self.assertEqual(rows[5][1], "未通过")
         with open(r["csv"], "rb") as f:
             self.assertTrue(f.read(3) == b"\xef\xbb\xbf")
@@ -62,6 +63,21 @@ class BatchReportTests(unittest.TestCase):
         self.assertIn("| a | ✅ 通过 | 0.040 |", md)
         self.assertIn("e | x", md)  # the label as given; a "|" in the reason would be replaced
         self.assertEqual(md.count("\n| "), 6)  # header + 5 rows
+
+    def test_the_runs_verdict(self):
+        """A run with a verdict (通过标准, run.json): that one, its reasons in the report."""
+        f = run(os.path.join(self.tmp, "runs", "batch_y"), "v", "finished",
+                {"lane_offset_rms": 0.04, "collisions": 0, "time_off_lane": 0.0, "ttc_min": 1.2})
+        rj = json.load(open(os.path.join(f, "run.json"), encoding="utf-8"))
+        rj["verdict"] = {"passed": False, "fails": ["最小碰撞时间 TTC 1.2 s < 2 s"], "checked": []}
+        json.dump(rj, open(os.path.join(f, "run.json"), "w", encoding="utf-8"))
+        r = batch_report.summarize("runs/batch_y", [{"label": "v", "record_dir": f, "state": "finished"}], base=self.tmp)
+        self.assertEqual((r["rows"][0]["passed"], r["rows"][0]["fails"]), (False, ["最小碰撞时间 TTC 1.2 s < 2 s"]))
+        with open(r["csv"], encoding="utf-8-sig") as fh:
+            rows = list(csv.reader(fh))
+        self.assertEqual(rows[1][:3], ["v", "未通过", "最小碰撞时间 TTC 1.2 s < 2 s"])
+        self.assertIn("最小 TTC s", rows[0])
+        self.assertIn("最小碰撞时间 TTC 1.2 s < 2 s", open(r["md"], encoding="utf-8").read())
 
     def test_on_the_io_thread(self):
         self.assertIn("batch_summary", IO_CMDS)

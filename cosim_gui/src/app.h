@@ -104,7 +104,8 @@ class App {
   std::vector<json> BatchPlan();
   void DrawCompare();
   void DrawIdent();
-  void DrawDisturb();  // 干扰 (驾驶模式 page, run.disturb)  // 车辆参数辨识 card (运行对比 page)
+  void DrawDisturb();
+  void DrawCriteria();  // 通过标准 (批量测试 page, config "criteria")  // 干扰 (驾驶模式 page, run.disturb)  // 车辆参数辨识 card (运行对比 page)
   void RunsRefresh();
   void RunsToggle(const std::string& folder);
   void DrawPanelScene();

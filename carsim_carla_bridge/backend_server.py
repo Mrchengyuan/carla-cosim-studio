@@ -41,6 +41,7 @@ import numpy as np
 import carsim_remote
 import batch_report
 import runs as runsmod
+import criteria
 import simcheck
 import templates
 import vehicle_ident
@@ -1650,6 +1651,8 @@ class Backend:
             self._log("运行记录：%s" % summary["record_dir"])
         if summary.get("kpi_text"):
             self._log("运行指标：%s" % summary["kpi_text"])
+        if summary.get("verdict"):
+            self._log(criteria.text(summary["verdict"]), "info" if summary["verdict"]["passed"] else "warn")
         self._run_out_add("运行结束（%s）%s" % ({"finished": "完成", "stopped": "停止", "error": "出错"}.get(final, final),
                                             "：" + detail if detail else ""), folder=record_dir)
         self._run_out = None

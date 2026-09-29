@@ -1525,7 +1525,9 @@ void App::BuildTour() {
            std::ofstream(f / "run.json") << "{\"map\": \"Town04\", \"controller\": \"algo_" << (k ? "b" : "a")
                                          << ".py\", \"dynamics\": \"cosim\", \"carsim_mock\": true, \"t_start\": 0.0, \"t_end\": 9.9, "
                                          << "\"end\": \"finished\", \"kpi\": {\"lane_offset_rms\": " << (k ? 0.12 : 0.05)
-                                         << ", \"collisions\": 0, \"distance\": " << (k ? 180 : 200) << "}, \"units\": {}}";
+                                         << ", \"collisions\": 0, \"distance\": " << (k ? 180 : 200) << ", \"ttc_min\": " << (k ? 1.4 : 3.1)
+                                         << "}, \"units\": {}, \"verdict\": {\"passed\": " << (k ? "false" : "true")
+                                         << ", \"fails\": [" << (k ? "\"最小碰撞时间 TTC 1.4 s < 2 s\"" : "") << "]}}";
            std::ofstream(f / "output.txt") << "12:00:00 联合仿真开始（模拟 CarSim）\n12:00:00 [算法] 算法启动了\n"
                                            << "12:00:05 [警告] 前方 30 m 有障碍物\n12:00:09 [算法] 结束：偏差 0.05 m\n"
                                            << "12:00:10 运行指标：车道偏移 RMS 0.05 m\n12:00:10 运行结束（完成）\n";
@@ -1581,6 +1583,14 @@ void App::BuildTour() {
        }, ""},
       {kPanelRuns, [this] { cfg_["ident"] = tour_kept_["ident"]; }, [this] { return cfg_["ident"] == tour_kept_["ident"]; }, ""},
       {kPanelRuns, [this] { compare_open_ = false; runs_sel_.clear(); }, [this] { return !ui::TargetShown("compare:plots"); }, ""},
+      // 通过标准: TTC ≥ checked by a click (2 s); then as it was.
+      {kPanelBatch, [this] {
+         tour_kept_["criteria"] = cfg_["criteria"];
+         cfg_["criteria"]["limits"]["ttc_min"] = json();
+         click_target_ = "crit:ttc_min"; }, [this] {
+         return click_target_.empty() && cfg_["criteria"]["limits"].value("ttc_min", 0.0) == 2.0;
+       }, "12f0_criteria"},
+      {kPanelBatch, [this] { cfg_["criteria"] = tour_kept_["criteria"]; }, [this] { return cfg_["criteria"] == tour_kept_["criteria"]; }, ""},
       // 批量测试: 不开封道 and (a click) 封闭本车道 at the current spawn point, 2 s each; the report.
       {kPanelBatch, [this, dir] {
          cfg_["run"]["log_path"] = (dir / "tour_batch_runs").u8string();  // the batch folder in the tour's, not runs/

@@ -370,7 +370,10 @@ class FinishTests(unittest.TestCase):
         self.assertIsNone(ses.recorder)
         run = read_json(os.path.join(self.tmp.name, "run.json"))
         self.assertEqual((run["end"], run["end_reason"], run["kpi"]), ("finished", "达到设定的运行时长 2 s", None))
-        self.assertEqual(summary, {"record_dir": self.tmp.name, "errors": []})
+        # 通过标准: a run that measured nothing (no sample) cannot pass, said
+        verdict = {"passed": False, "fails": ["没有运行指标（没有采样）"], "checked": ["跑完设定的时长", "没有碰撞", "不开出车道"]}
+        self.assertEqual(summary, {"record_dir": self.tmp.name, "errors": [], "verdict": verdict})
+        self.assertEqual(run["verdict"], verdict)
 
     def test_carla_dynamics_stop_completes_run_json_with_carla_gone(self):
         def gone(*a):

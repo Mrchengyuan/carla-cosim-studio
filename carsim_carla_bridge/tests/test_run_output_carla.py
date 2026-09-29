@@ -6,6 +6,7 @@ older run folder without output.txt is said in plain words.
 
     python tests/test_run_output_carla.py [--port 2000]
 """
+import json
 import os
 import shutil
 import subprocess
@@ -79,6 +80,9 @@ def main():
         check("... every message with a time, a message's further lines indented (a traceback)",
               all((len(l) > 9 and l[2] == ":" and l[5] == ":") or l.startswith("    ") for l in lines)
               and any(l.startswith("    ") for l in lines), [l for l in lines if l.startswith("    ")][:2])
+        check("the verdict (通过标准: default) in the output and run.json: not passed, it did not finish",
+              any("判定：未通过：没有跑完（出错）" in l for l in lines) and
+              json.load(open(os.path.join(folder, "run.json"), encoding="utf-8"))["verdict"]["fails"] == ["没有跑完（出错）"])
         r = c.call("run_output", folder=folder)
         check("run_output: the text for the GUI", r["text"] == text and r["lines"] == len(lines) and not r["truncated"], r["lines"])
 
@@ -89,6 +93,7 @@ def main():
         c.wait_event(lambda e: e.get("event") == "cosim_state" and e["state"] in ("finished", "error", "stopped"), 300)
         t2 = open(os.path.join(info2["record_dir"], "output.txt"), encoding="utf-8").read()
         check("a second run: its own output.txt, nothing of the first", "故意出错" not in t2 and "运行结束（完成）" in t2, t2[-80:])
+        check("... finished: 判定：通过", "判定：通过" in t2)
         # Without a record folder: nothing written anywhere.
         cfg["run"]["log_path"] = ""
         before = sorted(os.listdir(os.path.join(tmp, "runs")))

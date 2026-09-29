@@ -220,7 +220,7 @@ export CARLA_ROOT=/opt/CARLA_0.9.16          # 原版 CARLA 在别处
 export COSIM_PYTHON=/home/me/miniconda3/envs/carla/bin/python
 ./scripts/start_studio.sh
 ```
-可设置的变量：`CARLA_ROOT`、`CARLA_SRC`、`UE4_ROOT`、`STUDIO_BIN`、`COSIM_PYTHON`、`CARLA_PORT`（默认 2000）、`CARLA_MOD_PORT`（默认 3000）、`PROXY`。
+可设置的变量：`CARLA_ROOT`、`CARLA_SRC`、`CARLA_MOD_ROOT`（打包版改版 CARLA，默认 `CARLA_mod/`）、`UE4_ROOT`、`STUDIO_BIN`、`COSIM_PYTHON`、`CARLA_PORT`（默认 2000）、`CARLA_MOD_PORT`（默认 3000）、`PROXY`。
 
 ---
 
@@ -295,9 +295,15 @@ venv_build/bin/pip install --force-reinstall --no-deps carla_src/PythonAPI/carla
 - 桌面双击绿色图标 **CARLA CoSim Studio（改版）**，或者
 - 手动：`tmux new -d -s carla_mod "./scripts/carla_mod_server.sh"`（端口 3000）。
 
-注意事项：
+**打包版（推荐）**：`cd carla_src && make package`（1–2 小时，约 30 GB 空间）打出 `carla_src/Dist/CARLA_Shipping_<版本>/LinuxNoEditor`，把它链接成仓库根目录下的 `CARLA_mod`：
+```bash
+ln -sfn carla_src/Dist/CARLA_Shipping_294096e-dirty/LinuxNoEditor CARLA_mod
+```
+有 `CARLA_mod/CarlaUE4.sh` 时，桌面图标和 `carla_mod_server.sh` 都用打包版：启动约 6 秒（本机实测），切换地图也快。放在别处时设置 `CARLA_MOD_ROOT`。
+
+没有打包版时用**编辑器游戏模式**，注意事项：
 - **第一次启动要编译着色器，可能需要 20–40 分钟**（桌面图标最多等 1 小时），以后每次约 40 秒（本机实测 42 秒）。
-- 改版 CARLA 是以“编辑器游戏模式”运行的，**第一次切换到某张地图也要现场编译，会很慢**。需要频繁切换地图时，可以打包成正式版：`cd carla_src && make package`（再需要 1–2 小时和约 20 GB 空间），打包版切换地图约 6 秒。
+- **第一次切换到某张地图也要现场编译，会很慢**。
 - 只测试接口、不需要画面时：`./scripts/carla_mod_server.sh --norender`。
 - 验证改版接口：`venv_build/bin/python carsim_carla_bridge/tests/test_modified_carla.py --port 3000`，应该全部 PASS（最后一行是 `ALL MODIFIED-CARLA TESTS PASSED`；有一项 FAIL 时退出码为 1）。
 

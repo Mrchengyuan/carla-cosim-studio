@@ -120,7 +120,7 @@ git clone https://github.com/Mrchengyuan/python_carsim_env
 | `carla_patches/carla_0.9.16_release_gil.patch`：Python 包里 `apply_external_state()`、`get_wheel_steer_angle()` 等待服务器时释放 Python 全局锁（否则和大画面的相机回调互相等待，整个仿真卡死）。要在主补丁之后打 | |
 | Linux 编译用的修复补丁：`carla_patches/carla_0.9.16_linux_libpng_url_fix.patch` | |
 | 一键编译脚本：`scripts/build_ue4.sh`、`scripts/build_carla.sh` | |
-| 启动脚本：`scripts/carla_mod_server.sh`、`scripts/start_studio.sh mod` | |
+| 启动脚本：`scripts/carla_mod_server.sh`、`scripts/start_studio.sh mod`（优先用打包版 `CARLA_mod/`，没有时用编辑器版） | |
 | 编译教程：[Ubuntu 使用指南 第 8 节](docs/Ubuntu使用指南.md)、[Windows 编译指南](carsim_carla_bridge/docs/Windows编译指南.md) | |
 
 为什么不直接上传编译好的改版 CARLA：一是太大（CARLA 源码加地图资源约 31 GB，它依赖的定制版 UE4 引擎约 93 GB）；二是 UE4 引擎的代码只对关联了 Epic Games 的 GitHub 账号开放，不能再分发。所以每台电脑需要自己编译一次，脚本已经把步骤都写好了。

@@ -11,7 +11,7 @@ LOG="${XDG_CACHE_HOME:-$HOME/.cache}/carla_cosim_studio/launch_$MODE.log"
 mkdir -p "$(dirname "$LOG")" && : > "$LOG" && exec > >(tee -a "$LOG") 2>&1
 echo "$(date '+%F %T') start_studio.sh $MODE"
 if [ "$MODE" = "mod" ]; then
-  PORT=$CARLA_MOD_PORT; PORTVAR=CARLA_MOD_PORT; SESSION=carla_mod; NAME="改版 CARLA"; TIMEOUT=3600; KIND=mod  # the first start compiles shaders (20-40 min)
+  PORT=$CARLA_MOD_PORT; PORTVAR=CARLA_MOD_PORT; SESSION=carla_mod; NAME="改版 CARLA"; TIMEOUT=3600; KIND=mod  # editor build: the first start compiles shaders (20-40 min)
   START="bash '$COSIM_ROOT/scripts/carla_mod_server.sh'"
 else
   PORT=$CARLA_PORT; PORTVAR=CARLA_PORT; SESSION=carla_server; NAME="原版 CARLA"; TIMEOUT=300; KIND=stock
@@ -53,7 +53,7 @@ if ! listening; then
     [ -f "$CARLA_LOG" ] && mv -f "$CARLA_LOG" "$CARLA_LOG.prev"
     # The settings go along explicitly: a tmux server that is already running
     # would start the session with its own (old) environment.
-    ENVS="COSIM_ROOT='$COSIM_ROOT' CARLA_ROOT='$CARLA_ROOT' CARLA_SRC='$CARLA_SRC' UE4_ROOT='$UE4_ROOT' CARLA_PORT='$CARLA_PORT' CARLA_MOD_PORT='$CARLA_MOD_PORT'"
+    ENVS="COSIM_ROOT='$COSIM_ROOT' CARLA_ROOT='$CARLA_ROOT' CARLA_SRC='$CARLA_SRC' CARLA_MOD_ROOT='$CARLA_MOD_ROOT' UE4_ROOT='$UE4_ROOT' CARLA_PORT='$CARLA_PORT' CARLA_MOD_PORT='$CARLA_MOD_PORT'"
     tmux new -d -s "$SESSION" "env $ENVS $START > '$CARLA_LOG' 2>&1; rc=\$?; echo \"\$(date '+%F %T') $NAME 已退出，退出码 \$rc（CARLA 的输出：$CARLA_LOG）\" >> '$LOG'"
     STARTED=1
   fi

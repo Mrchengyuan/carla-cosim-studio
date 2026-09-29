@@ -252,6 +252,7 @@ class LauncherTests(unittest.TestCase):
         port = "3000" if mode == "mod" else "2000"
         env = dict(os.environ, PATH=self.bin + os.pathsep + os.environ["PATH"], XDG_CACHE_HOME=self.tmp,
                    STUDIO_BIN=self.gui, COSIM_PYTHON=self.python, CARLA_PORT="2000", CARLA_MOD_PORT="3000",
+                   CARLA_MOD_ROOT=os.path.join(self.tmp, "no_carla_mod"),
                    FAKE_OWNER=owner, FAKE_PORT=port, FAKE_PY_RC=str(py_rc))
         env.pop("COSIM_ROOT", None)
         p = subprocess.run(["bash", os.path.join(SCRIPTS, "start_studio.sh")] + ([mode] if mode else []),
@@ -263,7 +264,7 @@ class LauncherTests(unittest.TestCase):
         return p.returncode, calls
 
     def test_carla_known_by_name_without_connecting(self):
-        for mode, owner, port in (("", "CarlaUE4-Linux-", "2000"), ("mod", "UE4Editor", "3000")):
+        for mode, owner, port in (("", "CarlaUE4-Linux-", "2000"), ("mod", "UE4Editor", "3000"), ("mod", "CarlaUE4-Linux-", "3000")):
             with self.subTest(owner=owner):
                 rc, calls = self.start(mode, owner)
                 self.assertEqual(rc, 0, calls)
@@ -295,8 +296,9 @@ class LauncherTests(unittest.TestCase):
 
 class StopPatternTests(unittest.TestCase):
     """The stock / mod stop patterns match the command lines the servers really
-    get when CARLA_ROOT / CARLA_SRC go through a symlink. The servers are stubs
-    that print their command line; pkill only records its pattern."""
+    get when CARLA_ROOT / CARLA_SRC / CARLA_MOD_ROOT go through a symlink, for
+    the modified CARLA's editor build and its packaged build. The servers are
+    stubs that print their command line; pkill only records its pattern."""
 
     # CARLA 0.9.16's own CarlaUE4.sh (starts the binary by its readlink -f path).
     CARLAUE4_SH = ('#!/bin/sh\n'
@@ -306,18 +308,27 @@ class StopPatternTests(unittest.TestCase):
                    '"$UE4_PROJECT_ROOT/CarlaUE4/Binaries/Linux/CarlaUE4-Linux-Shipping" CarlaUE4 "$@" \n')
 
     def test_patterns_match_through_symlinks(self):
+        self.check_patterns(packaged=False)
+
+    def test_patterns_match_packaged_modified_carla(self):
+        self.check_patterns(packaged=True)
+
+    def check_patterns(self, packaged):
         tmp = os.path.realpath(tempfile.mkdtemp(prefix="cc_tests_"))
         self.addCleanup(shutil.rmtree, tmp, True)
         real, link = os.path.join(tmp, "disk"), os.path.join(tmp, "home")
         os.makedirs(os.path.join(real, "carla", "CarlaUE4", "Binaries", "Linux"))
+        os.makedirs(os.path.join(real, "mod", "CarlaUE4", "Binaries", "Linux"))
         os.makedirs(os.path.join(real, "src", "Unreal", "CarlaUE4"))
         os.makedirs(os.path.join(tmp, "ue4", "Engine", "Binaries", "Linux"))
         os.symlink(real, link)
         cmdlines = os.path.join(tmp, "cmdlines")
-        with open(os.path.join(real, "carla", "CarlaUE4.sh"), "w") as f:
-            f.write(self.CARLAUE4_SH)
-        os.chmod(os.path.join(real, "carla", "CarlaUE4.sh"), 0o755)
+        for d in ("carla", "mod") if packaged else ("carla",):
+            with open(os.path.join(real, d, "CarlaUE4.sh"), "w") as f:
+                f.write(self.CARLAUE4_SH)
+            os.chmod(os.path.join(real, d, "CarlaUE4.sh"), 0o755)
         for exe in (os.path.join(real, "carla", "CarlaUE4", "Binaries", "Linux", "CarlaUE4-Linux-Shipping"),
+                    os.path.join(real, "mod", "CarlaUE4", "Binaries", "Linux", "CarlaUE4-Linux-Shipping"),
                     os.path.join(tmp, "ue4", "Engine", "Binaries", "Linux", "UE4Editor")):
             stub(exe, 'echo "$0 $*" >> "%s"' % cmdlines)
         bin_ = os.path.join(tmp, "bin")
@@ -328,6 +339,8 @@ class StopPatternTests(unittest.TestCase):
         stub(os.path.join(bin_, "tmux"), "exit 0")
         env = dict(os.environ, PATH=bin_ + os.pathsep + os.environ["PATH"], XDG_CACHE_HOME=tmp,
                    CARLA_ROOT=os.path.join(link, "carla"), CARLA_SRC=os.path.join(link, "src"),
+                   # Without a CarlaUE4.sh there the editor build is started.
+                   CARLA_MOD_ROOT=os.path.join(link, "mod"),
                    UE4_ROOT=os.path.join(tmp, "ue4"), CARLA_PORT="2999", CARLA_MOD_PORT="3999")
         env.pop("COSIM_ROOT", None)
         for script in ("carla_server.sh", "carla_mod_server.sh"):
@@ -338,6 +351,7 @@ class StopPatternTests(unittest.TestCase):
         stock_pat, mod_pat = read(pats).splitlines()  # -TERM only: the stub pgrep finds nothing left
         self.assertTrue(stock_cmd.startswith(real), stock_cmd)
         self.assertIn(real, mod_cmd)
+        self.assertEqual("CarlaUE4-Linux-Shipping" in mod_cmd, packaged, mod_cmd)
         self.assertTrue(re.search(stock_pat, stock_cmd), (stock_pat, stock_cmd))
         self.assertTrue(re.search(mod_pat, mod_cmd), (mod_pat, mod_cmd))
         # Still only this installation's servers, each of its own kind.

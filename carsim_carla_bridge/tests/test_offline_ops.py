@@ -149,7 +149,7 @@ class RemoteSessionTests(unittest.TestCase):
                         FAKE_CTL=self.ctl, FAKE_TMUX=os.path.join(self.tmp, "tmux_session"), FAKE_CARSIM_PORT="1",
                         # Were anything real reached, there would be no CARLA to start.
                         CARLA_SRC=os.path.join(self.tmp, "no_carla_src"), UE4_ROOT=os.path.join(self.tmp, "no_ue4"),
-                        CARLA_ROOT=os.path.join(self.tmp, "no_carla"))
+                        CARLA_ROOT=os.path.join(self.tmp, "no_carla"), CARLA_MOD_ROOT=os.path.join(self.tmp, "no_carla_mod"))
         self.env.pop("COSIM_ROOT", None)
         self.sessions = []
 
@@ -263,7 +263,8 @@ class RemoteSessionTests(unittest.TestCase):
         self.assertEqual(s.lines[1:], ["正在启动 CARLA（首次约 1 分钟）…"] + READY_LINES)
         (new,) = self.recorded("tmux new")
         self.assertIn("-d -s carla_mod env COSIM_ROOT='%s' " % ROOT, new)
-        for part in ("CARLA_SRC='%s'" % self.env["CARLA_SRC"], "UE4_ROOT='%s'" % self.env["UE4_ROOT"],
+        for part in ("CARLA_SRC='%s'" % self.env["CARLA_SRC"], "CARLA_MOD_ROOT='%s'" % self.env["CARLA_MOD_ROOT"],
+                     "UE4_ROOT='%s'" % self.env["UE4_ROOT"],
                      "CARLA_MOD_PORT='3000'", "bash '%s/carla_mod_server.sh' > '%s/remote_carla.log' 2>&1"
                      % (SCRIPTS, self.state)):
             self.assertIn(part, new)

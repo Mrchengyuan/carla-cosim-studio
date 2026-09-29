@@ -4,6 +4,7 @@
 COSIM_ROOT="${COSIM_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 CARLA_ROOT="${CARLA_ROOT:-$COSIM_ROOT/CARLA_0.9.16}"          # original (prebuilt) CARLA
 CARLA_SRC="${CARLA_SRC:-$COSIM_ROOT/carla_src}"                # modified CARLA source tree
+CARLA_MOD_ROOT="${CARLA_MOD_ROOT:-$COSIM_ROOT/CARLA_mod}"      # packaged modified CARLA (make package); without it: editor build
 UE4_ROOT="${UE4_ROOT:-$HOME/UnrealEngine_4.26}"                # CARLA's UE4 fork
 STUDIO_BIN="${STUDIO_BIN:-$COSIM_ROOT/cosim_gui/build/carla_cosim_studio}"
 CARLA_PORT="${CARLA_PORT:-2000}"                                # original CARLA
@@ -16,4 +17,4 @@ if [ -z "$COSIM_PYTHON" ]; then
 fi
 # Optional HTTP proxy for downloads (build scripts only), e.g. http://127.0.0.1:7890
 PROXY="${PROXY:-}"
-export COSIM_ROOT CARLA_ROOT CARLA_SRC UE4_ROOT STUDIO_BIN CARLA_PORT CARLA_MOD_PORT COSIM_PYTHON PROXY
+export COSIM_ROOT CARLA_ROOT CARLA_SRC CARLA_MOD_ROOT UE4_ROOT STUDIO_BIN CARLA_PORT CARLA_MOD_PORT COSIM_PYTHON PROXY

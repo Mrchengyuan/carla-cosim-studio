@@ -118,7 +118,7 @@ else
     [ -f "$CARLA_LOG" ] && mv -f "$CARLA_LOG" "$CARLA_LOG.prev"
     # The settings go along explicitly: a tmux server that is already running
     # would start the session with its own (old) environment.
-    ENVS="COSIM_ROOT='$COSIM_ROOT' CARLA_ROOT='$CARLA_ROOT' CARLA_SRC='$CARLA_SRC' UE4_ROOT='$UE4_ROOT' CARLA_PORT='$CARLA_PORT' CARLA_MOD_PORT='$CARLA_MOD_PORT'"
+    ENVS="COSIM_ROOT='$COSIM_ROOT' CARLA_ROOT='$CARLA_ROOT' CARLA_SRC='$CARLA_SRC' CARLA_MOD_ROOT='$CARLA_MOD_ROOT' UE4_ROOT='$UE4_ROOT' CARLA_PORT='$CARLA_PORT' CARLA_MOD_PORT='$CARLA_MOD_PORT'"
     tmux new -d -s carla_mod "env $ENVS bash '$COSIM_ROOT/scripts/carla_mod_server.sh' > '$CARLA_LOG' 2>&1; rc=\$?; echo \"\$(date '+%F %T') 改版 CARLA 已退出，退出码 \$rc（CARLA 的输出：$CARLA_LOG）\" >> '$LOG'" </dev/null
     STARTED=1
   fi

@@ -12,9 +12,11 @@ stop_carla_server() {   # $1 = stock | mod | all, $2 = why (for stop.log)
   # GUI must not kill the other kind, or a CARLA that is not ours).
   # all ("关闭 CARLA" icon): any CARLA server.
   # Physical paths, as on the servers' command lines: CarlaUE4.sh starts the
-  # binary by its readlink -f path, carla_mod_server.sh the project by cd -P.
+  # binary by its readlink -f path (also the packaged modified CARLA),
+  # carla_mod_server.sh the editor project by cd -P.
   local stock="$(_regex_escape "$(readlink -m "$CARLA_ROOT")")/CarlaUE4/Binaries/Linux/CarlaUE4-Linux-Shipping"
   local mod="UE4Editor $(_regex_escape "$(readlink -m "$CARLA_SRC")")/Unreal/CarlaUE4/CarlaUE4\.uproject"
+  mod="$mod|$(_regex_escape "$(readlink -m "$CARLA_MOD_ROOT")")/CarlaUE4/Binaries/Linux/CarlaUE4-Linux-Shipping"
   local pat
   case "$1" in
     stock) tmux kill-session -t carla_server 2>/dev/null; pat="$stock" ;;

@@ -1,6 +1,7 @@
 # Downloaded / built elsewhere — never commit (tens of GB)
 CARLA_0.9.16/
 carla_src/
+CARLA_mod
 venv/
 venv_build/
 # separate repo: github.com/Mrchengyuan/python_carsim_env

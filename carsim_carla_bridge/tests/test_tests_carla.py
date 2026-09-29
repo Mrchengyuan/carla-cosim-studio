@@ -6,12 +6,12 @@ only read.
 - start_studio.sh recognises the CARLA on the port by the listening process's
   name and opens the GUI on that port, without connecting to CARLA itself;
 - the stop pattern of carla_stop_lib.sh matches the command line of the server
-  listening on the port (this installation's CARLA_ROOT / CARLA_SRC, resolved
+  listening on the port (this installation's CARLA_ROOT / CARLA_MOD_ROOT / CARLA_SRC, resolved
   through symlinks).
 
 Start CARLA with this installation's scripts first (scripts/carla_server.sh,
 or scripts/carla_mod_server.sh for --mod; from another checkout export its
-CARLA_ROOT / CARLA_SRC), then:
+CARLA_ROOT / CARLA_MOD_ROOT / CARLA_SRC), then:
 
     python tests/test_tests_carla.py            # original CARLA on 2000
     python tests/test_tests_carla.py --mod      # modified CARLA on 3000

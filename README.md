@@ -27,6 +27,8 @@
   - [6. 接入你的控制算法](#6-接入你的控制算法)
   - [7. 测试避障：高速施工封道](#7-测试避障高速施工封道)
   - [8. KMPPI 路径跟踪（没有 CarSim 时用 Chrono 宝马）](#8-kmppi-路径跟踪没有-carsim-时用-chrono-宝马)
+  - [9. KMPPI 用你训练的世界模型（kmppi_dream）](#9-kmppi-用你训练的世界模型kmppi_dream)
+  - [10. Gymnasium 强化学习环境](#10-gymnasium-强化学习环境)
 - [坐标与同步](#坐标与同步)
 - [测试](#测试)
 - [CARLA 0.9.16 自身的已知问题](#carla-0916-自身的已知问题)
@@ -79,6 +81,7 @@ git clone https://github.com/Mrchengyuan/python_carsim_env
 | **[远程使用指南](docs/远程使用指南.md)** | 笔记本只有集成显卡时：CARLA、后端和控制算法在云服务器上，笔记本只运行 CarSim 和界面，每次双击启动器 `启动远程仿真.exe` |
 | **[界面操作手册](docs/界面操作手册.md)** | 每个页面、每个按钮的说明，数据采集输出格式，常用操作流程 |
 | **[控制算法编写指南](docs/控制算法编写指南.md)** | 自己写控制算法：文件格式、每帧拿到的数据、返回值、放到服务器、调试和常见报错、5 个示例 |
+| **[强化学习接口](docs/强化学习接口.md)** | 把平台当 Gymnasium 训练环境：动作 / 观测 / 奖励 / 终止、重置选项、用自己的算法当策略、多个 CARLA 并行、速度 |
 | [CarSim 导出变量清单](carsim_carla_bridge/docs/CarSim导出变量清单.md) | CarSim 里要导出哪些变量、单位、坐标约定 |
 | [Windows 编译指南](carsim_carla_bridge/docs/Windows编译指南.md) | 在 Windows 上编译改版 CARLA |
 
@@ -134,6 +137,7 @@ git clone https://github.com/Mrchengyuan/python_carsim_env
    python3 -m venv venv_build
    venv_build/bin/pip install carla_src/PythonAPI/carla/dist/carla-0.9.16-cp310-cp310-linux_x86_64.whl numpy pillow shapely networkx
    venv_build/bin/pip install cupy-cuda12x   # 可选：KMPPI 的 GPU 推演（NVIDIA 显卡）
+   venv_build/bin/pip install torch==2.5.1 gymnasium   # 可选：学习世界模型的 KMPPI（第 9 节）、Gymnasium 环境（第 10 节）
    venv_build/bin/python -c "import carla; print(hasattr(carla.Vehicle, 'apply_external_state'))"   # 输出 True 就对了
    ```
 5. `bash scripts/install_desktop_icons.sh`，双击桌面上的 **CARLA CoSim Studio（改版）**。第一次启动要编译着色器（20–40 分钟），以后约 40 秒（本机实测 42 秒）。
@@ -218,8 +222,8 @@ git clone https://github.com/Mrchengyuan/python_carsim_env
 | `cosim_gui/` | 图形界面源码，还有远程启动器（`launcher*.cpp`，启动包里叫 `启动远程仿真.exe`）；依赖（ImGui、ImPlot、GLFW、json、stb_image、Font Awesome）已放在 `third_party/`，编译不需要联网 |
 | `carsim_carla_bridge/` | Python 后端、CarSim 桥接、驾驶模式、数据采集、测试和文档 |
 | `carla_patches/` | CARLA 0.9.16 补丁（改版 CARLA 就是官方源码打上它们编译出来的）：外部动力学接口（含 CARLA 自身错误的修复）；Python 包等待服务器时释放全局锁；Linux 编译用的 libpng 地址修复 |
-| `scripts/` | Ubuntu：`build_ue4.sh`、`build_carla.sh`、`carla_server.sh`、`carla_mod_server.sh`、`start_studio.sh`、`stop_carla.sh`、`install_desktop_icons.sh`，以及它们共用的 `env.sh`（路径、端口）和 `carla_stop_lib.sh`（关闭 CARLA）；远程使用的服务器端：`remote_session.sh`、`install_remote_key.sh`、`build_remote_package.sh`；`scripts/windows/`：`start_studio.bat`、`stop_carla.bat`、`install_shortcuts.bat`、`env.bat` |
-| `docs/` | 使用文档（Ubuntu / Windows / 远程使用指南、界面操作手册、控制算法编写指南、场景与数据接口说明）；`docs/images/` 是截图 |
+| `scripts/` | Ubuntu：`build_ue4.sh`、`build_carla.sh`、`carla_server.sh`、`carla_mod_server.sh`、`start_studio.sh`、`stop_carla.sh`、`install_desktop_icons.sh`，以及它们共用的 `env.sh`（路径、端口）和 `carla_stop_lib.sh`（关闭 CARLA）；远程使用的服务器端：`remote_session.sh`、`install_remote_key.sh`、`build_remote_package.sh`；私有端口上起 / 关一组原版 CARLA（强化学习并行、测试用）：`carla_pool.sh`；`scripts/windows/`：`start_studio.bat`、`stop_carla.bat`、`install_shortcuts.bat`、`env.bat` |
+| `docs/` | 使用文档（Ubuntu / Windows / 远程使用指南、界面操作手册、控制算法编写指南、场景与数据接口说明、强化学习接口）；`docs/images/` 是截图 |
 
 ## 快速开始
 
@@ -380,6 +384,49 @@ def control(self, exports, t, dt, scene):
 
 **接真实 CarSim**：把 `controller.py` 开头的 `OUTPUT` 改成 `"carsim"`，输出就换成你的 CarSim 导入 `[油门 0~1, 制动主缸压力 MPa, 方向盘转角 deg]`。换算和原工程 14DOF 适配层同一思路：方向盘转角 = 前轮转角 × 传动比（从 19 起，运行中用导出的 Steer_SW 和前轮转角自动修正）；KMPPI 的加速度积分成目标车速，车速 PI 加加速度前馈得到油门或制动（制动满量程 8 MPa）。这些常数都在文件开头。**两点要注意**：① KMPPI 和原工程一样要从接近参考车速起步（低速时预测模型的侧偏角不可信，会乱打方向），CarSim 的 .sim 里把初始车速设为 72 km/h；从太低的车速开始时输出窗口会提示。② 预测模型的车辆参数还是 Chrono 宝马 E90 的，换成你的车要按那台车重新标定。用模拟 CarSim（初始车速 20 m/s）实测：40 s、800 m，车道偏差均方根 0.15 m，车速 19.9~20.2 m/s。
 
+### 9. KMPPI 用你训练的世界模型（kmppi_dream）
+
+`controllers/kmppi_learned/` 是 `~/Desktop/rl/kmppi_dream`（KMPPI + 监督训练的神经网络动力学）接到平台上，和第 8 节的 `controllers/kmppi/` 是同一个接法，区别只有一处：**预测模型不是 3DOF 物理自行车，而是你训练的世界模型**（输入最近 H 步的 `[vx, vy, r, ax, delta]`，输出下一步的速度增量）。
+
+- **你的文件原样**：`kmppi_controller.py`、`dream_config.py`（就是 `config.py`，改名是因为和后端的 `config.py` 同名）和 `~/rl/kmppi_dream` 里的逐字节相同；`world_model.py` 只改了 import 那一行（`config` → `dream_config`）；`models/` 是你训练好的权重：`world_model.pt`（八字入口的默认）、`world_model_wide.pt`（赛道入口的默认）、`wm_wide_H2_128 / 256.pt`，和 PEML 训练的 `models/peml/`（`peml_2tr`、`mse_branches`、`cc_b1_s100`）。`tests/test_offline_kmppi_learned.py` 核对这几点。
+- **新写的三个文件**：`lane_reference_wm.py`（参考轨迹换成 CARLA 的车道中心线，几何和第 8 节相同；横向速度参考 vy 和 `kmppi_dream` 的 `Figure8Reference` 一样，查**世界模型自己的稳态表**，不用物理自行车）、`controller.py`（接到平台上的一层，输出 `[ax, δ]`）、`fast_rollout.py`（见下）。
+- **被控对象必须是模型训练时的那台车**：Chrono 宝马 E90（“CarSim 动力学”页勾选“Chrono 宝马（服务器）”）。世界模型是从那台车的数据学出来的，换成真实 CarSim 的车就不对了，要先用那台车的运行数据重新训练模型。
+- **速度**：世界模型的整段推演（K = 2048 条 × T = 33 步）原来一步要发出几十个很小的 GPU 算子，CPU 侧发射开销把一个控制周期（2 次 refinement）拖到 157~197 ms（RTX 3090 本身几乎是空的）。`fast_rollout.py` 把这段推演录成一个 CUDA graph，**算的和你的 `rollout_cost_torch` 逐行一样**，每个周期降到 39~52 ms；同一组 40 次闭环计算里两者的代价和输出**逐位相同**（差 0.0，`tests/test_offline_kmppi_learned.py`），画线要的每步位置也是同一次推演留下的。`USE_CUDA_GRAPH = False` 或没有显卡时走你原来的路径。
+- **实测**（`tests/test_kmppi_learned_carla.py`，Town04 高速 40 s、800 m，含一段半径约 74 m 的弯，Chrono 宝马 20 m/s）：车道中心偏差均方根 **0.022 m**、最大 0.168 m，车速 19.97~20.00 m/s，无碰撞、不出车道；第 8 节的物理模型版在同一条路上是 0.035 / 0.16 m。**每个附带的权重都跑了一遍**：
+
+| 权重 | 偏差均方根 (m) | 最大 (m) |
+|---|---|---|
+| `models/world_model.pt`（默认） | 0.022 | 0.168 |
+| `models/world_model_wide.pt` | 0.024 | 0.170 |
+| `models/wm_wide_H2_128.pt` | 0.026 | 0.172 |
+| `models/wm_wide_H2_256.pt` | 0.024 | 0.170 |
+| `models/peml/mse_branches.pt` | 0.022 | 0.170 |
+| `models/peml/cc_b1_s100.pt` | 0.030 | 0.172 |
+| `models/peml/peml_2tr.pt` | 0.030 | 0.171 |
+
+  七个权重全部走完、无碰撞、不出车道。**这个场景（高速上沿车道恒速 20 m/s）分不出权重的好坏**：每个权重只跑了一次，偏差均方根 0.022~0.030 m、最大偏差都在 0.17 m 左右，差别很小，不足以排名。PEML 权重是为赛道竞速训练的，要比较它们得换成有极限工况的场景。
+- **使用**：**驾驶模式** 页算法文件选 `controllers/kmppi_learned/controller.py`（入口 `Controller`），其余和第 8 节一样（仿真步长自动用 `FRAME_DT = 0.05`、出生点用 Town04 高速起点、画线和 `self.debug` 曲线都有）。“算法参数”里可以改 `MODEL`（换权重）、`DEVICE`、`USE_CUDA_GRAPH`。
+- 需要 torch：`venv_build/bin/pip install torch==2.5.1`（服务器上已装）。
+
+### 10. Gymnasium 强化学习环境
+
+`carsim_carla_bridge/gym_env.py` 的 `CoSimEnv` 把平台当成一个 [Gymnasium](https://gymnasium.farama.org/) 环境：你的训练循环调用 `env.step(action)`，平台推进一帧（默认 0.05 s）。仿真和运行界面是同一套（`CoSimSession`），区别只在谁给动作；被控对象默认是服务器上的 Chrono 宝马，动作是它的 `[ax (m/s²), 前轮转角 δ (rad)]`。
+
+```python
+import gym_env
+env = gym_env.CoSimEnv(carla_port=2100)             # 连一个在跑的 CARLA（scripts/carla_pool.sh start 2100）
+obs, info = env.reset(seed=0)
+obs, reward, terminated, truncated, info = env.step(env.action_space.sample() * 0.1)
+```
+
+- **观测**默认是全部导出变量（CarSim 单位）加车道的 `[offset, heading_err, curvature]`；`info` 里是类型固定的 `exports` 字典和几个常用的数（`t`、`lane_offset`、`speed_kmh` ……，这样并行的向量环境才能合并各环境的 `info`），完整的 `scene`（障碍物、车道、传感器数据）是环境的属性 `env.scene`。**奖励**你自己写（`reward_fn(info, action)`），默认只是个例子。**终止**：撞到东西、离开车道；**truncated**：跑满 `episode_seconds`。`reset(options={"spawn_index": i, "init_speed": v})`。
+- **你的算法可以直接当策略**：`control(exports, t, dt, scene)` 要的 `exports` 和 `scene` 就是 `info["exports"]` 和 `env.scene`。`tests/test_gym_carla.py` 用第 9 节的世界模型 KMPPI 当策略跑 20 s：车道中心偏差 rms 0.029 m、最大 0.169 m，和平台运行同一量级。
+- **可复现**：同样的动作序列得到同样的观测（差 0.0）；gymnasium 自带的 `check_env` 通过。
+- **速度**：一个环境约 **10 步/秒**（0.5 倍实时）。时间几乎都花在 Chrono 宝马上（积分 0.05 s 要 ~76 ms，这台服务器的 Xeon E5-2682 v4 上和线程数无关；CARLA 的 tick 和场景更新加起来 ~4 ms），所以关渲染（`no_render`）几乎不影响速度。要快只能并行：`scripts/carla_pool.sh start 2100 2200 ...` 起几个私有端口的 CARLA，每个环境进各自的进程（`gymnasium.vector.AsyncVectorEnv`）。
+- **并行实测**：2 个环境（2 个 CARLA）合计 17.9 步/秒，基本线性扩展；每个 CARLA 约占 3 GB 显存。
+- **训练进程崩溃**后车会留在 CARLA 里：下一次 `reset()` 发现出生点上有上次留下的 `hero` 车会清掉它；别的车占着则报错、不动它。
+- 详细说明见[强化学习接口](docs/强化学习接口.md)。
+
 ## 坐标与同步
 
 - CarSim（ISO 8855：x 前 y 左 z 上）→ CARLA（x 前 y 右 z 上）：`y → -y`，`yaw → -yaw`，`pitch → -pitch`，`roll` 不变，车轮转角取反；已在 CARLA 0.9.16 上用旋转矩阵和车轮骨骼实测验证。
@@ -444,6 +491,10 @@ def control(self, exports, t, dt, scene):
 | GUI 导览 `CC_TOUR_CRASH=1` | 批量测试中途杀掉 CARLA（另一个脚本随后重新启动它）：批量测试提示“CARLA 断开”并等待，端口重新监听 20 s 后自动重连，重跑断开的那一项并跑完，报告两行（断开的那次、重跑的那次）；普通导览里批量测试用“关闭渲染”跑，输出说明 | 通过（原版 CARLA） |
 | `tests/test_avoid_carla.py` | 避障示例 `lane_change_avoid.py` 在 Town04 高速上（模拟 CarSim）跑“测试场景”页的 4 个预设和不开封道各 75 s：正常结束、无碰撞、开过封道、封本车道时换道绕开并换回原车道、离锥桶 / 护栏 > 0.3 m；封左侧车道、不开封道时不换道 | 5 种情况全部通过（原版 CARLA 两种包、改版 CARLA；离锥桶最近 0.65 m） |
 | `tests/test_kmppi_chrono_carla.py` | KMPPI（`controllers/kmppi`）驾驶 Chrono 宝马 E90 替身（`carsim.chrono`：后端自己在 conda 环境 `chrono` 里启动 `carsim_service.py --chrono`），在 Town04 高速起点跑 40 s、参考 20 m/s、仿真步长 0.05 s：默认不开 Chrono；后端启动了 Chrono；正常结束、算法无报错、打印总结；导出变量通过平台检查；车速保持 19~21 m/s；无碰撞、不出车道、车道中心偏差均方根 < 0.3 m 且最大 < 0.8 m；走完 > 700 m；过弯时前轮有转角；每帧都画出候选轨迹（> 700 段），界面也收到这些线；KMPPI 的诊断量（`self.debug`：ESS、温度、代价、计算耗时）到了界面和 `log_debug.csv`；界面上仿真步长 0.02 s 时运行按算法的 `FRAME_DT` 用 0.05 s 并说明；`OUTPUT = "carsim"` 接模拟 CarSim（初始车速 20 m/s，油门 / 制动 / 方向盘三个导入）：车速保持、在车道上、无碰撞；从这次运行的记录做车辆参数辨识，得到原工程阶跃转向标定的轮胎比例因子（< 10%、R² > 0.8；实测 1.023 / 1.021，标定值 1.023 / 1.025）（后端端口 57145；`--shot DIR` 存追车相机的截图） | 全部通过（原版、改版 CARLA；偏差均方根 0.035 m、最大 0.16 m） |
+| `tests/test_offline_kmppi_learned.py` | 不需要 CARLA：学习世界模型的 KMPPI（`controllers/kmppi_learned`）：`kmppi_controller.py` 和 `dream_config.py` 与 `~/rl/kmppi_dream` 的逐字节相同、`world_model.py` 只差 import 那一行；CUDA graph 推演和你原来的推演在 40 次闭环计算里代价和输出逐位相同（差 0.0）、画线的候选位置相同、每个周期 39 ms 对 197 ms；CPU 和 GPU 输出一致；直路和左弯上的参考（vy 查世界模型的稳态表）；权重不存在 / 仿真步长不能整除 0.05 s / 没有车道信息 / 车速离参考太远时说清楚；附带的 7 个权重都能加载 | 18/18（没有显卡时只查 CPU 的部分） |
+| `tests/test_kmppi_learned_carla.py` | 学习世界模型的 KMPPI 驾驶 Chrono 宝马 E90，Town04 高速起点 40 s、参考 20 m/s：正常结束、算法无报错、说明用了 GPU 和 CUDA graph；车速保持 18.5~21.5 m/s；无碰撞、不出车道、车道中心偏差均方根 < 0.1 m 且最大 < 0.5 m（实测 0.022 / 0.168）；走完 > 700 m；每帧画出候选轨迹、界面收到、`self.debug` 到界面和 `log_debug.csv`；页面设 0.02 s 时按 `FRAME_DT` 用 0.05 s。`--models`：附带的 7 个权重各跑一遍并列出结果 | 18/18（含 `--models`：7 个权重全部走完；原版 CARLA） |
+| `tests/test_gym_carla.py` | Gymnasium 环境 `CoSimEnv` 在 CARLA 上（Chrono 宝马，Town04 高速起点）：动作 / 观测空间和第一个观测、`info` 的内容和类型固定；**你的算法当策略**跑 20 s（400 步）偏差 rms < 0.1 m、最后 truncated；两次 reset 后同样的动作序列得到同样的观测；猛打方向 → terminated（离开车道、奖励 −10）、回合结束后 `step()` 要求先 `reset()`；`episode_seconds` 到了 → truncated；`reset(options)` 的初始车速和出生点生效、每个回合只有一辆主车；出生点上有上次崩溃留下的 `hero` 车 → 清掉照常开始，别的车占着 → 说清楚、不动它；动作被裁剪；gymnasium 的 `check_env`；`close()` 放回 CARLA 的异步模式、不留车；自定义 `reward_fn`；`obs_fn` 不给 `observation_space` 被拒绝；导入变量个数和 `action_space` 不一致时说清楚且不留车。`--speed`：每秒步数 | 27/27（原版 CARLA；~10 步/秒） |
+| `tests/test_gym_vector_carla.py` | 两个 `CoSimEnv` 用 `AsyncVectorEnv` 并行（两个 CARLA、两个进程）：观测堆成 (2, n)、各自的初始车速、一个环境出线结束时另一个不受影响、结束的那个在下一次 `step` 里重新开始（t 回到 0、奖励 0）；`close()` 后两个 CARLA 都放回异步模式。`--speed`：合计每秒步数 | 7/7（原版 CARLA；两个环境合计 17.9 步/秒） |
 | `tests/test_algoerr_carla.py` | 经过界面后端在 CARLA 上：启动失败说明原因（界面横幅）、没勾选的场景键指向“场景信息”页、`control()` 里 `sys.exit()`、辅助文件出错给出两处行号、与已载入模块同名的文件（config.py）被拒绝、子目录里的辅助文件重新载入、`control()` 慢时 busy 心跳指向用户代码行而不是 CARLA 卡住 | 10/10（原版 CARLA 两种包、改版 CARLA） |
 | `tests/test_offline_guimisc.py` | 不需要 CARLA：界面与后端协议版本一致（`hello`）、卡住的后端由套接字线程打印全部线程调用栈（Windows 没有 SIGUSR1）、`world_info` 报告自动驾驶试开、界面的平台代码（连接超时、结束后端进程、退出原因；另用 MinGW 编译 Windows 版） | 7/7（其中 C++ 14/14） |
 | `tests/test_guimisc_carla.py` | 在 CARLA 上经过界面后端：版本一致、运行后自动驾驶试开已取消、运行中打印调用栈不用等工作线程、停止后端时清理主车 | 10/10（原版 CARLA 两种包、改版 CARLA） |

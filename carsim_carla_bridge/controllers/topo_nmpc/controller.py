@@ -89,8 +89,12 @@ EMERGENCY_FRAMES = 2     # 连续这么多帧所有方案都走不通才全力�
 ABORT_FRAMES = 6         # 换道中目标车道连续这么多帧走不通才放弃
 DWELL = 2.0              # s，换完一次道后这么久内不再开始新的换道（本车道走不通时除外）
 RESET_FRAMES = 6         # 方案连续这么多帧走不通：丢掉它的热启动重新开始
+ABORT_COOLDOWN = 1.5     # s，放弃一次换道后这么久内不开始新的换道（决策不来回跳）
 RELAX_T = 2.5            # s，车在方案的横向范围外时，范围从车现在的位置起这么久收回来
 SCORE_FILTER = 0.3       # 方案代价的一阶滤波系数（每帧新值占的比例）：单帧求解的起伏不会让决策来回跳
+LANE_SPEED_COST = 35.0   # 车道价值：每条车道前方的车比期望车速慢 1 m/s 多付的代价（慢 8 m/s ≈ 280，
+                         # 超过换道的 SWITCH_COST + HOME_COST = 120；只慢 3 m/s ≈ 105，不值得换）
+LANE_LOOK = 50.0         # m，看前方多远的车（场景信息给 50 m 以内的）
 RIGHT_PASS_COST = 400.0  # 往右换道（不是回出发车道方向）多付的代价：超车走左侧（右边是唯一出路时才往右）
 VEHICLE_JSON = ""        # 车辆参数文件（“运行对比”页的车辆参数辨识；空 = Chrono 宝马 E90）
 TAU_DELTA = 0.10         # s，转向执行器时间常数
@@ -295,6 +299,7 @@ class Controller:
         self.choice = None              # 选中的方案 ("lane" | "yield", 车道)
         self.abort_n = 0
         self.dwell_until = -1.0
+        self.abort_until = -1.0
         self.score_ema = {}
         self.bad_n = {}
         self.emerg_n = 0
@@ -602,12 +607,17 @@ class Controller:
         else:
             self.abort_n = 0
         stay_ok = any(bad_e[h] == 0 for h, hp in enumerate(hyps) if hp["key"][1] == self.lane_idx)
+        # 车道价值（时域之外）：4 s 的预测看不出“跟在慢车后面一直慢下去”的损失，
+        # 按每条车道前方最近的车（或锥桶等）估计在那条车道上能开多快，慢多少罚多少
+        vt = TARGET_KMH / 3.6
+        lane_v = {r: self._lane_speed(obs, width, r, x0[EY], vt) for r in (-1, 0, 1)}
         # 方案本身的代价（一阶滤波；走不通的不滤，立刻生效），再加上决策相关的项
         base_sc = {}
         for h, hp in enumerate(hyps):
             k_, lane_h = hp["key"], hp["key"][1]
             v_ = rank[h] + HOME_COST * abs(lane_h) \
-                + (RIGHT_PASS_COST if lane_h < self.lane_idx and lane_h < 0 else 0.0)
+                + (RIGHT_PASS_COST if lane_h < self.lane_idx and lane_h < 0 else 0.0) \
+                + LANE_SPEED_COST * max(0.0, vt - lane_v[max(-1, min(1, lane_h - self.lane_idx))])
             if bad_e[h] == 0 and k_ in self.score_ema and self.score_ema[k_] < 1e5:
                 v_ = (1 - SCORE_FILTER) * self.score_ema[k_] + SCORE_FILTER * v_
             base_sc[k_] = v_
@@ -615,10 +625,13 @@ class Controller:
         score = np.empty(H)
         for h, hp in enumerate(hyps):
             lane_h = hp["key"][1]
+            flip = changing and (lane_h - self.lane_idx) * (self.target_idx - self.lane_idx) < 0
             score[h] = base_sc[hp["key"]] \
                 + (SWITCH_COST if hp["key"] != self.choice else 0.0) \
                 + (COMMIT_COST if changing and lane_h != self.target_idx and self.abort_n < ABORT_FRAMES else 0.0) \
-                + (1e5 if not changing and lane_h != self.lane_idx and t < self.dwell_until and stay_ok else 0.0)
+                + (1e5 if not changing and lane_h != self.lane_idx and t < self.dwell_until and stay_ok else 0.0) \
+                + (1e5 if lane_h != self.lane_idx and t < self.abort_until else 0.0) \
+                + (1e5 if flip else 0.0)   # 往左换到一半不直接改成往右换（反之亦然）：先回本车道
         hb = int(np.argmin(score))
         self.emerg_n = self.emerg_n + 1 if bool(np.all(bad_e > 0)) else 0
         emergency = self.emerg_n >= EMERGENCY_FRAMES
@@ -633,6 +646,7 @@ class Controller:
                     t, "左" if key[1] > self.lane_idx else "右", self._scores(hyps, score)))
             else:
                 print("t = %.1f s：取消换道，留在本车道（方案代价 %s）" % (t, self._scores(hyps, score)))
+                self.abort_until = t + ABORT_COOLDOWN   # 放弃以后先稳住，不马上换别的道
         if key[0] == "yield" and not emergency and (self.choice is None or self.choice[0] != "yield"):
             print("t = %.1f s：让行：在本车道里减速%s（方案代价 %s）" % (
                 t, "、停车" if stop_s is None else "", self._scores(hyps, score)))
@@ -667,6 +681,8 @@ class Controller:
                       "代价": float(sol["base"][hb]), "约束违反": float(sol["viol"][hb]),
                       "求解耗时 (ms)": spent * 1000.0, "ax 指令 (m/s²)": ax_cmd, "前轮转角指令 (rad)": self.dc,
                       "前轮胎比例因子": self.veh.front_scale, "后轮胎比例因子": self.veh.rear_scale,
+                      "本车道可达车速 (m/s)": lane_v[0], "左车道可达车速 (m/s)": lane_v[1],
+                      "右车道可达车速 (m/s)": lane_v[-1],
                       "RSS 介入": 1.0 if rss is not None else 0.0, "紧急制动": 1.0 if emergency else 0.0, "障碍物数": float(len(obs))}
         if DRAW:
             self.draw = self._lines(prob, sol, hb, path, obs)
@@ -677,6 +693,18 @@ class Controller:
                       t, vx * 3.6, self.lane_idx, key[1], "%.2f m" % off if off is not None else "—", ax_cmd,
                       self.dc, sol["viol"][hb], spent * 1000, self.veh.front_scale, self.veh.rear_scale))
         return self._output(exports, dt, deg, ms)
+
+    def _lane_speed(self, obs, width, r, ey0, vt):
+        """相对车道 r（0 = 本车道，+1 = 左边）前方能开多快，m/s：前方 LANE_LOOK 米内这条车道上最近的东西的车速
+        （静止的锥桶、停着的车是 0），没有时 vt。"""
+        center = r * width
+        best_s, v = None, vt
+        for o in obs:
+            if o.s - o.half_s < self.ego_len / 2.0 or o.s > LANE_LOOK or abs(o.d - center) > width / 2.0:
+                continue
+            if best_s is None or o.s < best_s:
+                best_s, v = o.s, min(vt, max(0.0, o.vs))
+        return v
 
     def _scores(self, hyps, score):
         names = []

@@ -10,7 +10,8 @@ Scenarios (run in parallel, one process each) and what each must show:
     closure       cones close the lane (taper + a line along its left edge): goes round, > 0.5 m off
                   every cone, does not slow below 17 m/s
     blocked_left  a slow car ahead, faster cars coming in both neighbour lanes: no collision, waits
-                  until the left lane is free (no lane change in the first 3 s)
+                  until the left lane is free (no lane change in the first 3 s), then overtakes on the left
+                  and is back up to speed (the lane value beyond the 4 s horizon)
     lead_brake    one lane, the car ahead brakes at 6 m/s^2 to a stop: stops behind it (> 3 m), no reversing
     red_light     one lane, red light 150 m ahead: stops before the line (front axle 144 ~ 149 m), says why
     cut_in        a car moves into the ego's lane 25 m ahead: no collision (> 1 m)
@@ -190,6 +191,8 @@ def main():
         if n == "blocked_left":
             check("blocked_left: waits while both neighbour lanes have faster cars coming (no change in 3 s)",
                   r["first_change_t"] is None or r["first_change_t"] > 3.0, r["first_change_t"])
+            check("blocked_left: overtakes on the left once they have passed, back up to speed (> 18 m/s at the end)",
+                  1 in r["lanes"] and -1 not in r["lanes"] and r["vend"] > 18.0, (r["lanes"], r["first_change_t"], r["vend"]))
         if n == "lead_brake":
             check("lead_brake: stops behind it, > 3 m, no reversing", r["vend"] < 0.3 and r["clear"] > 3.0 and r["vmin"] >= 0.0,
                   (r["vend"], r["clear"], r["vmin"]))

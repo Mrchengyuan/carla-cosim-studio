@@ -197,6 +197,10 @@ def main():
             stops = [m for m in algo if "灯：在停止线前停车" in m]
             if stops:
                 print("INFO %s: stopped for a light: %s; speed at the end %.1f m/s" % (name, stops[0], v_all[-1]))
+            decided = [float(m.split("t = ")[1].split(" s")[0]) for m in algo if "决定换到" in m or "取消换道" in m]
+            burst = max([sum(1 for u in decided if 0 <= u - x < 2.0) for x in decided] or [0])
+            check("%s: decisions do not flicker (<= 2 lane-change decisions within any 2 s)" % name, burst <= 2,
+                  (burst, decided))
             check("%s: the solver keeps up (mean < 250 ms per frame on the server CPU)" % name, solve_ms < 250.0, solve_ms)
             if case["closures"] or case["actors"]:
                 check("%s: never closer than 0.3 m to anything" % name, gap is not None and gap > 0.3, gap)

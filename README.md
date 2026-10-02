@@ -18,6 +18,7 @@
 - [功能](#功能)
 - [架构](#架构)
 - [仓库结构](#仓库结构)
+  - [多拓扑 NMPC 文件](#多拓扑-nmpc-文件)
 - [快速开始](#快速开始)
   - [1. CARLA](#1-carla)
   - [2. 后端](#2-后端)
@@ -225,6 +226,26 @@ git clone https://github.com/Mrchengyuan/python_carsim_env
 | `carla_patches/` | CARLA 0.9.16 补丁（改版 CARLA 就是官方源码打上它们编译出来的）：外部动力学接口（含 CARLA 自身错误的修复）；Python 包等待服务器时释放全局锁；Linux 编译用的 libpng 地址修复 |
 | `scripts/` | Ubuntu：`build_ue4.sh`、`build_carla.sh`、`carla_server.sh`、`carla_mod_server.sh`、`start_studio.sh`、`stop_carla.sh`、`install_desktop_icons.sh`，以及它们共用的 `env.sh`（路径、端口）和 `carla_stop_lib.sh`（关闭 CARLA）；远程使用的服务器端：`remote_session.sh`、`install_remote_key.sh`、`build_remote_package.sh`；私有端口上起 / 关一组原版 CARLA（强化学习并行、测试用）：`carla_pool.sh`；`scripts/windows/`：`start_studio.bat`、`stop_carla.bat`、`install_shortcuts.bat`、`env.bat` |
 | `docs/` | 使用文档（Ubuntu / Windows / 远程使用指南、界面操作手册、控制算法编写指南、场景与数据接口说明、强化学习接口）；`docs/images/` 是截图 |
+
+### 多拓扑 NMPC 文件
+
+算法位于 [carsim_carla_bridge/controllers/topo_nmpc/](carsim_carla_bridge/controllers/topo_nmpc/)，新增测试位于 [carsim_carla_bridge/tests/](carsim_carla_bridge/tests/)。以下文件名可直接点击打开。
+
+| 模块 | 文件 | 用途 |
+|---|---|---|
+| 控制器入口（更新） | [controller.py](carsim_carla_bridge/controllers/topo_nmpc/controller.py) | 连接预测、优化与行为选择，执行输入限幅后的可行性重验 |
+| 换道决策（新增） | [nmpc_decision.py](carsim_carla_bridge/controllers/topo_nmpc/nmpc_decision.py) | 当前可行性筛选、换道确认、危险取消和恢复冷却 |
+| 学习价值推理（新增） | [nmpc_value.py](carsim_carla_bridge/controllers/topo_nmpc/nmpc_value.py) | 使用 NumPy 加载价值网络，对候选方案的长期收益评分 |
+| 训练入口（新增） | [train_value.py](carsim_carla_bridge/controllers/topo_nmpc/train_value.py) | 离线随机场景采样、价值网络训练、评估与场景重放 |
+| 已训练权重（新增） | [value_net.npz](carsim_carla_bridge/controllers/topo_nmpc/value_net.npz) | 本次验收使用的 3 轮、287,029 样本价值网络 |
+| 预测模型 | [nmpc_model.py](carsim_carla_bridge/controllers/topo_nmpc/nmpc_model.py) | 车辆动力学与状态预测 |
+| 优化求解器 | [nmpc_solver.py](carsim_carla_bridge/controllers/topo_nmpc/nmpc_solver.py) | 增广拉格朗日 iLQR 求解器 |
+| 道路与障碍物参考 | [nmpc_reference.py](carsim_carla_bridge/controllers/topo_nmpc/nmpc_reference.py) | 车道记忆、参考路径与 Frenet 障碍物投影 |
+| 决策测试（新增） | [test_nmpc_decision.py](carsim_carla_bridge/tests/test_nmpc_decision.py) | 有限值、候选选择、确认和冷却条件 |
+| 执行测试（新增） | [test_nmpc_execution.py](carsim_carla_bridge/tests/test_nmpc_execution.py) | 输入投影与热启动重验 |
+| 恢复测试（新增） | [test_nmpc_recovery.py](carsim_carla_bridge/tests/test_nmpc_recovery.py) | 取消后的姿态与车道位置恢复 |
+| 间距测试（新增） | [test_nmpc_clearance.py](carsim_carla_bridge/tests/test_nmpc_clearance.py) | 车辆矩形间距与静态障碍物原有保护 |
+| 验收报告与图表（新增） | [nmpc-validation-2026-10-02.md](docs/nmpc-validation-2026-10-02.md) | 原五场景 5/5、新增单测 40/40，以及额外离线 8/9 的已知限制 |
 
 ## 快速开始
 

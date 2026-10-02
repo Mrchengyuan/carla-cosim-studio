@@ -47,6 +47,8 @@ import numpy as np
 from nmpc_model import NX, NU, S, EY, EPSI, VX, VY, R, DELTA, AX, DC, Vehicle
 from nmpc_reference import LaneMemory, Path, obstacles_frenet
 from nmpc_solver import ALiLQR
+import nmpc_value
+from nmpc_decision import PlanSelector
 
 FRAME_DT = 0.05          # s，仿真步长（平台自动使用）：每帧优化一次
 OUTPUT = "ax_delta"      # "ax_delta"：Chrono 宝马；"carsim"：真实 CarSim（[油门, 制动, 方向盘转角]）
@@ -65,6 +67,8 @@ FOLLOW_TIME = 1.2        # s，跟车时距：和前车（横向有重叠时）�
 REAR_TIME = 1.0          # s，换道时给后方来车留的时距：它后面至少 2 m + 它的车速 × 它
 STOP_GAP = 3.0           # m，停在静止障碍物（锥桶、停着的车、行人）前多远
 SIDE_MARGIN = 0.35       # m，和车辆、行人横向至少留这么多
+VEHICLE_CLEARANCE = 1.2  # m: rectangle separation, including 0.2 m tracking/discretization reserve
+CLEARANCE_SMOOTH = 0.1  # m: conservative smooth absolute value / maximum
 SIDE_MARGIN_STATIC = 0.2 # m，和锥桶、护栏等静止的小东西横向至少留这么多
 LANE_MARGIN = 0.15       # m，车身离同向车道外边界至少这么多
 STOP_MARGIN = 2.0        # m，车头停在停止线前这么远
@@ -75,7 +79,6 @@ ITERS_COLD = 6           # 有方案从头开始（没有热启动）的那个�
 ITERS_FIRST = 15         # 第一个周期（所有方案都从头开始）迭代次数
 MAX_OBS = 16             # 最多考虑几个障碍物（按距离）
 N_CIRCLES = 4            # 自车用几个圆覆盖（越多越贴合车身，计算量越大）
-COMMIT_COST = 400.0      # 换道开始以后中途放弃的代价（目标车道还走得通时不轻易取消）
 ADAPT = True             # 在线估计轮胎比例因子
 RSS_REACTION = 0.3       # s，RSS 反应时间
 RSS_ACCEL = 2.0          # m/s²，RSS 反应时间内自车最大加速度
@@ -85,17 +88,22 @@ RSS_PLAN_T = 1.0         # s，计划的轨迹在这段时间内横向离开前�
 VIOL_TOL = 0.05          # 约束违反量在这以内算满足（约束都已归一化）
 EARLY_T = 2.5            # s，这段时间内的约束违反 = 方案走不通（更远的只加罚 LATE_PENALTY × 违反量）
 LATE_PENALTY = 3000.0
-EMERGENCY_FRAMES = 2     # 连续这么多帧所有方案都走不通才全力制动（单帧的求解起伏不算）
-ABORT_FRAMES = 6         # 换道中目标车道连续这么多帧走不通才放弃
-DWELL = 2.0              # s，换完一次道后这么久内不再开始新的换道（本车道走不通时除外）
+DWELL = 2.0              # s，换完一次道后这么久内不再开始新的换道
 RESET_FRAMES = 6         # 方案连续这么多帧走不通：丢掉它的热启动重新开始
-ABORT_COOLDOWN = 1.5     # s，放弃一次换道后这么久内不开始新的换道（决策不来回跳）
+ABORT_COOLDOWN = 2.2     # s，2秒决策窗口 + 日志量化/调度余量；仍须测量姿态恢复，危险目标立即取消
+# Abort recovery: regain the lane centre and stop lateral motion before
+# admitting another manoeuvre. These are pose/speed bounds, not a timer.
+RECOVER_EY = 0.25        # m from the current lane centre
+RECOVER_EPSI = math.radians(3.0)  # rad relative to the lane tangent
+RECOVER_LATERAL_MS = 0.3 # m/s across the lane, including heading and body vy
 RELAX_T = 2.5            # s，车在方案的横向范围外时，范围从车现在的位置起这么久收回来
 SCORE_FILTER = 0.3       # 方案代价的一阶滤波系数（每帧新值占的比例）：单帧求解的起伏不会让决策来回跳
 LANE_SPEED_COST = 35.0   # 车道价值：每条车道前方的车比期望车速慢 1 m/s 多付的代价（慢 8 m/s ≈ 280，
                          # 超过换道的 SWITCH_COST + HOME_COST = 120；只慢 3 m/s ≈ 105，不值得换）
 LANE_LOOK = 50.0         # m，看前方多远的车（场景信息给 50 m 以内的）
 RIGHT_PASS_COST = 400.0  # 往右换道（不是回出发车道方向）多付的代价：超车走左侧（右边是唯一出路时才往右）
+VALUE_NET = "value_net.npz"  # 学习的价值函数（时域之外的长远收益，train_value.py 训练）；文件不在或空 = 用 LANE_SPEED_COST
+VALUE_WEIGHT = 3.5       # 方案代价减去 VALUE_WEIGHT × V（V 的单位：每帧 车速/期望车速 的折扣和；慢 1 m/s ≈ 少 10）
 VEHICLE_JSON = ""        # 车辆参数文件（“运行对比”页的车辆参数辨识；空 = Chrono 宝马 E90）
 TAU_DELTA = 0.10         # s，转向执行器时间常数
 TAU_AX = 0.20            # s，纵向执行器时间常数
@@ -170,6 +178,8 @@ class _Problem:
         self.oA = np.ones(M)
         self.oB = np.ones(M)
         self.ahead = np.ones(M)       # 1：在前方（跟它），0：在后方（别切到它前面）
+        self.ohd = np.zeros(M)
+        self.clearance = np.zeros(M)
         self.ohs = np.zeros(M)        # 沿车道方向的半长
         self.olat = np.ones(M)        # 横向“同一车道”判定的半宽
         self.gfix = np.zeros(M)       # 纵向距离要求：固定部分 m
@@ -187,6 +197,8 @@ class _Problem:
             self.oB[j] = o.half_d + self.rad + (SIDE_MARGIN_STATIC if o.kind == "static" else SIDE_MARGIN)
             # 纵向距离（只在横向有重叠时起作用）
             self.ohs[j] = o.half_s
+            self.ohd[j] = o.half_d
+            self.clearance[j] = VEHICLE_CLEARANCE if o.kind == "vehicle" else 0.0
             self.olat[j] = o.half_d + self.half_w
             moving = o.kind == "vehicle" and abs(o.vs) > 1.0
             if o.s >= 0:                      # 前方：跟车 2 m + 时距 × 自车车速；静止的东西停在 3 m 外
@@ -242,6 +254,19 @@ class _Problem:
             sc = (x[..., S] + l * ce)[..., None]
             dc = (x[..., EY] + l * se)[..., None]
             cs.append(1.0 - ((sc - os_k) / self.oA) ** 2 - ((dc - od_k) / self.oB) ** 2)
+        # A rectangle separating-axis envelope complements the collision ellipses.
+        # Both smooth_abs and smooth_max are LOWER bounds on their exact values,
+        # so the constraint conservatively bounds rectangle separation at the
+        # predicted poses; VIOL_TOL still applies to its residual in metres.
+        eps = CLEARANCE_SMOOTH
+        half_s = self.front * np.abs(ce) + self.half_w * np.abs(se)
+        half_d = self.front * np.abs(se) + self.half_w * np.abs(ce)
+        sep_s = np.sqrt((x[..., S][..., None] - os_k) ** 2 + eps ** 2) - eps - half_s[..., None] - self.ohs
+        sep_d = np.sqrt((x[..., EY][..., None] - od_k) ** 2 + eps ** 2) - eps - half_d[..., None] - self.ohd
+        gap_lower = 0.5 * (sep_s + sep_d + np.sqrt((sep_s - sep_d) ** 2 + eps ** 2) - eps)
+        # Vehicle spacing supplements the existing obstacle ellipses; static
+        # objects retain their original geometry and smaller lateral margin.
+        cs.append(np.where(self.clearance > 0.0, self.clearance - gap_lower, -1.0))
         # 跟车 / 后方来车的纵向距离，按横向重叠程度（平滑的 0~1）加权
         dd = np.sqrt((x[..., EY][..., None] - od_k) ** 2 + 0.01)
         w = 1.0 / (1.0 + np.exp(np.clip((dd - self.olat) / 0.1, -50.0, 50.0)))
@@ -269,7 +294,7 @@ class _Problem:
 
     @property
     def nc(self):
-        return 6 + 4 + (N_CIRCLES + 1) * MAX_OBS + (1 if self.stop_s is not None else 0)
+        return 6 + 4 + (N_CIRCLES + 2) * MAX_OBS + (1 if self.stop_s is not None else 0)
 
 
 class Controller:
@@ -297,12 +322,23 @@ class Controller:
         self.lane_idx = 0               # 当前车道（出发车道 = 0，往左 +1）
         self.target_idx = 0             # 选中方案的目标车道
         self.choice = None              # 选中的方案 ("lane" | "yield", 车道)
-        self.abort_n = 0
+        self.plan_selector = PlanSelector(confirm_time=0.25)
         self.dwell_until = -1.0
         self.abort_until = -1.0
+        self.recovering = False  # set only by an aborted lane change
         self.score_ema = {}
+        vn = VALUE_NET if not VALUE_NET or os.path.isabs(VALUE_NET) else os.path.join(here, VALUE_NET)
+        self.value = None
+        try:
+            self.value = nmpc_value.load(vn)
+        except Exception as err:   # 文件坏了 / 特征数变了：退回手写的车道价值
+            print("多拓扑 NMPC：价值网络 %s 用不了（%s），用手写的车道价值" % (vn, err))
+        if self.value is not None:
+            print("多拓扑 NMPC：时域之外用学习的价值函数 %s（%s）" % (os.path.basename(vn), ", ".join(
+                "%s %s" % (k, v) for k, v in self.value.info.items())))
+        self.value_features = None      # 当前状态的特征（训练采集用）
+        self.explore_bias = {}          # 训练时的探索：方案 → 额外代价（平时为空）
         self.bad_n = {}
-        self.emerg_n = 0
         self.stopping_for = False
         self.x0 = np.zeros(NX)
         self.warm = {}                  # 目标车道 → 热启动 {"U", "lam", "mu", "lamT", "muT", "reg"}
@@ -463,6 +499,74 @@ class Controller:
             of[:, j] = np.interp(tq, tg, flat[:, j])
         return out
 
+    def _recovery_settled(self, x0, width):
+        """Measured stability after aborting, including a safe stopped pose.
+
+        A moving car recentres first. A stopped car cannot move sideways without
+        driving forward, so it may rearm from any pose whose whole body fits
+        inside the current lane's margin. Candidate confirmation and the abort
+        cooldown still apply at the caller/selector.
+        """
+        ey, ep = float(x0[EY]), float(x0[EPSI])
+        vx, vy = float(x0[VX]), float(x0[VY])
+        if not all(math.isfinite(v) for v in (ey, ep, vx, vy, self.vx_now,
+                                               width, self.ego_len, self.ego_wid)):
+            return False
+        across_lane = vx * math.sin(ep) + vy * math.cos(ep)
+        if abs(ep) > RECOVER_EPSI or abs(across_lane) > RECOVER_LATERAL_MS:
+            return False
+        if abs(self.vx_now) <= STANDSTILL_STEER_MS:
+            half_extent = (self.ego_len * 0.5 * abs(math.sin(ep))
+                           + self.ego_wid * 0.5 * abs(math.cos(ep)))
+            return abs(ey) + half_extent + LANE_MARGIN <= width * 0.5
+        return abs(ey) <= RECOVER_EY
+
+    def _project_plan(self, x0, U):
+        """Re-roll executable controls from this frame's measured state."""
+        U = U.copy()
+        finite = np.isfinite(U).all(axis=(1, 2))
+        # A failed candidate is never eligible; finite placeholders keep its
+        # diagnostics from contaminating otherwise independent hypotheses.
+        U[~finite] = 0.0
+        U[~finite, :, 0] = AX_MIN
+        U[:, 0, 0] = np.clip(U[:, 0, 0], AX_MIN, AX_MAX)
+        U[:, 0, 1] = np.clip(U[:, 0, 1], -DELTA_RATE_MAX, DELTA_RATE_MAX)
+        vx = self.vx_now
+        if vx < STANDSTILL_STEER_MS:
+            U[:, 0, 1] = 0.0
+        if OUTPUT != "carsim" and vx < STANDSTILL_MS:
+            ax0 = U[:, 0, 0]
+            U[:, 0, 0] = np.where(ax0 < 0.0, np.maximum(ax0, -HOLD_GAIN * vx), ax0)
+        X = self.solver.rollout(np.broadcast_to(x0, (len(U), NX)), U)
+        finite &= np.isfinite(X).all(axis=(1, 2))
+        X[~finite] = np.broadcast_to(x0, X[~finite].shape)
+        return U, X, finite
+
+    @staticmethod
+    def _plan_violation(c_all, cT_all, finite):
+        """Ignore immutable initial state, but check its executed inputs."""
+        finite = finite & np.isfinite(c_all).all(axis=(1, 2)) & np.isfinite(cT_all).all(axis=1)
+        cpos = np.maximum(c_all[:, 1:], 0.0)
+        ke = int(round(EARLY_T / DT_MPC))
+        first_input = np.maximum(c_all[:, 0][:, [0, 1, 4, 5]], 0.0).max(axis=1)
+        early = np.maximum(cpos[:, :ke].max(axis=(1, 2)), first_input)
+        late = np.maximum(cpos[:, ke:].max(axis=(1, 2)), np.maximum(cT_all, 0.0).max(axis=1))
+        return (np.where(finite, np.maximum(early - VIOL_TOL, 0.0), np.inf),
+                np.where(finite, np.maximum(late - VIOL_TOL, 0.0), np.inf),
+                np.where(finite, np.maximum(early, late), np.inf), finite)
+
+    def _assess_plan(self, x0, plan):
+        """Validate both an optimizer result and its seed against current data."""
+        plan["U"], plan["X"], finite = self._project_plan(x0, plan["U"])
+        for name in ("lam", "mu", "lamT", "muT", "reg"):
+            finite &= np.isfinite(plan[name]).reshape(len(finite), -1).all(axis=1)
+        cost, base, _, c_all, cT_all = self.solver.total_cost(
+            plan["X"], plan["U"], plan["lam"], plan["mu"], plan["lamT"], plan["muT"])
+        finite &= np.isfinite(cost) & np.isfinite(base)
+        plan["bad_e"], plan["bad_l"], plan["viol"], plan["valid"] = self._plan_violation(c_all, cT_all, finite)
+        plan["cost"] = np.where(plan["valid"], cost, np.inf)
+        plan["base"] = np.where(plan["valid"], base, np.inf)
+
     # ------------------------------------------------------------------ control
     def control(self, exports, t, dt, scene):
         t_wall = time.perf_counter()
@@ -556,9 +660,12 @@ class Controller:
         lamT = np.zeros((H, nc - 6))
         muT = np.full((H, nc - 6), self.solver.mu0)
         reg = np.full(H, self.solver.reg0)
+        seed_available = np.zeros(H, dtype=bool)
         for h, hp in enumerate(hyps):
             w = self.warm.get(hp["key"])
-            if w is not None and w["lam"].shape[-1] == nc:
+            if w is not None and w["lam"].shape[-1] == nc and all(
+                    np.isfinite(np.asarray(value)).all() for value in w.values()):
+                seed_available[h] = True
                 U[h] = self._shift(w["U"], el)
                 lam[h] = self._shift(w["lam"], el)
                 mu[h] = w["mu"]
@@ -566,27 +673,41 @@ class Controller:
             else:
                 U[h] = self._initial_guess(x0, hp["target"], prob, brake=hp["vscale"] == 0.0)
         t0 = time.perf_counter()
-        cold = any(self.warm.get(hp["key"]) is None for hp in hyps)
+        cold = not bool(np.all(seed_available))
         self.solver.iters = ITERS_FIRST if self.n_calls == 0 else (ITERS_COLD if cold else ITERS)
+        # solve mutates U in place: preserve the shifted, same-key warm seed
+        # and its matching dual state before asking for numerical improvement.
+        seed = {"U": U.copy(), "lam": lam.copy(), "mu": mu.copy(),
+                "lamT": lamT.copy(), "muT": muT.copy(), "reg": reg.copy()}
         sol = self.solver.solve(x0, U, lam, mu, lamT, muT, reg)
+        prob.nominal = False
+        self._assess_plan(x0, sol)
+        self._assess_plan(x0, seed)
+        # AL cost descent need not preserve feasibility. Retain the previous
+        # same-topology solution only after rechecking it with today's state,
+        # obstacle positions and lane boundaries; never reuse an old X.
+        use_seed = seed_available & (sol["bad_e"] > 0.0) & (seed["bad_e"] == 0.0)
+        for name in ("U", "X", "lam", "mu", "lamT", "muT", "reg",
+                     "cost", "base", "viol", "bad_e", "bad_l", "valid"):
+            sol[name][use_seed] = seed[name][use_seed]
         spent = time.perf_counter() - t0
 
-        # ---- 选方案：先看满足约束，再比正常参考车速下的代价（让行方案也按正常车速算，慢就贵）
+        # Compare the final, executable trajectories at the normal speed target.
         prob.nominal = True
-        _, nominal, _, c_all, cT_all = self.solver.total_cost(sol["X"], sol["U"], sol["lam"], sol["mu"],
-                                                              sol["lamT"], sol["muT"])
+        _, nominal, _, _, _ = self.solver.total_cost(
+            sol["X"], sol["U"], sol["lam"], sol["mu"], sol["lamT"], sol["muT"])
         prob.nominal = False
-        # 约束违反分近、远：近处（EARLY_T 内）违反 = 这个方案走不通；远处的违反后面的周期还来得及修正，只加罚
-        cpos = np.maximum(c_all[:, 1:], 0.0)
-        ke = int(round(EARLY_T / DT_MPC))
-        bad_e = np.maximum(cpos[:, :ke].max(axis=(1, 2)) - VIOL_TOL, 0.0)
-        bad_l = np.maximum(np.maximum(cpos[:, ke:].max(axis=(1, 2)), np.maximum(cT_all, 0.0).max(axis=1)) - VIOL_TOL, 0.0)
-        rank = nominal + 1e6 * bad_e + LATE_PENALTY * bad_l
+        bad_e, bad_l = sol["bad_e"], sol["bad_l"]
+        rank = np.where(sol["valid"], nominal + 1e6 * bad_e + LATE_PENALTY * bad_l, np.inf)
         # 热启动留给下一周期。同一条走廊（本车道 / 让行）的方案互相借鉴：
         # 其中一个更好（满足约束且代价低），另一个下一周期从它出发（非凸问题里少陷在差的局部解里）
         self.warm = {}
         for h, hp in enumerate(hyps):
             k_ = hp["key"]
+            if not sol["valid"][h]:
+                self.bad_n[k_] = 0
+                self.score_ema.pop(k_, None)
+                continue
             self.bad_n[k_] = self.bad_n.get(k_, 0) + 1 if bad_e[h] > 0 else 0
             if self.bad_n[k_] >= RESET_FRAMES:
                 # 连续走不通：乘子、罚因子已经很大，解陷住了。丢掉热启动，下一周期从头来（情况可能已经变了）
@@ -594,51 +715,55 @@ class Controller:
                 continue
             src = h
             for g, gp in enumerate(hyps):
-                if gp["left"] == hp["left"] and gp["right"] == hp["right"] and rank[g] < rank[src] - 1.0:
+                if sol["valid"][g] and gp["left"] == hp["left"] and gp["right"] == hp["right"] and rank[g] < rank[src] - 1.0:
                     src = g
             self.warm[hp["key"]] = {"U": sol["U"][src].copy(), "lam": sol["lam"][src].copy(), "mu": sol["mu"][src].copy(),
                                     "lamT": sol["lamT"][src].copy(), "muT": sol["muT"][src].copy(),
                                     "reg": sol["reg"][src]}
-        # 行为层：换道开始后坚持（目标车道近处连续 ABORT_FRAMES 帧走不通才放弃）；换完一次道 DWELL 秒内不再换
-        changing = self.target_idx != self.lane_idx
-        if changing:
-            tgt = [h for h, hp in enumerate(hyps) if hp["key"] == ("lane", self.target_idx)]
-            self.abort_n = self.abort_n + 1 if (not tgt or bad_e[tgt[0]] > 0) else 0
-        else:
-            self.abort_n = 0
-        stay_ok = any(bad_e[h] == 0 for h, hp in enumerate(hyps) if hp["key"][1] == self.lane_idx)
         # 车道价值（时域之外）：4 s 的预测看不出“跟在慢车后面一直慢下去”的损失，
         # 按每条车道前方最近的车（或锥桶等）估计在那条车道上能开多快，慢多少罚多少
         vt = TARGET_KMH / 3.6
         lane_v = {r: self._lane_speed(obs, width, r, x0[EY], vt) for r in (-1, 0, 1)}
+        avail = {-1: right_ok, 0: True, 1: left_ok}
+        self.value_features = self._value_feats(prob, sol["X"][0], 0, 0, self.lane_idx, obs, width, avail, stop_s, vt)
+        vterm = np.zeros(H)
+        if self.value is not None:
+            fs = np.stack([self._value_feats(prob, sol["X"][h], N_STEPS, hp["key"][1] - self.lane_idx, hp["key"][1],
+                                             obs, width, avail, stop_s, vt) for h, hp in enumerate(hyps)])
+            vterm = self.value(fs)
         # 方案本身的代价（一阶滤波；走不通的不滤，立刻生效），再加上决策相关的项
         base_sc = {}
         for h, hp in enumerate(hyps):
             k_, lane_h = hp["key"], hp["key"][1]
+            if not sol["valid"][h]:
+                base_sc[k_] = math.inf
+                continue
             v_ = rank[h] + HOME_COST * abs(lane_h) \
                 + (RIGHT_PASS_COST if lane_h < self.lane_idx and lane_h < 0 else 0.0) \
-                + LANE_SPEED_COST * max(0.0, vt - lane_v[max(-1, min(1, lane_h - self.lane_idx))])
+                + (-VALUE_WEIGHT * vterm[h] if self.value is not None else
+                   LANE_SPEED_COST * max(0.0, vt - lane_v[max(-1, min(1, lane_h - self.lane_idx))])) \
+                + self.explore_bias.get(k_, 0.0)
             if bad_e[h] == 0 and k_ in self.score_ema and self.score_ema[k_] < 1e5:
                 v_ = (1 - SCORE_FILTER) * self.score_ema[k_] + SCORE_FILTER * v_
             base_sc[k_] = v_
         self.score_ema = base_sc
-        score = np.empty(H)
-        for h, hp in enumerate(hyps):
-            lane_h = hp["key"][1]
-            flip = changing and (lane_h - self.lane_idx) * (self.target_idx - self.lane_idx) < 0
-            score[h] = base_sc[hp["key"]] \
-                + (SWITCH_COST if hp["key"] != self.choice else 0.0) \
-                + (COMMIT_COST if changing and lane_h != self.target_idx and self.abort_n < ABORT_FRAMES else 0.0) \
-                + (1e5 if not changing and lane_h != self.lane_idx and t < self.dwell_until and stay_ok else 0.0) \
-                + (1e5 if lane_h != self.lane_idx and t < self.abort_until else 0.0) \
-                + (1e5 if flip else 0.0)   # 往左换到一半不直接改成往右换（反之亦然）：先回本车道
-        hb = int(np.argmin(score))
-        self.emerg_n = self.emerg_n + 1 if bool(np.all(bad_e > 0)) else 0
-        emergency = self.emerg_n >= EMERGENCY_FRAMES
+        score = np.array([base_sc[hp["key"]] +
+                          (SWITCH_COST if hp["key"] != self.choice else 0.0)
+                          for hp in hyps])
+        if self.recovering and t >= self.abort_until and self._recovery_settled(x0, width):
+            self.recovering = False
+        feasible_now = sol["valid"] & np.isfinite(score) & np.isfinite(bad_e) & (bad_e == 0.0)
+        in_current_lane = np.array([hp["key"][1] == self.lane_idx for hp in hyps])
+        hb, emergency = self.plan_selector.choose(
+            [hp["key"] for hp in hyps], score, bad_e,
+            self.lane_idx, self.target_idx, t, self.dwell_until, self.abort_until,
+            recovery_ready=not self.recovering)
+        invalid_output = not bool(sol["valid"][hb]) or not np.isfinite(sol["U"][hb, 0]).all()
+        if invalid_output:
+            emergency = True
         if emergency:
-            # 哪个方案都躲不开：不打大方向乱躲，在本车道里全力制动（和 AEB 一样）
-            hb = len(hyps) - 1
-            self._say("emerg%d" % (int(t) // 2), "t = %.1f s：所有方案近处都违反约束：本车道内全力制动" % t)
+            self._say("emerg%d" % (int(t) // 2),
+                      "t = %.1f s：没有可执行的安全方案：本车道内全力制动" % t)
         key = hyps[hb]["key"]
         if key[1] != self.target_idx:
             if key[1] != self.lane_idx:
@@ -646,7 +771,8 @@ class Controller:
                     t, "左" if key[1] > self.lane_idx else "右", self._scores(hyps, score)))
             else:
                 print("t = %.1f s：取消换道，留在本车道（方案代价 %s）" % (t, self._scores(hyps, score)))
-                self.abort_until = t + ABORT_COOLDOWN   # 放弃以后先稳住，不马上换别的道
+                self.abort_until = t + ABORT_COOLDOWN   # minimum retry interval; measured recovery also required
+                self.recovering = True
         if key[0] == "yield" and not emergency and (self.choice is None or self.choice[0] != "yield"):
             print("t = %.1f s：让行：在本车道里减速%s（方案代价 %s）" % (
                 t, "、停车" if stop_s is None else "", self._scores(hyps, score)))
@@ -654,7 +780,7 @@ class Controller:
         self.target_idx = key[1]
         u0 = sol["U"][hb, 0]
         ax_cmd = float(np.clip(u0[0], AX_MIN, AX_MAX))
-        rate_cmd = float(np.clip(u0[1], -DELTA_RATE_MAX, DELTA_RATE_MAX))
+        rate_cmd = 0.0 if invalid_output else float(np.clip(u0[1], -DELTA_RATE_MAX, DELTA_RATE_MAX))
         if emergency:
             ax_cmd = AX_MIN
 
@@ -681,9 +807,15 @@ class Controller:
                       "代价": float(sol["base"][hb]), "约束违反": float(sol["viol"][hb]),
                       "求解耗时 (ms)": spent * 1000.0, "ax 指令 (m/s²)": ax_cmd, "前轮转角指令 (rad)": self.dc,
                       "前轮胎比例因子": self.veh.front_scale, "后轮胎比例因子": self.veh.rear_scale,
+                      "价值 V（选中方案终点）": float(vterm[hb]) if self.value is not None else 0.0,
                       "本车道可达车速 (m/s)": lane_v[0], "左车道可达车速 (m/s)": lane_v[1],
                       "右车道可达车速 (m/s)": lane_v[-1],
-                      "RSS 介入": 1.0 if rss is not None else 0.0, "紧急制动": 1.0 if emergency else 0.0, "障碍物数": float(len(obs))}
+                      "RSS 介入": 1.0 if rss is not None else 0.0, "紧急制动": 1.0 if emergency else 0.0, "障碍物数": float(len(obs)),
+                      "可行热启动回退": float(np.count_nonzero(use_seed)),
+                      "无效候选数": float(np.count_nonzero(~sol["valid"])),
+                      "取消后恢复中": float(self.recovering),
+                      "当前道可行数": float(np.count_nonzero(feasible_now & in_current_lane)),
+                      "邻道可行数": float(np.count_nonzero(feasible_now & ~in_current_lane))}
         if DRAW:
             self.draw = self._lines(prob, sol, hb, path, obs)
         if t >= self.next_print:
@@ -693,6 +825,24 @@ class Controller:
                       t, vx * 3.6, self.lane_idx, key[1], "%.2f m" % off if off is not None else "—", ax_cmd,
                       self.dc, sol["viol"][hb], spent * 1000, self.veh.front_scale, self.veh.rear_scale))
         return self._output(exports, dt, deg, ms)
+
+    def _value_feats(self, prob, X, k, t_rel, lane_h, obs, width, avail, stop_s, vt):
+        """价值函数的特征：方案预测轨迹第 k 步的状态（k = 0 是现在），以目标车道（相对现在 t_rel 条）为“所在车道”。"""
+        x = X[k]
+        sN, vx = float(x[S]), max(float(x[VX]), 0.0)
+        ay = vx * float(x[R])
+        kap = [float(prob.path.kappa(sN + d)) for d in (0.0, 20.0, 40.0, 60.0)]
+        lanes = {r: (avail.get(t_rel + r, False) if abs(t_rel + r) <= 1 else False) for r in (-1, 0, 1)}
+        half_e = self.ego_len / 2.0
+        items = []
+        for j, o in enumerate(obs[:MAX_OBS]):
+            so, do = float(prob.os[k, j]), float(prob.od[k, j])
+            ds = so - sN
+            gap = max(0.0, ds - o.half_s - half_e) if ds >= 0 else min(0.0, ds + o.half_s + half_e)
+            items.append((gap, do - t_rel * width, float(o.vs), o.kind == "static" or o.speed < 0.5))
+        stop = None if stop_s is None else float(stop_s - sN - self.ego_len / 2.0)
+        return nmpc_value.features(vx, float(x[EY]) - t_rel * width, float(x[EPSI]), ay, kap, lanes, items, stop,
+                                   lane_h, vt, width)
 
     def _lane_speed(self, obs, width, r, ey0, vt):
         """相对车道 r（0 = 本车道，+1 = 左边）前方能开多快，m/s：前方 LANE_LOOK 米内这条车道上最近的东西的车速
